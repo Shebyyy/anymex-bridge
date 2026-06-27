@@ -129,9 +129,15 @@ class JarRunner {
 
     // Find java on PATH.
     const javaBin = process.env.JAVA_BIN ?? 'java';
-    console.log(`[jar-runner] spawning: ${javaBin} -jar ${JAR_PATH}`);
 
-    this.proc = spawn(javaBin, ['-jar', JAR_PATH], {
+    // JVM heap cap — defaults to 384m so we're safe on small/shared VPS boxes
+    // (e.g. a 1.9 GB server already running Supabase + Next.js + nginx).
+    // Override with ANYMEX_JVM_HEAP=512m (or 1g, etc.) on bigger/dedicated hosts.
+    const jvmHeap = process.env.ANYMEX_JVM_HEAP ?? '384m';
+    const javaArgs = [`-Xmx${jvmHeap}`, '-jar', JAR_PATH];
+    console.log(`[jar-runner] spawning: ${javaBin} ${javaArgs.join(' ')}`);
+
+    this.proc = spawn(javaBin, javaArgs, {
       stdio: ['pipe', 'pipe', 'pipe'],
       env: {
         ...process.env,

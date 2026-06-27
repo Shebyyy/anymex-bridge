@@ -117,6 +117,27 @@ export JAVA_BIN=/usr/lib/jvm/java-17-openjdk-amd64/bin/java
 bun run dev
 ```
 
+### JVM heap size (IMPORTANT for small / shared VPS)
+
+The bridge launches a single shared JVM that runs the AnymeX runtime JAR.
+By default the JVM is capped at **`-Xmx384m`** so it can't OOM a small or
+shared box (e.g. a 1.9 GB VPS already running Supabase + Next.js + nginx).
+
+To override on hosts with more free RAM:
+
+```bash
+# 512 MB heap (for ~3 GB+ hosts with light other load)
+export ANYMEX_JVM_HEAP=512m
+# 1 GB heap (recommended for dedicated 4 GB+ hosts)
+export ANYMEX_JVM_HEAP=1g
+# 2 GB heap (only on dedicated 8 GB+ hosts with heavy concurrent use)
+export ANYMEX_JVM_HEAP=2g
+bun run dev
+```
+
+Rule of thumb: leave at least **1 GB free** for Bun + the OS + dex2jar
+spikes. Don't set `ANYMEX_JVM_HEAP` higher than ~50% of total RAM.
+
 ### Repo cache TTL
 
 ```typescript
@@ -145,6 +166,7 @@ ExecStart=/home/anymex/.bun/bin/bun run start
 Restart=on-failure
 RestartSec=5
 Environment=JAVA_BIN=/usr/lib/jvm/java-17-openjdk-amd64/bin/java
+Environment=ANYMEX_JVM_HEAP=384m
 
 [Install]
 WantedBy=multi-user.target

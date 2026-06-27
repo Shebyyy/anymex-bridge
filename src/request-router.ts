@@ -31,10 +31,34 @@ import {
   removeRepo,
   uninstallExt,
 } from './db.js';
-import type { ClientRequest, ServerResponse } from './types.js';
+import type { ClientRequest, ServerResponse, BridgeAction } from './types.js';
 import { stampItemTypeAndManager, ITEM_TYPE_INT, type ItemTypeStr } from './item-type.js';
 
 export type SendFn = (resp: ServerResponse) => void;
+
+/**
+ * Management methods that arrive via the `invoke` wrapper.
+ *
+ * The Dart client calls these via `BridgeDispatcher().invokeMethod(...)` which
+ * `RemoteSidecarBridge` wraps as `{action:'invoke', payload:{method:'addRepo',
+ * args:{...}}}`. Without interception, `handleInvoke` rejects them because
+ * `extId` is null.
+ *
+ * We intercept them here and re-dispatch as top-level actions so they hit
+ * the dedicated `case 'addRepo'` / `case 'install'` / etc. handlers.
+ */
+const MANAGEMENT_METHODS = new Set<string>([
+  'addRepo',
+  'removeRepo',
+  'listRepos',
+  'listAvailable',
+  'listInstalled',
+  'install',
+  'uninstall',
+  'loadExtensions',
+  'csLoadExtensions',
+  'kotatsuLoadExtensions',
+]);
 
 /** Main dispatcher. Returns nothing; pushes responses via `send`. */
 export async function routeRequest(
@@ -195,22 +219,31 @@ export async function routeRequest(
 
       case 'loadExtensions': {
         // Force the JAR to rescan the Aniyomi exts-jar folder.
+        // Returns the bare `sources` array — the Dart client's
+        // `_loadInstalled` does `for (final e in (result as List))` and
+        // expects each element to be a Map with keys: type, className,
+        // pkgName, version, isNsfw, name, lang, baseUrl, id.
         const sources = await loadExtensionsCache.reload();
-        send({ id, status: 'ok', data: { count: sources.length, sources } });
+        send({ id, status: 'ok', data: sources });
         return;
       }
 
       case 'csLoadExtensions': {
         // Force the JAR to rescan the CloudStream exts-jar-cs folder.
+        // Returns the bare `sources` array — the Dart client's
+        // `_loadInstalled` does `for (final e in (result as List))`.
         const sources = await csLoadExtensionsCache.reload();
-        send({ id, status: 'ok', data: { count: sources.length, sources } });
+        send({ id, status: 'ok', data: sources });
         return;
       }
 
       case 'kotatsuLoadExtensions': {
         // Force the JAR to rescan the Kotatsu exts-jar-kotatsu folder.
+        // Returns the bare `sources` array — the Dart client checks
+        // `if (data == null || data is! List)` and then maps each element
+        // via `KotatsuSource.fromJson(...)`.
         const sources = await kotatsuLoadExtensionsCache.reload();
-        send({ id, status: 'ok', data: { count: sources.length, sources } });
+        send({ id, status: 'ok', data: sources });
         return;
       }
 
@@ -416,8 +449,33 @@ async function handleInvoke(req: ClientRequest, send: SendFn, stream: boolean): 
   const { extId, method, innerId } = req.payload ?? {};
   let args = req.payload?.args;
 
-  if (typeof extId !== 'string' || typeof method !== 'string') {
+  if (typeof method !== 'string') {
     send({ id, status: 'error', error: 'invoke requires { extId, method, args?, innerId? }' });
+    return;
+  }
+
+  // --- Management method interception ---
+  // The Dart client calls management actions (addRepo, install, uninstall,
+  // loadExtensions, etc.) via `BridgeDispatcher().invokeMethod(...)`, which
+  // `RemoteSidecarBridge` wraps as `{action:'invoke', payload:{method:'addRepo',
+  // args:{...}}}` with `extId: null`. Without this interception, `handleInvoke`
+  // rejects them at the `extId` validation below.
+  //
+  // Re-dispatch as top-level actions so they hit the dedicated case handlers
+  // (addRepo/install/uninstall/loadExtensions/etc.) which handle them locally
+  // (DB + filesystem) and return a single JSON response.
+  if (MANAGEMENT_METHODS.has(method)) {
+    await routeRequest(
+      // `method` is verified to be in MANAGEMENT_METHODS (a subset of
+      // BridgeAction), so the cast is safe.
+      { id, action: method as BridgeAction, userId, payload: args ?? {} },
+      send,
+    );
+    return;
+  }
+
+  if (typeof extId !== 'string') {
+    send({ id, status: 'error', error: `invoke requires { extId } for method: ${method}` });
     return;
   }
 
