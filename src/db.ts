@@ -3,7 +3,7 @@
  *
  * Tables:
  *   users          — identified by SSH public key fingerprint
- *   user_repos     — repos each user is subscribed to
+ *   user_repos     — repos each user is subscribed to (with optional runtime tag)
  *   user_exts      — extensions each user has installed (just IDs + repo source)
  *
  * Note: the actual .apk/.cs3 binaries live on disk in data/exts/ (shared,
@@ -35,14 +35,6 @@ db.exec(`
     last_seen           INTEGER NOT NULL
   );
 
-  CREATE TABLE IF NOT EXISTS user_repos (
-    user_id     TEXT NOT NULL,
-    repo_url    TEXT NOT NULL,
-    added_at    INTEGER NOT NULL,
-    PRIMARY KEY (user_id, repo_url),
-    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
-  );
-
   CREATE TABLE IF NOT EXISTS user_exts (
     user_id     TEXT NOT NULL,
     ext_id      TEXT NOT NULL,
@@ -52,9 +44,68 @@ db.exec(`
     FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
   );
 
-  CREATE INDEX IF NOT EXISTS idx_user_repos_user ON user_repos(user_id);
   CREATE INDEX IF NOT EXISTS idx_user_exts_user ON user_exts(user_id);
 `);
+
+// --- Graceful migration for user_repos table ---
+// We need PRIMARY KEY (user_id, repo_url, runtime) to allow the same repo
+// under different runtimes. SQLite doesn't support ALTER TABLE to change PK,
+// so we check the current PK and rebuild if needed.
+try {
+  const pkCols = db.prepare<{ name: string }, null>(
+    `SELECT name FROM pragma_table_info('user_repos') WHERE pk > 0 ORDER BY pk`,
+  ).all(null);
+  const pkNames = pkCols.map(c => c.name);
+
+  if (pkNames.length === 2 && pkNames[0] === 'user_id' && pkNames[1] === 'repo_url') {
+    // Old schema: PK is (user_id, repo_url). Migrate to include runtime.
+    console.log('[db] migrating user_repos PK from (user_id, repo_url) to (user_id, repo_url, runtime)');
+    db.exec(`
+      CREATE TABLE user_repos_new (
+        user_id     TEXT NOT NULL,
+        repo_url    TEXT NOT NULL,
+        runtime     TEXT,
+        added_at    INTEGER NOT NULL,
+        PRIMARY KEY (user_id, repo_url, runtime),
+        FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+      );
+      INSERT OR IGNORE INTO user_repos_new (user_id, repo_url, runtime, added_at)
+        SELECT user_id, repo_url, runtime, added_at FROM user_repos;
+      DROP TABLE user_repos;
+      ALTER TABLE user_repos_new RENAME TO user_repos;
+      CREATE INDEX IF NOT EXISTS idx_user_repos_user ON user_repos(user_id);
+    `);
+    console.log('[db] migration complete');
+  } else if (pkNames.length === 0) {
+    // Table doesn't exist yet — create with new schema.
+    db.exec(`
+      CREATE TABLE user_repos (
+        user_id     TEXT NOT NULL,
+        repo_url    TEXT NOT NULL,
+        runtime     TEXT,
+        added_at    INTEGER NOT NULL,
+        PRIMARY KEY (user_id, repo_url, runtime),
+        FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+      );
+      CREATE INDEX IF NOT EXISTS idx_user_repos_user ON user_repos(user_id);
+    `);
+  }
+  // If PK already includes runtime, we're good.
+} catch (e: any) {
+  // Table might not exist yet (first run) — create it.
+  console.log('[db] user_repos check failed, creating fresh table:', e?.message);
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS user_repos (
+      user_id     TEXT NOT NULL,
+      repo_url    TEXT NOT NULL,
+      runtime     TEXT,
+      added_at    INTEGER NOT NULL,
+      PRIMARY KEY (user_id, repo_url, runtime),
+      FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+    );
+    CREATE INDEX IF NOT EXISTS idx_user_repos_user ON user_repos(user_id);
+  `);
+}
 
 // --- Prepared statements (named parameters, $-prefixed) ---
 // NOTE: bun:sqlite returns rows with the DB column names (snake_case).
@@ -80,11 +131,15 @@ const stmtTouchUser = db.prepare<null, { $last_seen: number; $id: string }>(
 
 const stmtAddRepo = db.prepare<
   null,
-  { $user_id: string; $repo_url: string; $added_at: number }
->(`INSERT OR IGNORE INTO user_repos (user_id, repo_url, added_at) VALUES ($user_id, $repo_url, $added_at)`);
+  { $user_id: string; $repo_url: string; $runtime: string | null; $added_at: number }
+>(`INSERT OR REPLACE INTO user_repos (user_id, repo_url, runtime, added_at) VALUES ($user_id, $repo_url, $runtime, $added_at)`);
 
 const stmtRemoveRepo = db.prepare<null, { $user_id: string; $repo_url: string }>(
   `DELETE FROM user_repos WHERE user_id = $user_id AND repo_url = $repo_url`,
+);
+
+const stmtRemoveRepoByRuntime = db.prepare<null, { $user_id: string; $repo_url: string; $runtime: string }>(
+  `DELETE FROM user_repos WHERE user_id = $user_id AND repo_url = $repo_url AND runtime = $runtime`,
 );
 
 const stmtRemoveExtsForRepo = db.prepare<null, { $user_id: string; $repo_url: string }>(
@@ -92,8 +147,17 @@ const stmtRemoveExtsForRepo = db.prepare<null, { $user_id: string; $repo_url: st
 );
 
 const stmtListRepos = db.prepare<UserRepo, { $user_id: string }>(
-  `SELECT user_id AS userId, repo_url AS repoUrl, added_at AS addedAt
+  `SELECT user_id AS userId, repo_url AS repoUrl, runtime, added_at AS addedAt
    FROM user_repos WHERE user_id = $user_id ORDER BY added_at ASC`,
+);
+
+const stmtListReposByRuntime = db.prepare<UserRepo, { $user_id: string; $runtime: string }>(
+  `SELECT user_id AS userId, repo_url AS repoUrl, runtime, added_at AS addedAt
+   FROM user_repos WHERE user_id = $user_id AND runtime = $runtime ORDER BY added_at ASC`,
+);
+
+const stmtHasOtherRuntimeRepo = db.prepare<{ count: number }, { $user_id: string; $repo_url: string; $runtime: string | null }>(
+  `SELECT COUNT(*) as count FROM user_repos WHERE user_id = $user_id AND repo_url = $repo_url AND runtime != $runtime`,
 );
 
 const stmtInstallExt = db.prepare<
@@ -118,6 +182,21 @@ const stmtIsExtInstalled = db.prepare<{ ok: number }, { $user_id: string; $ext_i
   `SELECT 1 as ok FROM user_exts WHERE user_id = $user_id AND ext_id = $ext_id LIMIT 1`,
 );
 
+// --- Helper: check if a repo exists under a different runtime ---
+
+function hasOtherRuntimeRepo(userId: string, repoUrl: string, runtime: string | null): boolean {
+  const row = stmtHasOtherRuntimeRepo.get({ $user_id: userId, $repo_url: repoUrl, $runtime: runtime });
+  return (row?.count ?? 0) > 0;
+}
+
+// --- Valid runtime values ---
+const VALID_RUNTIMES = ['aniyomi', 'cloudstream', 'kotatsu'] as const;
+type ValidRuntime = (typeof VALID_RUNTIMES)[number];
+
+function isValidRuntime(v: unknown): v is ValidRuntime {
+  return typeof v === 'string' && VALID_RUNTIMES.includes(v as ValidRuntime);
+}
+
 // --- Public API ---
 
 export function getOrCreateUser(fingerprint: string, displayName?: string): User {
@@ -138,16 +217,29 @@ export function getOrCreateUser(fingerprint: string, displayName?: string): User
   return created;
 }
 
-export function addRepo(userId: string, repoUrl: string): void {
-  stmtAddRepo.run({ $user_id: userId, $repo_url: repoUrl, $added_at: Date.now() });
+export function addRepo(userId: string, repoUrl: string, runtime?: string): void {
+  const safeRuntime = isValidRuntime(runtime) ? runtime : null;
+  stmtAddRepo.run({ $user_id: userId, $repo_url: repoUrl, $runtime: safeRuntime, $added_at: Date.now() });
 }
 
-export function removeRepo(userId: string, repoUrl: string): void {
-  stmtRemoveRepo.run({ $user_id: userId, $repo_url: repoUrl });
-  stmtRemoveExtsForRepo.run({ $user_id: userId, $repo_url: repoUrl });
+export function removeRepo(userId: string, repoUrl: string, runtime?: string): void {
+  if (runtime && isValidRuntime(runtime)) {
+    stmtRemoveRepoByRuntime.run({ $user_id: userId, $repo_url: repoUrl, $runtime: runtime });
+    // Only remove extensions for this repo if no other runtime still has it
+    if (!hasOtherRuntimeRepo(userId, repoUrl, runtime)) {
+      stmtRemoveExtsForRepo.run({ $user_id: userId, $repo_url: repoUrl });
+    }
+  } else {
+    // No runtime specified — remove ALL rows for this repo (all runtimes)
+    stmtRemoveRepo.run({ $user_id: userId, $repo_url: repoUrl });
+    stmtRemoveExtsForRepo.run({ $user_id: userId, $repo_url: repoUrl });
+  }
 }
 
-export function listRepos(userId: string): UserRepo[] {
+export function listRepos(userId: string, runtime?: string): UserRepo[] {
+  if (runtime && isValidRuntime(runtime)) {
+    return stmtListReposByRuntime.all({ $user_id: userId, $runtime: runtime });
+  }
   return stmtListRepos.all({ $user_id: userId });
 }
 

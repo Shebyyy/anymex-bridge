@@ -117,6 +117,8 @@ export interface UserExtension {
 export interface UserRepo {
   userId: string;
   repoUrl: string;
+  /** Runtime this repo belongs to: 'aniyomi' | 'cloudstream' | 'kotatsu' | undefined */
+  runtime?: string;
   addedAt: number;
 }
 

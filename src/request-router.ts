@@ -81,14 +81,18 @@ export async function routeRequest(
       }
 
       case 'addRepo': {
-        const { repoUrl } = req.payload ?? {};
+        const { repoUrl, runtime } = req.payload ?? {};
         if (typeof repoUrl !== 'string' || !/^https?:\/\//.test(repoUrl)) {
           send({ id, status: 'error', error: 'Invalid repoUrl' });
           return;
         }
+        if (runtime != null && !['aniyomi', 'cloudstream', 'kotatsu'].includes(runtime)) {
+          send({ id, status: 'error', error: `Invalid runtime '${runtime}' (expected aniyomi|cloudstream|kotatsu)` });
+          return;
+        }
         // Validate the repo is reachable & parses.
         const idx = await getRepoIndex(repoUrl, { force: true });
-        addRepo(userId, repoUrl);
+        addRepo(userId, repoUrl, runtime);
 
         // For Kotatsu .jar repos, the index is empty until we download + load the jar.
         // Trigger that now so addRepo returns a meaningful extension count.
@@ -110,14 +114,15 @@ export async function routeRequest(
       }
 
       case 'removeRepo': {
-        const { repoUrl } = req.payload ?? {};
-        removeRepo(userId, repoUrl);
+        const { repoUrl, runtime } = req.payload ?? {};
+        removeRepo(userId, repoUrl, runtime);
         send({ id, status: 'ok', data: { repoUrl } });
         return;
       }
 
       case 'listRepos': {
-        const repos = listRepos(userId);
+        const { runtime } = req.payload ?? {};
+        const repos = listRepos(userId, runtime);
         send({ id, status: 'ok', data: { repos } });
         return;
       }
@@ -139,7 +144,7 @@ export async function routeRequest(
           send({ id, status: 'error', error: `listAvailable: invalid runtime '${runtimeFilter}' (expected aniyomi|cloudstream|kotatsu)` });
           return;
         }
-        const repos = listRepos(userId).map((r) => r.repoUrl);
+        const repos = listRepos(userId, runtimeFilter).map((r) => r.repoUrl);
         const grouped = await listAvailableForRepos(repos);
         // Flatten + tag each entry with its source repo.
         const installed = new Set(listUserExts(userId).map((e) => e.extId));
