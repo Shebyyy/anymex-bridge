@@ -123,13 +123,20 @@ export async function routeRequest(
       }
 
       case 'listAvailable': {
-        // Optional filter: payload.type = 'anime' | 'manga' | 'novel'.
+        // Optional filters:
+        //   payload.type = 'anime' | 'manga' | 'novel'
+        //   payload.runtime = 'aniyomi' | 'cloudstream' | 'kotatsu'
         // Mirrors the runtime's fetchAnimeExtensions / fetchMangaExtensions /
         // fetchNovelExtensions — iOS calls each separately so it can populate
         // the three aggregated Rx lists (availableAnimeExtensions etc.).
         const typeFilter: ItemTypeStr | undefined = req.payload?.type;
         if (typeFilter != null && !['anime', 'manga', 'novel'].includes(typeFilter)) {
           send({ id, status: 'error', error: `listAvailable: invalid type '${typeFilter}' (expected anime|manga|novel)` });
+          return;
+        }
+        const runtimeFilter: string | undefined = req.payload?.runtime;
+        if (runtimeFilter != null && !['aniyomi', 'cloudstream', 'kotatsu'].includes(runtimeFilter)) {
+          send({ id, status: 'error', error: `listAvailable: invalid runtime '${runtimeFilter}' (expected aniyomi|cloudstream|kotatsu)` });
           return;
         }
         const repos = listRepos(userId).map((r) => r.repoUrl);
@@ -143,6 +150,11 @@ export async function routeRequest(
             installed: installed.has(e.id),
           })),
         );
+        // Filter by runtime FIRST — this prevents CloudStream/Kotatsu extensions
+        // from leaking into Aniyomi's list and vice versa.
+        if (runtimeFilter) {
+          all = all.filter((e) => e.runtime === runtimeFilter || e.managerId === runtimeFilter);
+        }
         if (typeFilter) {
           const wantInt = ITEM_TYPE_INT[typeFilter];
           all = all.filter((e) => e.type === typeFilter || e.itemType === wantInt);
@@ -152,10 +164,17 @@ export async function routeRequest(
       }
 
       case 'listInstalled': {
-        // Optional filter: payload.type = 'anime' | 'manga' | 'novel'.
+        // Optional filters:
+        //   payload.type = 'anime' | 'manga' | 'novel'
+        //   payload.runtime = 'aniyomi' | 'cloudstream' | 'kotatsu'
         const typeFilter: ItemTypeStr | undefined = req.payload?.type;
         if (typeFilter != null && !['anime', 'manga', 'novel'].includes(typeFilter)) {
           send({ id, status: 'error', error: `listInstalled: invalid type '${typeFilter}' (expected anime|manga|novel)` });
+          return;
+        }
+        const runtimeFilter: string | undefined = req.payload?.runtime;
+        if (runtimeFilter != null && !['aniyomi', 'cloudstream', 'kotatsu'].includes(runtimeFilter)) {
+          send({ id, status: 'error', error: `listInstalled: invalid runtime '${runtimeFilter}' (expected aniyomi|cloudstream|kotatsu)` });
           return;
         }
         const userExts = listUserExts(userId);
@@ -205,10 +224,17 @@ export async function routeRequest(
                   : (stampedMeta?.pkg ? isJarCached(stampedMeta.pkg) : false),
               };
             } catch {
-              return { ...ue, meta: null, runtime: 'aniyomi', managerId: 'aniyomi', itemType: undefined, apkCached: false, jarCached: false };
+              // Don't default to 'aniyomi' — preserve whatever runtime the user
+              // originally installed this extension under. If we can't determine it,
+              // omit runtime/managerId so the client can skip it rather than mis-categorize.
+              return { ...ue, meta: null, itemType: undefined, apkCached: false, jarCached: false };
             }
           }),
         );
+        // Filter by runtime FIRST — prevents cross-runtime leaking.
+        if (runtimeFilter) {
+          enriched = enriched.filter((e: any) => e.runtime === runtimeFilter || e.managerId === runtimeFilter || e.meta?.runtime === runtimeFilter || e.meta?.managerId === runtimeFilter);
+        }
         if (typeFilter) {
           const wantInt = ITEM_TYPE_INT[typeFilter];
           enriched = enriched.filter((e: any) => e.meta?.type === typeFilter || e.meta?.itemType === wantInt || e.itemType === wantInt);
