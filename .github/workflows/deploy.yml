@@ -16,6 +16,7 @@ jobs:
           username: ${{ secrets.SERVER_USER }}
           password: ${{ secrets.SERVER_PASSWORD }}
           command_timeout: 60s
+          script_stop: true
           script: |
             echo "=== Deploying anymex-bridge ==="
 
@@ -32,10 +33,16 @@ jobs:
             cd /root/anymex-bridge
             /root/.bun/bin/bun install
 
-            pkill -f "bun.*index.ts" 2>/dev/null || true
+            # Kill old bridge by PID file, not by pattern (avoids killing SSH session)
+            if [ -f /tmp/anymex-bridge.pid ]; then
+              kill $(cat /tmp/anymex-bridge.pid) 2>/dev/null || true
+              rm -f /tmp/anymex-bridge.pid
+            fi
             sleep 2
 
-            nohup /root/.bun/bin/bun run /root/anymex-bridge/index.ts > /tmp/bridge-deploy.log 2>&1 &
+            # Start with setsid so it survives SSH disconnect
+            setsid /root/.bun/bin/bun run /root/anymex-bridge/index.ts > /tmp/bridge-deploy.log 2>&1 &
+            echo $! > /tmp/anymex-bridge.pid
             sleep 5
 
             if ss -tlnp | grep -q 3022; then
