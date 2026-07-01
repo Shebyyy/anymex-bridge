@@ -64,20 +64,44 @@ import 'dart:convert';
 import 'package:dartssh2/dartssh2.dart';
 
 /// Configuration for connecting to a remote AnymeX Bridge server.
+///
+/// Pass EITHER a pre-parsed [keyPair] (for callers that already have one)
+/// OR a [privateKeyPem] string (PEM text loaded from secure storage).
+/// If both are provided, [keyPair] wins.
 class RemoteBridgeConfig {
   final String host;
   final int port;
   final String username;
-  final SSHKeyPair keyPair;
+  final SSHKeyPair? keyPair;
+  final String? privateKeyPem;
   final Duration connectTimeout;
 
   const RemoteBridgeConfig({
     required this.host,
     required this.port,
     required this.username,
-    required this.keyPair,
+    SSHKeyPair? keyPair,
+    this.privateKeyPem,
     this.connectTimeout = const Duration(seconds: 15),
-  });
+  }) : keyPair = keyPair;
+
+  /// Construct from a PEM string. The actual parse into an [SSHKeyPair]
+  /// happens lazily inside [RemoteSidecarBridge.configure].
+  factory RemoteBridgeConfig.fromPem({
+    required String host,
+    required int port,
+    required String username,
+    required String privateKeyPem,
+    Duration connectTimeout = const Duration(seconds: 15),
+  }) {
+    return RemoteBridgeConfig(
+      host: host,
+      port: port,
+      username: username,
+      privateKeyPem: privateKeyPem,
+      connectTimeout: connectTimeout,
+    );
+  }
 }
 
 class RemoteSidecarBridge {
@@ -99,6 +123,26 @@ class RemoteSidecarBridge {
     if (_initialized && _config == config) return;
     _config = config;
 
+    // Resolve the SSHKeyPair: either the caller passed one in, or we parse
+    // the PEM string now.
+    final SSHKeyPair keyPair;
+    if (config.keyPair != null) {
+      keyPair = config.keyPair!;
+    } else if (config.privateKeyPem != null &&
+        config.privateKeyPem!.isNotEmpty) {
+      // dartssh2 2.10+: SSHKeyPair.fromPem returns List<SSHKeyPair>
+      // (a single PEM can contain multiple keys). We take the first.
+      final parsed = SSHKeyPair.fromPem(config.privateKeyPem!);
+      if (parsed.isEmpty) {
+        throw StateError('Failed to parse any SSH key from privateKeyPem');
+      }
+      keyPair = parsed.first;
+    } else {
+      throw StateError(
+        'RemoteBridgeConfig needs either keyPair or privateKeyPem',
+      );
+    }
+
     final socket = await SSHSocket.connect(
       config.host,
       config.port,
@@ -107,10 +151,10 @@ class RemoteSidecarBridge {
     _client = SSHClient(
       socket,
       username: config.username,
-      identities: [config.keyPair],
+      identities: [keyPair],
       // Server uses BYO-key model: accept any host key the first time.
       // For production, ship a pinned host key fingerprint.
-      onVerifyHostKey: (hostKey) => true,
+      disableHostkeyVerification: true,
     );
 
     // Open ONE exec channel for the whole app lifetime. The server treats
@@ -120,11 +164,13 @@ class RemoteSidecarBridge {
     // Split the stdout stream into line-delimited JSON.
     _incomingLines = StreamController<String>();
     _session!.stdout
+        .cast<List<int>>()
         .transform(const Utf8Decoder(allowMalformed: true))
         .transform(const LineSplitter())
         .listen(_handleResponse, onError: (e) => print('[remote-bridge] stdout err: $e'));
 
     _session!.stderr
+        .cast<List<int>>()
         .transform(const Utf8Decoder(allowMalformed: true))
         .transform(const LineSplitter())
         .listen((line) => print('[remote-bridge] [server] $line'));
@@ -180,7 +226,9 @@ class RemoteSidecarBridge {
     final parameters = args['parameters'] as Map?;
     final token = parameters?['token'] as String?;
     final id = token ?? (_requestId++).toString();
-    final extId = args['extId'] as String? ?? args['extensionId'] as String?;
+    final extId = args['extId'] as String?
+        ?? args['extensionId'] as String?
+        ?? args['sourceId'] as String?;
 
     final completer = Completer<dynamic>();
     _completers[id] = completer;
@@ -219,7 +267,9 @@ class RemoteSidecarBridge {
     final parameters = args['parameters'] as Map?;
     final token = parameters?['token'] as String?;
     final id = token ?? (_requestId++).toString();
-    final extId = args['extId'] as String? ?? args['extensionId'] as String?;
+    final extId = args['extId'] as String?
+        ?? args['extensionId'] as String?
+        ?? args['sourceId'] as String?;
 
     final controller = StreamController<dynamic>();
     _streamControllers[id] = controller;
