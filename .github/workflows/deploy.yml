@@ -15,32 +15,29 @@ jobs:
           host: ${{ secrets.SERVER_HOST }}
           username: ${{ secrets.SERVER_USER }}
           password: ${{ secrets.SERVER_PASSWORD }}
+          command_timeout: 60s
           script: |
             echo "=== Deploying anymex-bridge ==="
-            cd /root/anymex-bridge
 
-            # Init git if needed
-            if [ ! -d .git ]; then
-              git clone https://github.com/Shebyyy/anymex-bridge.git .
+            if [ -d /tmp/anymex-bridge-deploy/.git ]; then
+              cd /tmp/anymex-bridge-deploy
+              git pull origin main
+            else
+              rm -rf /tmp/anymex-bridge-deploy
+              git clone https://github.com/Shebyyy/anymex-bridge.git /tmp/anymex-bridge-deploy
             fi
 
-            # Pull latest
-            git fetch origin main
-            git reset --hard origin/main
+            rsync -a --exclude='.git' --exclude='data' --exclude='.env' --exclude='node_modules' /tmp/anymex-bridge-deploy/ /root/anymex-bridge/
 
-            # Install deps
+            cd /root/anymex-bridge
             /root/.bun/bin/bun install
 
-            # Kill old process
             pkill -f "bun.*index.ts" 2>/dev/null || true
             sleep 2
 
-            # Start fresh
-            cd /root/anymex-bridge
             nohup /root/.bun/bin/bun run /root/anymex-bridge/index.ts > /tmp/bridge-deploy.log 2>&1 &
             sleep 5
 
-            # Verify
             if ss -tlnp | grep -q 3022; then
               echo "✅ Bridge is running on port 3022"
             else
