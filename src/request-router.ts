@@ -95,18 +95,14 @@ export async function routeRequest(
         addRepo(userId, repoUrl, runtime);
 
         // For Kotatsu .jar repos, the index is empty until we download + load the jar.
-        // Trigger that now so addRepo returns a meaningful extension count.
+        // Respond immediately and trigger jar download + load in the background
+        // so addRepo doesn't block for 60+ seconds.
         if ((idx as any).isKotatsuJar && idx.extensions.length === 0) {
-          try {
-            await installKotatsuJar(repoUrl);
-            const sources = await kotatsuLoadExtensionsCache.reload();
-            const synth = synthesizeKotatsuRepoIndex(repoUrl, sources);
-            send({ id, status: 'ok', data: { repoUrl, name: synth.name, extensionCount: synth.extensions.length, runtime: 'kotatsu' } });
-            return;
-          } catch (e: any) {
-            send({ id, status: 'ok', data: { repoUrl, name: idx.name, extensionCount: 0, runtime: 'kotatsu', warning: `jar load failed: ${e?.message ?? e}` } });
-            return;
-          }
+          send({ id, status: 'ok', data: { repoUrl, name: 'Kotatsu Manga Repo', extensionCount: 0, runtime: 'kotatsu', loading: true } });
+          installKotatsuJar(repoUrl).then(() => kotatsuLoadExtensionsCache.reload())
+            .then((sources) => console.log(`[router] Kotatsu jar loaded in background: ${sources.length} sources`))
+            .catch((e: any) => console.warn(`[router] Kotatsu background jar load failed: ${e?.message ?? e}`));
+          return;
         }
 
         send({ id, status: 'ok', data: { repoUrl, name: idx.name, extensionCount: idx.extensions.length } });
@@ -352,19 +348,7 @@ export async function routeRequest(
             installError = e?.message ?? String(e);
             console.warn(`[router] CS install failed for ${extId}: ${installError}`);
           }
-          // Reload CS extensions in the JAR.
-          let sources: any[] = [];
-          if (jarPath) {
-            try {
-              sources = await csLoadExtensionsCache.reload();
-            } catch (e: any) {
-              console.warn(`[router] csLoadExtensions failed: ${e?.message ?? e}`);
-            }
-          }
-          const loaded = sources.find(
-            (s) => String(s.id).toLowerCase() === String(extId).toLowerCase() ||
-                   String(s.name).toLowerCase() === String(meta.internalName ?? meta.name).toLowerCase(),
-          );
+          // Send response IMMEDIATELY — don't wait for csLoadExtensions.
           send({
             id,
             status: jarPath ? 'ok' : 'error',
@@ -379,11 +363,18 @@ export async function routeRequest(
               internalName: meta.internalName,
               version: meta.version,
               jarPath: jarPath?.split('/').pop(),
-              loaded: !!loaded,
-              sourceId: loaded?.id ?? extId,
-              baseUrl: loaded?.baseUrl ?? meta.baseUrl,
+              loaded: !!jarPath,
+              sourceId: extId,
+              baseUrl: meta.baseUrl,
             },
           });
+
+          // Kick off csLoadExtensions in the background.
+          if (jarPath) {
+            csLoadExtensionsCache.reload().catch((e: any) => {
+              console.warn(`[router] background csLoadExtensions failed: ${e?.message ?? e}`);
+            });
+          }
           return;
         }
 
@@ -397,16 +388,9 @@ export async function routeRequest(
           convertError = e?.message ?? String(e);
           console.warn(`[router] dex2jar conversion failed for ${extId}: ${convertError}`);
         }
-        // Reload extensions in the JAR so the new .jar is registered.
-        let sources: any[] = [];
-        if (jarPath) {
-          try {
-            sources = await loadExtensionsCache.reload();
-          } catch (e: any) {
-            console.warn(`[router] loadExtensions failed: ${e?.message ?? e}`);
-          }
-        }
-        const loaded = sources.find((s) => String(s.id) === String(extId));
+        // Send response IMMEDIATELY after dex2jar — don't wait for loadExtensions
+        // which can timeout and cause the client to show "loading" for 60s+.
+        // The JAR will load the extension on the next invoke call via ensureLoaded().
         send({
           id,
           status: jarPath ? 'ok' : 'error',
@@ -423,10 +407,18 @@ export async function routeRequest(
             sourceId: meta.id,
             apkPath,
             jarPath: jarPath?.split('/').pop(),
-            loaded: !!loaded,
-            baseUrl: loaded?.baseUrl ?? meta.baseUrl,
+            loaded: !!jarPath,
+            baseUrl: meta.baseUrl,
           },
         });
+
+        // Kick off loadExtensions in the background so the JAR registers
+        // the new .jar for the next invoke call.
+        if (jarPath) {
+          loadExtensionsCache.reload().catch((e: any) => {
+            console.warn(`[router] background loadExtensions failed: ${e?.message ?? e}`);
+          });
+        }
         return;
       }
 

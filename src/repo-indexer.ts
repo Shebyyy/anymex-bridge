@@ -356,20 +356,28 @@ export async function listAvailableForRepos(repoUrls: string[]): Promise<{
       try {
         const idx = await getRepoIndex(url);
         // Kotatsu .jar repos have empty extensions until we download + load the jar.
+        // Try loading but with a short tolerance — if it takes too long, return
+        // empty and let the install flow handle it later.
         if ((idx as any).isKotatsuJar && idx.extensions.length === 0) {
           try {
             const { installKotatsuJar } = await import('./kotatsu-installer.js');
             const { kotatsuLoadExtensionsCache } = await import('./ext-loader.js');
+            // Check if Kotatsu sources are already cached from a previous load
+            const cached = kotatsuLoadExtensionsCache['sources'] ?? [];
+            if (cached.length > 0 && kotatsuLoadExtensionsCache['loaded']) {
+              const synthesized = synthesizeKotatsuRepoIndex(url, cached);
+              out.push({ repoUrl: url, extensions: synthesized.extensions });
+              return;
+            }
             await installKotatsuJar(url);
             const sources = await kotatsuLoadExtensionsCache.reload();
             const synthesized = synthesizeKotatsuRepoIndex(url, sources);
             out.push({ repoUrl: url, extensions: synthesized.extensions });
-            return;
           } catch (e: any) {
             console.warn(`[repo-indexer] Kotatsu jar load failed for ${url}: ${e?.message ?? e}`);
             out.push({ repoUrl: url, extensions: [] });
-            return;
           }
+          return;
         }
         out.push({ repoUrl: url, extensions: idx.extensions });
       } catch (e: any) {

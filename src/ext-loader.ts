@@ -25,7 +25,7 @@ class ExtLoaderCache {
   async ensureLoaded(): Promise<any[]> {
     if (this.loaded) return this.sources;
     if (this.loadingPromise) return this.loadingPromise;
-    this.loadingPromise = this.reload();
+    this.loadingPromise = this._doReload();
     try {
       return await this.loadingPromise;
     } finally {
@@ -33,8 +33,18 @@ class ExtLoaderCache {
     }
   }
 
-  /** Force a fresh loadExtensions call (e.g. after installing a new ext). */
+  /** Force a fresh loadExtensions call — deduplicates concurrent calls. */
   async reload(): Promise<any[]> {
+    if (this.loadingPromise) return this.loadingPromise;
+    this.loadingPromise = this._doReload();
+    try {
+      return await this.loadingPromise;
+    } finally {
+      this.loadingPromise = null;
+    }
+  }
+
+  private async _doReload(): Promise<any[]> {
     await jarRunner.ensureReady();
     const id = `loadext_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
     console.log(`[ext-loader] calling loadExtensions(folderPath=${extJarDir()}) id=${id}`);
@@ -42,20 +52,23 @@ class ExtLoaderCache {
 
     const resp = await waitForJarResponse(id);
     if (resp.status === 'error') {
-      this.loaded = false;
+      console.warn(`[ext-loader] loadExtensions failed: ${resp.error}`);
+      // Don't throw — return whatever we have cached so callers don't break.
+      if (this.sources.length > 0) return this.sources;
       throw new Error(resp.error ?? 'loadExtensions failed');
     }
     const data = resp.data;
     const list = Array.isArray(data) ? data : Array.isArray(data?.sources) ? data.sources : [];
     if (data && typeof data === 'object' && !Array.isArray(data) && data.error) {
-      this.loaded = false;
+      console.warn(`[ext-loader] loadExtensions error in data: ${data.error}`);
+      if (this.sources.length > 0) return this.sources;
       throw new Error(String(data.error));
     }
     this.sources = list;
     this.loaded = true;
     console.log(`[ext-loader] ✓ loaded ${list.length} Aniyomi sources`);
-    for (const s of list.slice(0, 20)) {
-      console.log(`[ext-loader]   - id=${s.id} name=${s.name} pkg=${s.pkgName} baseUrl=${s.baseUrl ?? '-'}`);
+    for (const s of list.slice(0, 5)) {
+      console.log(`[ext-loader]   - id=${s.id} name=${s.name} pkg=${s.pkgName} type=${s.type}`);
     }
     return list;
   }
@@ -81,7 +94,7 @@ class CsExtLoaderCache {
   async ensureLoaded(): Promise<any[]> {
     if (this.loaded) return this.sources;
     if (this.loadingPromise) return this.loadingPromise;
-    this.loadingPromise = this.reload();
+    this.loadingPromise = this._doReload();
     try {
       return await this.loadingPromise;
     } finally {
@@ -90,6 +103,16 @@ class CsExtLoaderCache {
   }
 
   async reload(): Promise<any[]> {
+    if (this.loadingPromise) return this.loadingPromise;
+    this.loadingPromise = this._doReload();
+    try {
+      return await this.loadingPromise;
+    } finally {
+      this.loadingPromise = null;
+    }
+  }
+
+  private async _doReload(): Promise<any[]> {
     await jarRunner.ensureReady();
     const id = `csloadext_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
     console.log(`[ext-loader] calling csLoadExtensions(folderPath=${csJarDir()}) id=${id}`);
@@ -97,19 +120,21 @@ class CsExtLoaderCache {
 
     const resp = await waitForJarResponse(id);
     if (resp.status === 'error') {
-      this.loaded = false;
+      console.warn(`[ext-loader] csLoadExtensions failed: ${resp.error}`);
+      if (this.sources.length > 0) return this.sources;
       throw new Error(resp.error ?? 'csLoadExtensions failed');
     }
     const data = resp.data;
     const list = Array.isArray(data) ? data : Array.isArray(data?.sources) ? data.sources : [];
     if (data && typeof data === 'object' && !Array.isArray(data) && data.error) {
-      this.loaded = false;
+      console.warn(`[ext-loader] csLoadExtensions error in data: ${data.error}`);
+      if (this.sources.length > 0) return this.sources;
       throw new Error(String(data.error));
     }
     this.sources = list;
     this.loaded = true;
     console.log(`[ext-loader] ✓ loaded ${list.length} CloudStream sources`);
-    for (const s of list.slice(0, 20)) {
+    for (const s of list.slice(0, 5)) {
       console.log(`[ext-loader]   - id=${s.id} name=${s.name} baseUrl=${s.baseUrl ?? '-'}`);
     }
     return list;
@@ -142,7 +167,7 @@ class KotatsuExtLoaderCache {
   async ensureLoaded(): Promise<any[]> {
     if (this.loaded) return this.sources;
     if (this.loadingPromise) return this.loadingPromise;
-    this.loadingPromise = this.reload();
+    this.loadingPromise = this._doReload();
     try {
       return await this.loadingPromise;
     } finally {
@@ -151,6 +176,16 @@ class KotatsuExtLoaderCache {
   }
 
   async reload(): Promise<any[]> {
+    if (this.loadingPromise) return this.loadingPromise;
+    this.loadingPromise = this._doReload();
+    try {
+      return await this.loadingPromise;
+    } finally {
+      this.loadingPromise = null;
+    }
+  }
+
+  private async _doReload(): Promise<any[]> {
     await jarRunner.ensureReady();
     const id = `kotatsuloadext_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
     console.log(`[ext-loader] calling kotatsuLoadExtensions(folderPath=${kotatsuJarDir()}) id=${id}`);
@@ -158,7 +193,8 @@ class KotatsuExtLoaderCache {
 
     const resp = await waitForJarResponse(id);
     if (resp.status === 'error') {
-      this.loaded = false;
+      console.warn(`[ext-loader] kotatsuLoadExtensions failed: ${resp.error}`);
+      if (this.sources.length > 0) return this.sources;
       throw new Error(resp.error ?? 'kotatsuLoadExtensions failed');
     }
     // Kotatsu may return a JSON string instead of a parsed list
@@ -168,13 +204,14 @@ class KotatsuExtLoaderCache {
     }
     const list = Array.isArray(data) ? data : Array.isArray(data?.sources) ? data.sources : [];
     if (data && typeof data === 'object' && !Array.isArray(data) && data.error) {
-      this.loaded = false;
+      console.warn(`[ext-loader] kotatsuLoadExtensions error in data: ${data.error}`);
+      if (this.sources.length > 0) return this.sources;
       throw new Error(String(data.error));
     }
     this.sources = list;
     this.loaded = true;
     console.log(`[ext-loader] ✓ loaded ${list.length} Kotatsu sources`);
-    for (const s of list.slice(0, 20)) {
+    for (const s of list.slice(0, 5)) {
       console.log(`[ext-loader]   - id=${s.id} name=${s.name} baseUrl=${s.baseUrl ?? '-'}`);
     }
     return list;
@@ -194,7 +231,7 @@ class KotatsuExtLoaderCache {
 /** Shared helper: wait for the JAR to send a final response for a given id.
  *  The JAR's final response has NO status field (just {id, data}) — mirrors
  *  Dart SidecarBridge._handleResponse where non-'partial' → complete. */
-function waitForJarResponse(id: string, timeoutMs = 60_000): Promise<any> {
+function waitForJarResponse(id: string, timeoutMs = 15_000): Promise<any> {
   return new Promise((resolve) => {
     let settled = false;
     const off = jarRunner.onLine((line) => {
