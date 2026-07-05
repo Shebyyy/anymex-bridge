@@ -11,7 +11,7 @@
  *     { id, status, data }
  *
  * The server proxies bytes through transparently for invoke/invokeStream,
- * but adds a `userId` envelope when receiving from iOS so it can enforce
+ * but adds a userId envelope when receiving from iOS so it can enforce
  * install-gating before forwarding to the JAR.
  *
  * Lifecycle:
@@ -20,7 +20,7 @@
  *   - hot-swapped by the auto-updater when a new JAR is downloaded
  */
 
-import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
+import { spawn, execSync, type ChildProcessWithoutNullStreams } from 'node:child_process';
 import { existsSync, mkdirSync, renameSync } from 'node:fs';
 import { join } from 'node:path';
 import { createInterface } from 'node:readline';
@@ -43,6 +43,31 @@ class JarRunner {
 
   /** Listeners for stderr log lines (used for "started" signal too). */
   private stderrListeners = new Set<(line: string) => void>();
+
+  constructor() {
+    // Kill any leftover JAR processes from a previous run (orphan protection).
+    this.killOrphanJars();
+  }
+
+  /** Kill any bridge.jar processes that aren't our child. */
+  private killOrphanJars(): void {
+    try {
+      const out = execSync('pgrep -f "bridge.jar"', { encoding: 'utf8' }).trim();
+      if (!out) return;
+      for (const pidStr of out.split('\n')) {
+        const pid = parseInt(pidStr, 10);
+        if (isNaN(pid) || pid === process.pid) continue;
+        // Don't kill our own child
+        if (this.proc && pid === this.proc.pid) continue;
+        try {
+          process.kill(pid, 'SIGKILL');
+          console.log(`[jar-runner] killed orphan JAR process: pid=${pid}`);
+        } catch {}
+      }
+    } catch {
+      // pgrep returns non-zero when no matches — that's fine.
+    }
+  }
 
   /** True if the JAR file is present on disk. */
   isJarPresent(): boolean {
@@ -101,7 +126,7 @@ class JarRunner {
     if (this.startLock) return;
     this.startLock = true;
     try {
-      this.kill();
+      await this.killAndWait();
       this.ready = false;
       this.readyPromise = null;
       await this.start();
@@ -110,13 +135,30 @@ class JarRunner {
     }
   }
 
-  private kill(): void {
-    if (this.proc) {
-      try {
-        this.proc.kill('SIGTERM');
-      } catch {}
-      this.proc = null;
-    }
+  /** Kill the current JAR process and wait for it to actually exit. */
+  private async killAndWait(): Promise<void> {
+    const oldProc = this.proc;
+    this.proc = null;
+    if (!oldProc) return;
+
+    const exitPromise = new Promise<void>((resolve) => {
+      const timeout = setTimeout(() => {
+        // Force kill if SIGTERM didn't work within 5s
+        try { oldProc.kill('SIGKILL'); } catch {}
+        resolve();
+      }, 5000);
+      oldProc.once('exit', () => {
+        clearTimeout(timeout);
+        resolve();
+      });
+    });
+
+    try {
+      oldProc.kill('SIGTERM');
+    } catch {}
+
+    await exitPromise;
+    console.log('[jar-runner] old JAR process exited');
   }
 
   private async start(): Promise<void> {
@@ -215,7 +257,11 @@ class JarRunner {
   }
 
   dispose(): void {
-    this.kill();
+    const oldProc = this.proc;
+    this.proc = null;
+    if (oldProc) {
+      try { oldProc.kill('SIGKILL'); } catch {}
+    }
     this.lineListeners.clear();
     this.stderrListeners.clear();
   }
