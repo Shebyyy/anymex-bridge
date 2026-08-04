@@ -1,0 +1,894 @@
+     1→     1→package com.anymex.runtimehost
+     2→     2→
+     3→     3→import android.content.Context
+     4→     4→import android.util.Log
+     5→     5→import com.anymex.runtimehost.aniyomi.AnimeSourceMethods
+     6→     6→import com.anymex.runtimehost.aniyomi.AniyomiExtensionManager
+     7→     7→import com.anymex.runtimehost.aniyomi.AniyomiSourceMethods
+     8→     8→import com.anymex.runtimehost.aniyomi.MangaSourceMethods
+     9→     9→import com.anymex.runtimehost.network.MangaImageProxy
+    10→    10→import java.net.URLEncoder
+    11→    11→
+    12→    12→import com.lagradost.cloudstream3.AcraApplication
+    13→    13→import com.lagradost.cloudstream3.APIHolder
+    14→    14→import com.lagradost.cloudstream3.CloudStreamApp
+    15→    15→import com.lagradost.cloudstream3.plugins.PluginManager
+    16→    16→import com.lagradost.cloudstream3.plugins.RepositoryManager
+    17→    17→import com.lagradost.cloudstream3.plugins.AppCompatActivityWrapper
+    18→    18→import com.lagradost.cloudstream3.utils.DataStore
+    19→    19→import eu.kanade.tachiyomi.animesource.model.Video
+    20→    20→import eu.kanade.tachiyomi.animesource.model.Track
+    21→    21→import eu.kanade.tachiyomi.animesource.model.TimeStamp
+    22→    22→import eu.kanade.tachiyomi.animesource.model.SAnime
+    23→    23→import eu.kanade.tachiyomi.animesource.model.SEpisode
+    24→    24→import eu.kanade.tachiyomi.animesource.online.AnimeHttpSource
+    25→    25→import eu.kanade.tachiyomi.network.NetworkHelper
+    26→    26→import eu.kanade.tachiyomi.source.model.Page
+    27→    27→import eu.kanade.tachiyomi.source.model.SChapter
+    28→    28→import eu.kanade.tachiyomi.source.online.HttpSource
+    29→    29→import kotlinx.coroutines.CoroutineScope
+    30→    30→import kotlinx.coroutines.Dispatchers
+    31→    31→import kotlinx.coroutines.Job
+    32→    32→import kotlinx.coroutines.SupervisorJob
+    33→    33→import kotlinx.coroutines.async
+    34→    34→import kotlinx.coroutines.delay
+    35→    35→import kotlinx.coroutines.launch
+    36→    36→import kotlinx.coroutines.runBlocking
+    37→    37→import kotlinx.coroutines.CancellationException
+    38→    38→import kotlinx.coroutines.awaitAll
+    39→    39→import kotlinx.serialization.json.Json
+    40→    40→import uy.kohesive.injekt.Injekt
+    41→    41→import uy.kohesive.injekt.api.addSingletonFactory
+    42→    42→import uy.kohesive.injekt.api.get
+    43→    43→import java.io.File
+    44→    44→import java.security.MessageDigest
+    45→    45→import eu.kanade.tachiyomi.network.normalizeUrl
+    46→    46→
+    47→    47→
+    48→    48→@Suppress("unused")
+    49→    49→object RuntimeBridge {
+    50→    50→
+    51→    51→    private const val TAG = "RuntimeBridge"
+    52→    52→    private var extensionManager: AniyomiExtensionManager? = null
+    53→    53→    private var initialized = false
+    54→    54→
+    55→    55→    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    56→    56→    private val csPathRegistry = mutableMapOf<String, String>() 
+    57→    57→    private val csMetadataRegistry = mutableMapOf<String, ProviderMetadata>() 
+    58→    58→    private val aniyomiPathRegistry = mutableMapOf<String, String>() 
+    59→    59→    private val aniyomiIsAnimeRegistry = mutableMapOf<String, Boolean>() 
+    60→    60→    private val activeRequests = mutableMapOf<String, Job>() 
+    61→    61→
+    62→    62→    data class ProviderMetadata(
+    63→    63→        val id: String,
+    64→    64→        val name: String,
+    65→    65→        val mainUrl: String,
+    66→    66→        val lang: String,
+    67→    67→        val sourcePlugin: String?,
+    68→    68→        val iconUrl: String?,
+    69→    69→        val internalName: String?,
+    70→    70→        val hasSettings: Boolean = false
+    71→    71→    )
+    72→    72→
+    73→    73→    @JvmOverloads
+    74→    74→    fun initialize(context: Context, settingsMap: Map<String, Any?>? = null) {
+    75→    75→        if (initialized) return
+    76→    76→
+    77→    77→        Log.i(TAG, "Initializing Runtime Host - Version: 1.0.6")
+    78→    78→
+    79→    79→        try {
+    80→    80→            Injekt.addSingletonFactory<android.app.Application> {
+    81→    81→                context.applicationContext as android.app.Application
+    82→    82→            }
+    83→    83→            Injekt.addSingletonFactory { NetworkHelper(context.applicationContext) }
+    84→    84→            Injekt.addSingletonFactory { Injekt.get<NetworkHelper>().client }
+    85→    85→            Injekt.addSingletonFactory {
+    86→    86→                Json {
+    87→    87→                    ignoreUnknownKeys = true
+    88→    88→                    explicitNulls = false
+    89→    89→                }
+    90→    90→            }
+    91→    91→
+    92→    92→            DataStore.init(context.applicationContext)
+    93→    93→            AcraApplication.context = context.applicationContext
+    94→    94→            CloudStreamApp.context = context.applicationContext
+    95→    95→
+    96→    96→            extensionManager = AniyomiExtensionManager(context.applicationContext)
+    97→    97→            Injekt.addSingletonFactory<AniyomiExtensionManager> { extensionManager!! }
+    98→    98→
+    99→    99→            val aniyomiExtensionsPath = settingsMap?.get("aniyomiExtensionsPath") as? String
+   100→   100→            if (aniyomiExtensionsPath != null) {
+   101→   101→                Log.i(TAG, "Proactive Loading: Starting Aniyomi extension scan at $aniyomiExtensionsPath")
+   102→   102→                scope.launch {
+   103→   103→                    getInstalledAnimeExtensions(context.applicationContext, aniyomiExtensionsPath)
+   104→   104→                    getInstalledMangaExtensions(context.applicationContext)
+   105→   105→                    Log.i(TAG, "Proactive Loading: Aniyomi background scan completed")
+   106→   106→                }
+   107→   107→            }
+   108→   108→        } catch (e: Throwable) {
+   109→   109→            Log.e(TAG, "Init Step 2 Failed (Skipping Critical Setup): ${e.message}")
+   110→   110→        }
+   111→   111→
+   112→   112→        Log.i(TAG, "Runtime Host Initialized successfully")
+   113→   113→        try {
+   114→   114→            val cacheDir = File(context.cacheDir, "manga_pages_cache")
+   115→   115→            if (cacheDir.exists()) {
+   116→   116→                cacheDir.deleteRecursively()
+   117→   117→            }
+   118→   118→        } catch (_: Exception) {}
+   119→   119→        try {
+   120→   120→            MangaImageProxy.start()
+   121→   121→        } catch (e: Exception) {
+   122→   122→            Log.e(TAG, "Failed to start MangaImageProxy: ${e.message}")
+   123→   123→        }
+   124→   124→        initialized = true
+   125→   125→    }
+   126→   126→
+   127→   127→    fun cancelRequest(token: String): Boolean {
+   128→   128→        val job = activeRequests[token] ?: return false
+   129→   129→        Log.i(TAG, "Cancelling network request for token: $token")
+   130→   130→        job.cancel()
+   131→   131→        activeRequests.remove(token)
+   132→   132→        return true
+   133→   133→    }
+   134→   134→
+   135→   135→    fun shutdown() {
+   136→   136→        Log.i(TAG, "Shutting down Runtime Host...")
+   137→   137→        try {
+   138→   138→            initialized = false
+   139→   139→            activeRequests.values.forEach { it.cancel() }
+   140→   140→            activeRequests.clear()
+   141→   141→
+   142→   142→            MangaImageProxy.stop()
+   143→   143→
+   144→   144→            csPathRegistry.clear()
+   145→   145→            csMetadataRegistry.clear()
+   146→   146→            aniyomiPathRegistry.clear()
+   147→   147→            aniyomiIsAnimeRegistry.clear()
+   148→   148→            Log.i(TAG, "Runtime Host shutdown complete")
+   149→   149→        } catch (e: Exception) {
+   150→   150→            Log.e(TAG, "Error during shutdown: ${e.message}")
+   151→   151→        }
+   152→   152→    }
+   153→   153→
+   154→   154→    fun getInstalledAnimeExtensions(context: Context, path: String? = null): List<Map<String, Any?>> {
+   155→   155→        val extensions = extensionManager(context).fetchInstalledAnimeExtensions(path)
+   156→   156→        
+   157→   157→        extensions.forEach { ext ->
+   158→   158→            ext.sources.forEach { source ->
+   159→   159→                aniyomiPathRegistry[source.id.toString()] = path ?: ""
+   160→   160→                aniyomiIsAnimeRegistry[source.id.toString()] = true
+   161→   161→            }
+   162→   162→        }
+   163→   163→
+   164→   164→        return extensions.flatMap { ext ->
+   165→   165→            ext.sources.map { source ->
+   166→   166→                val baseUrl = (source as? AnimeHttpSource)?.baseUrl.orEmpty()
+   167→   167→                mapOf(
+   168→   168→                    "id" to source.id.toString(),
+   169→   169→                    "name" to ext.name,
+   170→   170→                    "baseUrl" to baseUrl,
+   171→   171→                    "lang" to source.lang,
+   172→   172→                    "isNsfw" to ext.isNsfw,
+   173→   173→                    "iconUrl" to ext.iconUrl,
+   174→   174→                    "version" to ext.versionName,
+   175→   175→                    "pkgName" to ext.pkgName,
+   176→   176→                    "itemType" to 1,
+   177→   177→                    "hasUpdate" to ext.hasUpdate,
+   178→   178→                    "isObsolete" to ext.isObsolete,
+   179→   179→                    "isShared" to ext.isShared,
+   180→   180→                )
+   181→   181→            }
+   182→   182→        }
+   183→   183→    }
+   184→   184→
+   185→   185→    fun getInstalledMangaExtensions(context: Context, path: String? = null): List<Map<String, Any?>> {
+   186→   186→        val extensions = extensionManager(context).fetchInstalledMangaExtensions(path)
+   187→   187→        
+   188→   188→        extensions.forEach { ext ->
+   189→   189→            ext.sources.forEach { source ->
+   190→   190→                aniyomiPathRegistry[source.id.toString()] = path ?: "" 
+   191→   191→                aniyomiIsAnimeRegistry[source.id.toString()] = false
+   192→   192→            }
+   193→   193→        }
+   194→   194→
+   195→   195→        return extensions.flatMap { ext ->
+   196→   196→            ext.sources.map { source ->
+   197→   197→                val baseUrl = (source as? HttpSource)?.baseUrl.orEmpty()
+   198→   198→                mapOf(
+   199→   199→                    "id" to source.id.toString(),
+   200→   200→                    "name" to ext.name,
+   201→   201→                    "baseUrl" to baseUrl,
+   202→   202→                    "lang" to source.lang,
+   203→   203→                    "isNsfw" to ext.isNsfw,
+   204→   204→                    "iconUrl" to ext.iconUrl,
+   205→   205→                    "version" to ext.versionName,
+   206→   206→                    "pkgName" to ext.pkgName,
+   207→   207→                    "itemType" to 0,
+   208→   208→                    "hasUpdate" to ext.hasUpdate,
+   209→   209→                    "isObsolete" to ext.isObsolete,
+   210→   210→                )
+   211→   211→            }
+   212→   212→        }
+   213→   213→    }
+   214→   214→
+   215→   215→    @JvmStatic
+   216→   216→    @JvmOverloads
+   217→   217→    fun aniyomiGetPopular(
+   218→   218→        context: Context,
+   219→   219→        sourceId: String,
+   220→   220→        isAnime: Boolean,
+   221→   221→        page: Int,
+   222→   222→        parameters: Map<String, Any?>? = null,
+   223→   223→    ): Map<String, Any?> {
+   224→   224→        val token = parameters?.get("token") as? String
+   225→   225→        val job = scope.async {
+   226→   226→            val m = media(context, sourceId, isAnime)
+   227→   227→            m.parameters = parameters
+   228→   228→            val res = m.getPopular(page)
+   229→   229→            mapOf("list" to res.animes.map { it.toMap() }, "hasNextPage" to res.hasNextPage)
+   230→   230→        }
+   231→   231→        if (token != null) activeRequests[token] = job
+   232→   232→        return try {
+   233→   233→            runBlocking { job.await() }
+   234→   234→        } finally {
+   235→   235→            if (token != null) activeRequests.remove(token)
+   236→   236→        }
+   237→   237→    }
+   238→   238→
+   239→   239→    @JvmStatic
+   240→   240→    @JvmOverloads
+   241→   241→    fun aniyomiGetLatestUpdates(
+   242→   242→        context: Context,
+   243→   243→        sourceId: String,
+   244→   244→        isAnime: Boolean,
+   245→   245→        page: Int,
+   246→   246→        parameters: Map<String, Any?>? = null,
+   247→   247→    ): Map<String, Any?> {
+   248→   248→        val token = parameters?.get("token") as? String
+   249→   249→        val job = scope.async {
+   250→   250→            val m = media(context, sourceId, isAnime)
+   251→   251→            m.parameters = parameters
+   252→   252→            val res = m.getLatestUpdates(page)
+   253→   253→            mapOf("list" to res.animes.map { it.toMap() }, "hasNextPage" to res.hasNextPage)
+   254→   254→        }
+   255→   255→        if (token != null) activeRequests[token] = job
+   256→   256→        return try {
+   257→   257→            runBlocking { job.await() }
+   258→   258→        } finally {
+   259→   259→            if (token != null) activeRequests.remove(token)
+   260→   260→        }
+   261→   261→    }
+   262→   262→
+   263→   263→    @JvmStatic
+   264→   264→    @JvmOverloads
+   265→   265→    fun aniyomiSearch(
+   266→   266→        context: Context,
+   267→   267→        sourceId: String,
+   268→   268→        isAnime: Boolean,
+   269→   269→        query: String,
+   270→   270→        page: Int,
+   271→   271→        parameters: Map<String, Any?>? = null,
+   272→   272→    ): Map<String, Any?> {
+   273→   273→        val token = parameters?.get("token") as? String
+   274→   274→        val job = scope.async {
+   275→   275→            val m = media(context, sourceId, isAnime)
+   276→   276→            m.parameters = parameters
+   277→   277→            val res = m.getSearchResults(query, page)
+   278→   278→            mapOf("list" to res.animes.map { it.toMap() }, "hasNextPage" to res.hasNextPage)
+   279→   279→        }
+   280→   280→        if (token != null) activeRequests[token] = job
+   281→   281→        return try {
+   282→   282→            runBlocking { job.await() }
+   283→   283→        } finally {
+   284→   284→            if (token != null) activeRequests.remove(token)
+   285→   285→        }
+   286→   286→    }
+   287→   287→
+   288→   288→    @JvmStatic
+   289→   289→    @JvmOverloads
+   290→   290→    fun aniyomiGetDetail(
+   291→   291→        context: Context,
+   292→   292→        sourceId: String,
+   293→   293→        isAnime: Boolean,
+   294→   294→        mediaMap: Map<String, Any?>,
+   295→   295→        parameters: Map<String, Any?>? = null,
+   296→   296→    ): Map<String, Any?> {
+   297→   297→        val token = parameters?.get("token") as? String
+   298→   298→        val job = scope.async {
+   299→   299→            val anime = SAnime.create().apply {
+   300→   300→                title = mediaMap["title"] as? String ?: ""
+   301→   301→                url = mediaMap["url"] as? String ?: ""
+   302→   302→                thumbnail_url = (mediaMap["thumbnail_url"] as? String)?.takeIf { it.isNotBlank() }?.normalizeUrl()
+   303→   303→                description = mediaMap["description"] as? String
+   304→   304→                artist = mediaMap["artist"] as? String
+   305→   305→                author = mediaMap["author"] as? String
+   306→   306→                genre = mediaMap["genre"] as? String
+   307→   307→            }
+   308→   308→            val m = media(context, sourceId, isAnime)
+   309→   309→            m.parameters = parameters
+   310→   310→            
+   311→   311→            val details = m.getDetails(anime)
+   312→   312→            val eps = if (isAnime) m.getEpisodeList(anime) else m.getChapterList(anime)
+   313→   313→
+   314→   314→            mapOf(
+   315→   315→                "title" to anime.title,
+   316→   316→                "url" to anime.url,
+   317→   317→                "cover" to anime.thumbnail_url,
+   318→   318→                "artist" to details.artist,
+   319→   319→                "author" to details.author,
+   320→   320→                "description" to details.description,
+   321→   321→                "genre" to details.getGenres(),
+   322→   322→                "status" to details.status,
+   323→   323→                "episodes" to eps.map {
+   324→   324→                    val parsed = parseEpisodeInfoFromName(it.name)
+   325→   325→                    val seasonNum = parsed.second
+   326→   326→                    val epNum = if (parsed.first >= 0f) parsed.first else it.episode_number
+   327→   327→                    
+   328→   328→                    mapOf(
+   329→   329→                        "name" to it.name,
+   330→   330→                        "url" to it.url,
+   331→   331→                        "date_upload" to it.date_upload,
+   332→   332→                        "episode_number" to epNum,
+   333→   333→                        "season" to seasonNum,
+   334→   334→                        "scanlator" to it.scanlator
+   335→   335→                    )
+   336→   336→                }
+   337→   337→            )
+   338→   338→        }
+   339→   339→        if (token != null) activeRequests[token] = job
+   340→   340→        return try {
+   341→   341→            runBlocking { job.await() }
+   342→   342→        } finally {
+   343→   343→            if (token != null) activeRequests.remove(token)
+   344→   344→        }
+   345→   345→    }
+   346→   346→
+   347→   347→    @JvmStatic
+   348→   348→    @JvmOverloads
+   349→   349→    fun aniyomiGetVideoList(
+   350→   350→        context: Context,
+   351→   351→        sourceId: String,
+   352→   352→        isAnime: Boolean,
+   353→   353→        episodeMap: Map<String, Any?>,
+   354→   354→        parameters: Map<String, Any?>? = null,
+   355→   355→    ): List<Map<String, Any?>> {
+   356→   356→        val token = parameters?.get("token") as? String
+   357→   357→        val job = scope.async {
+   358→   358→            val ep = SEpisode.create().apply {
+   359→   359→                name = episodeMap["name"] as? String ?: ""
+   360→   360→                url = episodeMap["url"] as? String ?: ""
+   361→   361→                episode_number = (episodeMap["episode_number"] as? Number)?.toFloat() ?: 0f
+   362→   362→                scanlator = episodeMap["scanlator"] as? String
+   363→   363→            }
+   364→   364→            val m = media(context, sourceId, isAnime)
+   365→   365→            m.parameters = parameters
+   366→   366→            m.getVideoList(ep).map { videoToMap(it) }
+   367→   367→        }
+   368→   368→        if (token != null) activeRequests[token] = job
+   369→   369→        return try {
+   370→   370→            runBlocking { job.await() }
+   371→   371→        } finally {
+   372→   372→            if (token != null) activeRequests.remove(token)
+   373→   373→        }
+   374→   374→    }
+   375→   375→
+   376→   376→
+   377→   377→    @JvmStatic
+   378→   378→    @JvmOverloads
+   379→   379→    fun aniyomiGetPageList(
+   380→   380→        context: Context,
+   381→   381→        sourceId: String,
+   382→   382→        isAnime: Boolean,
+   383→   383→        chapterMap: Map<String, Any?>,
+   384→   384→        parameters: Map<String, Any?>? = null,
+   385→   385→    ): List<Map<String, Any?>> {
+   386→   386→        val token = parameters?.get("token") as? String
+   387→   387→        val job = scope.async {
+   388→   388→            val chapter = SChapter.create().apply {
+   389→   389→                name = chapterMap["name"] as? String ?: ""
+   390→   390→                url = chapterMap["url"] as? String ?: ""
+   391→   391→            }
+   392→   392→            val m = media(context, sourceId, isAnime)
+   393→   393→            m.parameters = parameters
+   394→   394→            
+   395→   395→            val pages = m.getPageList(chapter)
+   396→   396→            val httpSource = m.getHttpSource() as? HttpSource
+   397→   397→            
+   398→   398→            if (httpSource != null && MangaImageProxy.port > 0) {
+   399→   399→                val proxyPort = MangaImageProxy.port
+   400→   400→                pages.map { page ->
+   401→   401→                    val originalUrl = page.imageUrl ?: ""
+   402→   402→                    val proxyUrl = if (originalUrl.isNotEmpty() || page.url.isNotEmpty()) {
+   403→   403→                        "http://127.0.0.1:$proxyPort/image?sourceId=${URLEncoder.encode(sourceId, "UTF-8")}&imageUrl=${URLEncoder.encode(originalUrl, "UTF-8")}&pageUrl=${URLEncoder.encode(page.url ?: "", "UTF-8")}&pageNumber=${page.index}"
+   404→   404→                    } else {
+   405→   405→                        originalUrl
+   406→   406→                    }
+   407→   407→                    mapOf("url" to proxyUrl, "headers" to emptyMap<String, String>())
+   408→   408→                }
+   409→   409→            } else {
+   410→   410→                pages.map { page ->
+   411→   411→                    val imageUrl = page.imageUrl ?: ""
+   412→   412→                    mapOf("url" to imageUrl, "headers" to emptyMap<String, String>())
+   413→   413→                }
+   414→   414→            }
+   415→   415→        }
+   416→   416→        if (token != null) activeRequests[token] = job
+   417→   417→        return try {
+   418→   418→            runBlocking { job.await() }
+   419→   419→        } finally {
+   420→   420→            if (token != null) activeRequests.remove(token)
+   421→   421→        }
+   422→   422→    }
+   423→   423→
+   424→   424→    private data class PrefHandlers(
+   425→   425→        val pref: androidx.preference.Preference,
+   426→   426→        val click: androidx.preference.Preference.OnPreferenceClickListener?,
+   427→   427→        val change: androidx.preference.Preference.OnPreferenceChangeListener?
+   428→   428→    )
+   429→   429→
+   430→   430→    private val sourcePreferences = mutableMapOf<String, MutableMap<String, PrefHandlers>>()
+   431→   431→
+   432→   432→    @android.annotation.SuppressLint("RestrictedApi")
+   433→   433→    fun aniyomiGetPreference(
+   434→   434→        context: Context,
+   435→   435→        sourceId: String,
+   436→   436→        isAnime: Boolean,
+   437→   437→    ): List<Map<String, Any?>> = runBlocking {
+   438→   438→        sourcePreferences.remove(sourceId)
+   439→   439→        
+   440→   440→        val prefManager = androidx.preference.PreferenceManager(context)
+   441→   441→        prefManager.sharedPreferencesName = "source_$sourceId"
+   442→   442→        
+   443→   443→        val screen = prefManager.createPreferenceScreen(context)
+   444→   444→        
+   445→   445→        try {
+   446→   446→            media(context, sourceId, isAnime).setupPreferenceScreen(screen)
+   447→   447→        } catch (e: com.anymex.runtimehost.aniyomi.NoPreferenceScreenException) {
+   448→   448→            return@runBlocking emptyList<Map<String, Any?>>()
+   449→   449→        }
+   450→   450→
+   451→   451→        val list = mutableListOf<Map<String, Any?>>()
+   452→   452→        val store = sourcePreferences.getOrPut(sourceId) { mutableMapOf() }
+   453→   453→
+   454→   454→        fun walk(group: androidx.preference.PreferenceGroup) {
+   455→   455→            for (i in 0 until group.preferenceCount) {
+   456→   456→                val p = group.getPreference(i)
+   457→   457→                store[p.key] = PrefHandlers(p, p.onPreferenceClickListener, p.onPreferenceChangeListener)
+   458→   458→
+   459→   459→                val map = mutableMapOf(
+   460→   460→                    "key" to p.key,
+   461→   461→                    "title" to p.title?.toString(),
+   462→   462→                    "summary" to p.summary?.toString(),
+   463→   463→                    "enabled" to p.isEnabled,
+   464→   464→                    "type" to when (p) {
+   465→   465→                        is androidx.preference.ListPreference -> "list"
+   466→   466→                        is androidx.preference.MultiSelectListPreference -> "multi_select"
+   467→   467→                        is androidx.preference.SwitchPreferenceCompat -> "switch"
+   468→   468→                        is androidx.preference.EditTextPreference -> "text"
+   469→   469→                        is androidx.preference.CheckBoxPreference -> "checkbox"
+   470→   470→                        else -> "other"
+   471→   471→                    },
+   472→   472→                    "value" to when (p) {
+   473→   473→                        is androidx.preference.ListPreference -> p.value
+   474→   474→                        is androidx.preference.MultiSelectListPreference -> p.values.toList()
+   475→   475→                        is androidx.preference.SwitchPreferenceCompat -> p.isChecked
+   476→   476→                        is androidx.preference.EditTextPreference -> p.text
+   477→   477→                        is androidx.preference.CheckBoxPreference -> p.isChecked
+   478→   478→                        else -> null
+   479→   479→                    }
+   480→   480→                )
+   481→   481→
+   482→   482→                if (p is androidx.preference.ListPreference) {
+   483→   483→                    map["entries"] = p.entries?.map { it.toString() }
+   484→   484→                    map["entryValues"] = p.entryValues?.map { it.toString() }
+   485→   485→                } else if (p is androidx.preference.MultiSelectListPreference) {
+   486→   486→                    map["entries"] = p.entries?.map { it.toString() }
+   487→   487→                    map["entryValues"] = p.entryValues?.map { it.toString() }
+   488→   488→                }
+   489→   489→
+   490→   490→                list += map
+   491→   491→                if (p is androidx.preference.PreferenceCategory) walk(p)
+   492→   492→            }
+   493→   493→        }
+   494→   494→
+   495→   495→        walk(screen)
+   496→   496→        list
+   497→   497→    }
+   498→   498→
+   499→   499→    fun aniyomiSavePreference(
+   500→   500→        context: Context,
+   501→   501→        sourceId: String,
+   502→   502→        key: String,
+   503→   503→        action: String?,
+   504→   504→        value: Any?,
+   505→   505→    ): Boolean = runBlocking(Dispatchers.Main) {
+   506→   506→        val isAnime = aniyomiIsAnimeRegistry[sourceId] ?: true
+   507→   507→        val handler = sourcePreferences[sourceId]?.get(key) ?: return@runBlocking false
+   508→   508→        val pref = handler.pref
+   509→   509→        
+   510→   510→        val actualAction = action ?: "change"
+   511→   511→
+   512→   512→        val actualValue = if (pref is androidx.preference.MultiSelectListPreference && value is List<*>) {
+   513→   513→            value.filterIsInstance<String>().toSet()
+   514→   514→        } else {
+   515→   515→            value
+   516→   516→        }
+   517→   517→
+   518→   518→        if (actualAction == "click") {
+   519→   519→            handler.click?.onPreferenceClick(pref)
+   520→   520→        } else {
+   521→   521→            handler.change?.onPreferenceChange(pref, actualValue)
+   522→   522→        }
+   523→   523→
+   524→   524→        val prefs = context.getSharedPreferences("source_$sourceId", Context.MODE_PRIVATE)
+   525→   525→        val editor = prefs.edit()
+   526→   526→
+   527→   527→        when (pref) {
+   528→   528→            is androidx.preference.SwitchPreferenceCompat -> {
+   529→   529→                val b = value as Boolean
+   530→   530→                pref.isChecked = b
+   531→   531→                editor.putBoolean(key, b)
+   532→   532→            }
+   533→   533→            is androidx.preference.ListPreference -> {
+   534→   534→                val s = value as String
+   535→   535→                pref.value = s
+   536→   536→                editor.putString(key, s)
+   537→   537→            }
+   538→   538→            is androidx.preference.EditTextPreference -> {
+   539→   539→                val s = value as String
+   540→   540→                pref.text = s
+   541→   541→                editor.putString(key, s)
+   542→   542→            }
+   543→   543→            is androidx.preference.MultiSelectListPreference -> {
+   544→   544→                val newSet = when (value) {
+   545→   545→                    is List<*> -> value.filterIsInstance<String>().toSet()
+   546→   546→                    is Set<*> -> value.filterIsInstance<String>().toSet()
+   547→   547→                    else -> emptySet()
+   548→   548→                }
+   549→   549→                pref.values = newSet.toMutableSet()
+   550→   550→                editor.putStringSet(key, newSet)
+   551→   551→            }
+   552→   552→            is androidx.preference.CheckBoxPreference -> {
+   553→   553→                val b = value as Boolean
+   554→   554→                pref.isChecked = b
+   555→   555→                editor.putBoolean(key, b)
+   556→   556→            }
+   557→   557→        }
+   558→   558→        editor.apply()
+   559→   559→
+   560→   560→        true
+   561→   561→    }
+   562→   562→
+   563→   563→    fun csLoadPlugin(context: Context, path: String): Boolean {
+   564→   564→        val file = File(path)
+   565→   565→        if (!file.exists()) {
+   566→   566→            Log.e(TAG, "Plugin file not found: $path")
+   567→   567→            return false
+   568→   568→        }
+   569→   569→        
+   570→   570→        return runBlocking {
+   571→   571→            val success = PluginManager.loadPlugin(context, file)
+   572→   572→            if (success) {
+   573→   573→                val pluginData = PluginManager.getPluginsOnline()
+   574→   574→                APIHolder.apis.forEach { provider ->
+   575→   575→                    if (provider.sourcePlugin == path || provider.sourcePlugin?.contains(file.name) == true) {
+   576→   576→                        val data = pluginData.firstOrNull { it.filePath == provider.sourcePlugin }
+   577→   577→                        val pluginInstance = PluginManager.plugins[provider.sourcePlugin]
+   578→   578→                        val hasSettings = (pluginInstance as? com.lagradost.cloudstream3.plugins.Plugin)?.openSettings != null
+   579→   579→                        csPathRegistry[provider.name] = path
+   580→   580→                        csMetadataRegistry[provider.name] = ProviderMetadata(
+   581→   581→                            id = provider.name,
+   582→   582→                            name = provider.name,
+   583→   583→                            mainUrl = provider.mainUrl,
+   584→   584→                            lang = provider.lang,
+   585→   585→                            sourcePlugin = provider.sourcePlugin,
+   586→   586→                            iconUrl = data?.iconUrl,
+   587→   587→                            internalName = data?.internalName,
+   588→   588→                            hasSettings = hasSettings
+   589→   589→                        )
+   590→   590→                        Log.d(TAG, "Registered CloudStream Provider: ${provider.name}")
+   591→   591→                    }
+   592→   592→                }
+   593→   593→            }
+   594→   594→            success
+   595→   595→        }
+   596→   596→    }
+   597→   597→
+   598→   598→    fun csUnloadPlugin(apiName: String): Boolean {
+   599→   599→        if (apiName.isBlank()) return false
+   600→   600→        
+   601→   601→        val provider = APIHolder.apis.find { it.name.equals(apiName, ignoreCase = true) }
+   602→   602→        val internalName = provider?.sourcePlugin ?: csMetadataRegistry[apiName]?.mainUrl ?: apiName
+   603→   603→        
+   604→   604→        Log.i(TAG, "Attempting to unload plugin: $apiName (Internal Path/ID: $internalName)")
+   605→   605→
+   606→   606→        val removedCount = APIHolder.apis.count { 
+   607→   607→            it.name.equals(apiName, ignoreCase = true) || 
+   608→   608→            (it.sourcePlugin != null && it.sourcePlugin!!.endsWith(internalName, ignoreCase = true)) 
+   609→   609→        }
+   610→   610→
+   611→   611→        APIHolder.apis.removeIf { 
+   612→   612→            it.name.equals(apiName, ignoreCase = true) || 
+   613→   613→            (it.sourcePlugin != null && it.sourcePlugin!!.endsWith(internalName, ignoreCase = true)) 
+   614→   614→        }
+   615→   615→
+   616→   616→        csMetadataRegistry.remove(apiName)
+   617→   617→        
+   618→   618→        val fileName = internalName.substringAfterLast("/")
+   619→   619→        if (fileName.length > 3) {
+   620→   620→            val extraRemoved = APIHolder.apis.count { it.sourcePlugin?.endsWith(fileName, ignoreCase = true) == true }
+   621→   621→            APIHolder.apis.removeIf { it.sourcePlugin?.endsWith(fileName, ignoreCase = true) == true }
+   622→   622→            Log.d(TAG, "Extra removal check for '$fileName' hit $extraRemoved providers")
+   623→   623→        }
+   624→   624→
+   625→   625→        PluginManager.unloadPlugin(internalName)
+   626→   626→        Log.i(TAG, "Unloaded $removedCount providers for plugin: $apiName")
+   627→   627→        return true
+   628→   628→    }
+   629→   629→
+   630→   630→    fun csGetRegisteredProviders(): List<Map<String, Any?>> {
+   631→   631→        return csMetadataRegistry.values.map { provider ->
+   632→   632→            mapOf(
+   633→   633→                "id" to provider.name,
+   634→   634→                "name" to provider.name,
+   635→   635→                "url" to provider.mainUrl,
+   636→   636→                "language" to provider.lang,
+   637→   637→                "plugin" to (provider.sourcePlugin ?: ""),
+   638→   638→                "iconUrl" to (provider.iconUrl ?: ""),
+   639→   639→                "internalName" to (provider.internalName ?: provider.name),
+   640→   640→                "itemType" to 1,
+   641→   641→                "hasSettings" to provider.hasSettings,
+   642→   642→            )
+   643→   643→        }
+   644→   644→    }
+   645→   645→
+   646→   646→    fun csOpenSettings(context: Context, pluginName: String): Boolean {
+   647→   647→        val meta = csMetadataRegistry[pluginName] ?: return false
+   648→   648→        val pluginInstance = PluginManager.plugins[meta.sourcePlugin]
+   649→   649→        val plugin = pluginInstance as? com.lagradost.cloudstream3.plugins.Plugin ?: return false
+   650→   650→        val openSettingsFn = plugin.openSettings ?: return false
+   651→   651→        val activityContext = if (context is androidx.appcompat.app.AppCompatActivity) {
+   652→   652→            context
+   653→   653→        } else {
+   654→   654→            AppCompatActivityWrapper(context)
+   655→   655→        }
+   656→   656→        openSettingsFn(activityContext)
+   657→   657→        return true
+   658→   658→    }
+   659→   659→
+   660→   660→    @JvmStatic
+   661→   661→    @JvmOverloads
+   662→   662→    fun csSearch(
+   663→   663→        context: Context,
+   664→   664→        query: String,
+   665→   665→        apiName: String?,
+   666→   666→        page: Int,
+   667→   667→        parameters: Map<String, Any?>? = null,
+   668→   668→    ): Map<String, Any?> {
+   669→   669→        val token = parameters?.get("token") as? String
+   670→   670→        val job = scope.async {
+   671→   671→            if (apiName != null) {
+   672→   672→                val provider = APIHolder.apis.find { it.name.equals(apiName, ignoreCase = true) }
+   673→   673→                    ?: return@async mapOf("list" to emptyList<Any>(), "hasNextPage" to false)
+   674→   674→                com.anymex.runtimehost.cloudstream.CloudStreamSourceMethods(provider).search(query, page)
+   675→   675→            } else {
+   676→   676→                val allItems = APIHolder.apis.flatMap { provider ->
+   677→   677→                    @Suppress("UNCHECKED_CAST")
+   678→   678→                    com.anymex.runtimehost.cloudstream.CloudStreamSourceMethods(provider)
+   679→   679→                        .search(query, page)["list"] as? List<Map<String, Any?>> ?: emptyList()
+   680→   680→                }
+   681→   681→                mapOf("list" to allItems, "hasNextPage" to false)
+   682→   682→            }
+   683→   683→        }
+   684→   684→        if (token != null) activeRequests[token] = job
+   685→   685→        return try {
+   686→   686→            runBlocking { job.await() }
+   687→   687→        } finally {
+   688→   688→            if (token != null) activeRequests.remove(token)
+   689→   689→        }
+   690→   690→    }
+   691→   691→
+   692→   692→    @JvmStatic
+   693→   693→    @JvmOverloads
+   694→   694→    fun csGetDetail(
+   695→   695→        context: Context,
+   696→   696→        apiName: String,
+   697→   697→        url: String,
+   698→   698→        parameters: Map<String, Any?>? = null,
+   699→   699→    ): Map<String, Any?> {
+   700→   700→        val token = parameters?.get("token") as? String
+   701→   701→        val job = scope.async {
+   702→   702→            try {
+   703→   703→                val provider = APIHolder.apis.find { it.name.equals(apiName, ignoreCase = true) }
+   704→   704→                    ?: return@async mapOf("title" to null, "url" to url, "error" to "Provider not found")
+   705→   705→                com.anymex.runtimehost.cloudstream.CloudStreamSourceMethods(provider).getDetails(url) ?: emptyMap()
+   706→   706→            } catch (e: Exception) {
+   707→   707→                Log.e(TAG, "csGetDetail failed: ${e.message}")
+   708→   708→                mapOf("title" to null, "url" to url, "error" to e.message)
+   709→   709→            }
+   710→   710→        }
+   711→   711→        if (token != null) activeRequests[token] = job
+   712→   712→        return try {
+   713→   713→            runBlocking { job.await() }
+   714→   714→        } finally {
+   715→   715→            if (token != null) activeRequests.remove(token)
+   716→   716→        }
+   717→   717→    }
+   718→   718→
+   719→   719→    @JvmStatic
+   720→   720→    @JvmOverloads
+   721→   721→    fun csGetVideoList(
+   722→   722→        context: Context,
+   723→   723→        apiName: String,
+   724→   724→        url: String,
+   725→   725→        parameters: Map<String, Any?>? = null,
+   726→   726→    ): List<Map<String, Any?>> {
+   727→   727→        val token = parameters?.get("token") as? String
+   728→   728→        val job = scope.async {
+   729→   729→            val provider = APIHolder.apis.find { it.name.equals(apiName, ignoreCase = true) }
+   730→   730→                ?: throw IllegalArgumentException("Provider '$apiName' not found")
+   731→   731→            com.anymex.runtimehost.cloudstream.CloudStreamSourceMethods(provider).loadLinks(url)
+   732→   732→        }
+   733→   733→        if (token != null) activeRequests[token] = job
+   734→   734→        return try {
+   735→   735→            runBlocking { job.await() }
+   736→   736→        } finally {
+   737→   737→            if (token != null) activeRequests.remove(token)
+   738→   738→        }
+   739→   739→    }
+   740→   740→
+   741→   741→    @JvmStatic
+   742→   742→    @JvmOverloads
+   743→   743→    fun csGetVideoListStream(
+   744→   744→        context: Context,
+   745→   745→        apiName: String,
+   746→   746→        url: String,
+   747→   747→        onLinkFound: (Map<String, Any?>) -> Unit,
+   748→   748→        parameters: Map<String, Any?>? = null,
+   749→   749→    ) {
+   750→   750→        val token = parameters?.get("token") as? String
+   751→   751→        val extractionJob = kotlinx.coroutines.Job()
+   752→   752→        if (token != null) activeRequests[token] = extractionJob
+   753→   753→
+   754→   754→        try {
+   755→   755→            runBlocking(extractionJob + kotlinx.coroutines.Dispatchers.IO) {
+   756→   756→                val provider = APIHolder.apis.find { it.name.equals(apiName, ignoreCase = true) }
+   757→   757→                    ?: throw IllegalArgumentException("Provider '$apiName' not found")
+   758→   758→                
+   759→   759→                com.anymex.runtimehost.cloudstream.CloudStreamSourceMethods(provider)
+   760→   760→                    .loadLinksStream(url, onLinkFound)
+   761→   761→
+   762→   762→                while (coroutineContext[kotlinx.coroutines.Job]?.isActive == true) {
+   763→   763→                    kotlinx.coroutines.delay(10000)
+   764→   764→                }
+   765→   765→            }
+   766→   766→        } catch (e: Exception) {
+   767→   767→            if (e !is kotlinx.coroutines.CancellationException) {
+   768→   768→                Log.e("RuntimeBridge", "Extraction error: ${e.message}")
+   769→   769→            }
+   770→   770→        } finally {
+   771→   771→            if (token != null) activeRequests.remove(token)
+   772→   772→        }
+   773→   773→        
+   774→   774→        System.gc()
+   775→   775→    }
+   776→   776→
+   777→   777→    @JvmStatic
+   778→   778→    @JvmOverloads
+   779→   779→    fun kotatsuLoadExtensions(context: Context, folderPath: String?): List<Map<String, Any?>> {
+   780→   780→        return runBlocking {
+   781→   781→            com.anymex.runtimehost.kotatsu.KotatsuExtensionLoader.loadExtensions(context, folderPath)
+   782→   782→        }
+   783→   783→    }
+   784→   784→
+   785→   785→    @JvmStatic
+   786→   786→    @JvmOverloads
+   787→   787→    fun kotatsuGetPopular(context: Context, sourceId: String, page: Int): Map<String, Any?> {
+   788→   788→        return runBlocking {
+   789→   789→            com.anymex.runtimehost.kotatsu.KotatsuExtensionLoader.getPopular(sourceId, page)
+   790→   790→        }
+   791→   791→    }
+   792→   792→
+   793→   793→    @JvmStatic
+   794→   794→    @JvmOverloads
+   795→   795→    fun kotatsuGetLatestUpdates(context: Context, sourceId: String, page: Int): Map<String, Any?> {
+   796→   796→        return runBlocking {
+   797→   797→            com.anymex.runtimehost.kotatsu.KotatsuExtensionLoader.getLatestUpdates(sourceId, page)
+   798→   798→        }
+   799→   799→    }
+   800→   800→
+   801→   801→    @JvmStatic
+   802→   802→    @JvmOverloads
+   803→   803→    fun kotatsuSearch(context: Context, sourceId: String, query: String, page: Int): Map<String, Any?> {
+   804→   804→        return runBlocking {
+   805→   805→            com.anymex.runtimehost.kotatsu.KotatsuExtensionLoader.search(sourceId, query, page)
+   806→   806→        }
+   807→   807→    }
+   808→   808→
+   809→   809→    @JvmStatic
+   810→   810→    @JvmOverloads
+   811→   811→    fun kotatsuGetDetail(context: Context, sourceId: String, url: String, title: String, cover: String): Map<String, Any?> {
+   812→   812→        return runBlocking {
+   813→   813→            com.anymex.runtimehost.kotatsu.KotatsuExtensionLoader.getDetails(sourceId, url, title, cover)
+   814→   814→        }
+   815→   815→    }
+   816→   816→
+   817→   817→    @JvmStatic
+   818→   818→    @JvmOverloads
+   819→   819→    fun kotatsuGetPageList(context: Context, sourceId: String, url: String, name: String): List<Map<String, Any?>> {
+   820→   820→        return runBlocking {
+   821→   821→            com.anymex.runtimehost.kotatsu.KotatsuExtensionLoader.getPageList(sourceId, url, name)
+   822→   822→        }
+   823→   823→    }
+   824→   824→
+   825→   825→    private fun extensionManager(context: Context): AniyomiExtensionManager {
+   826→   826→        if (extensionManager == null) initialize(context)
+   827→   827→        return extensionManager!!
+   828→   828→    }
+   829→   829→
+   830→   830→    private fun media(context: Context, sourceId: String, isAnime: Boolean): AniyomiSourceMethods =
+   831→   831→        if (isAnime) AnimeSourceMethods(sourceId) else MangaSourceMethods(sourceId)
+   832→   832→
+   833→   833→    private fun okhttp3.Headers?.toMap(): Map<String, String> = this?.names()?.associateWith { name -> get(name).orEmpty() }.orEmpty()
+   834→   834→
+   835→   835→    private fun SAnime.toMap(): Map<String, Any?> = mapOf(
+   836→   836→        "url" to url,
+   837→   837→        "title" to title,
+   838→   838→        "artist" to artist,
+   839→   839→        "author" to author,
+   840→   840→        "description" to description,
+   841→   841→        "genre" to getGenres(),
+   842→   842→        "status" to status,
+   843→   843→        "thumbnail_url" to thumbnail_url,
+   844→   844→        "background_url" to background_url,
+   845→   845→        "update_strategy" to update_strategy.name,
+   846→   846→        "fetch_type" to fetch_type.name,
+   847→   847→        "season_number" to season_number,
+   848→   848→        "initialized" to initialized
+   849→   849→    )
+   850→   850→
+   851→   851→    private fun videoToMap(it: Video): Map<String, Any?> = mapOf(
+   852→   852→        "title" to it.videoTitle,
+   853→   853→        "url" to it.videoUrl,
+   854→   854→        "quality" to it.resolution,
+   855→   855→        "bitrate" to it.bitrate,
+   856→   856→        "headers" to it.headers?.toMap(),
+   857→   857→        "preferred" to it.preferred,
+   858→   858→        "subtitles" to it.subtitleTracks.map { t -> mapOf("file" to t.url, "label" to t.lang) },
+   859→   859→        "audios" to it.audioTracks.map { t -> mapOf("file" to t.url, "label" to t.lang) },
+   860→   860→        "timestamps" to it.timestamps.map { ts ->
+   861→   861→            mapOf(
+   862→   862→                "start" to ts.start,
+   863→   863→                "end" to ts.end,
+   864→   864→                "name" to ts.name,
+   865→   865→                "type" to ts.type.name
+   866→   866→            )
+   867→   867→        },
+   868→   868→        "mpvArgs" to it.mpvArgs.toMap(),
+   869→   869→        "ffmpegStreamArgs" to it.ffmpegStreamArgs.toMap(),
+   870→   870→        "ffmpegVideoArgs" to it.ffmpegVideoArgs.toMap(),
+   871→   871→        "internalData" to it.internalData,
+   872→   872→        "initialized" to it.initialized
+   873→   873→    )
+   874→   874→
+   875→   875→    private fun parseEpisodeInfoFromName(name: String): Pair<Float, Int?> {
+   876→   876→        val seasonRegex = Regex("""(?i)\b(?:s|season)\s*(\d+)""")
+   877→   877→        val seasonMatch = seasonRegex.find(name)
+   878→   878→        val season = seasonMatch?.groupValues?.get(1)?.toIntOrNull()
+   879→   879→
+   880→   880→        val cleanName = if (seasonMatch != null) name.replace(seasonMatch.value, "") else name
+   881→   881→
+   882→   882→        val prefixRegex = Regex("""(?i)(?:chapter|ch\.|ch|ep\.|ep|episode|e)\s*(\d+(\.\d+)?)""")
+   883→   883→        val prefixMatch = prefixRegex.find(cleanName)
+   884→   884→        if (prefixMatch != null) {
+   885→   885→            val epVal = prefixMatch.groupValues[1].toFloatOrNull() ?: -1f
+   886→   886→            return Pair(epVal, season)
+   887→   887→        }
+   888→   888→
+   889→   889→        val fallbackRegex = Regex("""(\d+(\.\d+)?)""")
+   890→   890→        val epVal = fallbackRegex.find(cleanName)?.groupValues?.get(1)?.toFloatOrNull() ?: -1f
+   891→   891→        return Pair(epVal, season)
+   892→   892→    }
+   893→   893→}
+   894→   894→

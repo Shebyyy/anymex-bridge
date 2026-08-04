@@ -21,6 +21,15 @@ model User {
   updatedAt DateTime @updatedAt
 }
 
+model BridgeServerConfig {
+  id        String   @id @default(cuid())
+  serverUrl String   @unique
+  isActive  Boolean  @default(false)
+  label     String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
 model Post {
   id        String   @id @default(cuid())
   title     String
