@@ -1,0 +1,851 @@
+     1→     1→package com.ryan.runtimebridge
+     2→     2→
+     3→     3→import android.app.Activity
+     4→     4→import android.content.Context
+     5→     5→import android.util.Log
+     6→     6→import dalvik.system.DexClassLoader
+     7→     7→import io.flutter.embedding.engine.plugins.FlutterPlugin
+     8→     8→import io.flutter.embedding.engine.plugins.activity.ActivityAware
+     9→     9→import io.flutter.embedding.engine.plugins.activity.ActivityPluginBinding
+    10→    10→import io.flutter.plugin.common.EventChannel
+    11→    11→import io.flutter.plugin.common.EventChannel.EventSink as MethodEventSink
+    12→    12→import io.flutter.plugin.common.MethodCall
+    13→    13→import io.flutter.plugin.common.MethodChannel
+    14→    14→import io.flutter.plugin.common.MethodChannel.Result as MethodResult
+    15→    15→import kotlinx.coroutines.CoroutineScope
+    16→    16→import kotlinx.coroutines.Dispatchers
+    17→    17→import kotlinx.coroutines.SupervisorJob
+    18→    18→import kotlinx.coroutines.launch
+    19→    19→import kotlinx.coroutines.withContext
+    20→    20→import kotlinx.coroutines.runBlocking
+    21→    21→import kotlinx.coroutines.isActive
+    22→    22→import kotlinx.coroutines.cancel
+    23→    23→import kotlinx.coroutines.delay
+    24→    24→import android.net.Uri
+    25→    25→import java.io.File
+    26→    26→import java.io.FileOutputStream
+    27→    27→import java.io.InputStream
+    28→    28→import java.lang.reflect.Method
+    29→    29→import java.lang.reflect.Proxy
+    30→    30→import java.lang.reflect.InvocationHandler
+    31→    31→
+    32→    32→class AnymexExtensionRuntimeBridgePlugin : FlutterPlugin, ActivityAware {
+    33→    33→
+    34→    34→    private val TAG = "AnymeXBridge"
+    35→    35→    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    36→    36→
+    37→    37→    private lateinit var anymeXChannel: MethodChannel
+    38→    38→    private lateinit var aniyomiChannel: MethodChannel
+    39→    39→    private lateinit var cloudStreamChannel: MethodChannel
+    40→    40→    private lateinit var kotatsuChannel: MethodChannel
+    41→    41→    private lateinit var videoStreamEventChannel: EventChannel
+    42→    42→    private lateinit var loggingChannel: MethodChannel
+    43→    43→
+    44→    44→    private var context: Context? = null
+    45→    45→    private var activity: Activity? = null
+    46→    46→
+    47→    47→    private var runtimeBridge: Any? = null
+    48→    48→    private var bridgeClass: Class<*>? = null
+    49→    49→    private var videoStreamJob: kotlinx.coroutines.Job? = null
+    50→    50→    
+    51→    51→    private var currentVideoStreamToken: String? = null
+    52→    52→    private var currentVideoStreamUrl: String? = null
+    53→    53→    private var isDevLoad: Boolean = false
+    54→    54→
+    55→    55→    override fun onAttachedToEngine(binding: FlutterPlugin.FlutterPluginBinding) {
+    56→    56→        context = binding.applicationContext
+    57→    57→
+    58→    58→        anymeXChannel = MethodChannel(binding.binaryMessenger, "anymeXBridge")
+    59→    59→        anymeXChannel.setMethodCallHandler { call, result -> handleAnymeX(call, result) }
+    60→    60→
+    61→    61→        aniyomiChannel = MethodChannel(binding.binaryMessenger, "aniyomiExtensionBridge")
+    62→    62→        aniyomiChannel.setMethodCallHandler { call, result -> handleAniyomi(call, result) }
+    63→    63→
+    64→    64→        cloudStreamChannel = MethodChannel(binding.binaryMessenger, "cloudstreamExtensionBridge")
+    65→    65→        cloudStreamChannel.setMethodCallHandler { call, result -> handleCloudStream(call, result) }
+    66→    66→
+    67→    67→        kotatsuChannel = MethodChannel(binding.binaryMessenger, "kotatsuExtensionBridge")
+    68→    68→        kotatsuChannel.setMethodCallHandler { call, result -> handleKotatsu(call, result) }
+    69→    69→
+    70→    70→        videoStreamEventChannel = EventChannel(binding.binaryMessenger, "cloudstreamExtensionBridge/videoStream")
+    71→    71→        videoStreamEventChannel.setStreamHandler(object : EventChannel.StreamHandler {
+    72→    72→            override fun onListen(arguments: Any?, events: MethodEventSink?) {
+    73→    73→                val args = arguments as? Map<*, *> ?: return
+    74→    74→                val apiName = args["apiName"] as? String ?: return
+    75→    75→                val url = args["url"] as? String ?: return
+    76→    76→                val sessionToken = (args["parameters"] as? Map<String, Any?>)?.get("token") as? String
+    77→    77→                val params = (args["parameters"] as? Map<String, Any?>)?.toMutableMap() ?: mutableMapOf()
+    78→    78→                if (args.containsKey("token")) {
+    79→    79→                    params["token"] = args["token"]
+    80→    80→                }
+    81→    81→                handleVideoStream(apiName, url, params, events, sessionToken)
+    82→    82→            }
+    83→    83→            override fun onCancel(arguments: Any?) {
+    84→    84→                videoStreamJob?.cancel()
+    85→    85→                videoStreamJob = null
+    86→    86→            }
+    87→    87→        })
+    88→    88→
+    89→    89→        loggingChannel = MethodChannel(binding.binaryMessenger, "anymexLogger")
+    90→    90→        loggingChannel.setMethodCallHandler { call, result ->
+    91→    91→            if (call.method == "ready") {
+    92→    92→                flutterReady = true
+    93→    93→                logQueue.forEach { logMap ->
+    94→    94→                    try {
+    95→    95→                        loggingChannel.invokeMethod("log", logMap)
+    96→    96→                    } catch (e: Exception) {}
+    97→    97→                }
+    98→    98→                logQueue.clear()
+    99→    99→                result.success(null)
+   100→   100→            } else {
+   101→   101→                result.notImplemented()
+   102→   102→            }
+   103→   103→        }
+   104→   104→    }
+   105→   105→
+   106→   106→    override fun onDetachedFromEngine(binding: FlutterPlugin.FlutterPluginBinding) {
+   107→   107→        anymeXChannel.setMethodCallHandler(null)
+   108→   108→        aniyomiChannel.setMethodCallHandler(null)
+   109→   109→        cloudStreamChannel.setMethodCallHandler(null)
+   110→   110→        kotatsuChannel.setMethodCallHandler(null)
+   111→   111→        videoStreamEventChannel.setStreamHandler(null)
+   112→   112→        videoStreamJob?.cancel()
+   113→   113→        scope.cancel()
+   114→   114→    }
+   115→   115→
+   116→   116→    override fun onAttachedToActivity(binding: ActivityPluginBinding) {
+   117→   117→        activity = binding.activity
+   118→   118→    }
+   119→   119→
+   120→   120→    override fun onDetachedFromActivityForConfigChanges() {
+   121→   121→        activity = null
+   122→   122→    }
+   123→   123→
+   124→   124→    override fun onReattachedToActivityForConfigChanges(binding: ActivityPluginBinding) {
+   125→   125→        activity = binding.activity
+   126→   126→    }
+   127→   127→
+   128→   128→    override fun onDetachedFromActivity() {
+   129→   129→        activity = null
+   130→   130→    }
+   131→   131→
+   132→   132→    private fun loadAnymeXRuntimeHost(apkPath: String, settingsMap: Map<String, Any?>? = null): Boolean {
+   133→   133→        Log.i(TAG, "loadAnymeXRuntimeHost called with: $apkPath")
+   134→   134→        val ctx = context ?: run {
+   135→   135→            Log.e(TAG, "loadAnymeXRuntimeHost: context is null")
+   136→   136→            return false
+   137→   137→        }
+   138→   138→
+   139→   139→        return try {
+   140→   140→            runtimeBridge = null
+   141→   141→            bridgeClass = null
+   142→   142→
+   143→   143→            val originalApk = File(apkPath)
+   144→   144→            if (!originalApk.exists()) {
+   145→   145→                Log.e(TAG, "APK does not exist at path: $apkPath")
+   146→   146→                return false
+   147→   147→            }
+   148→   148→
+   149→   149→            val cacheApkName = "anymex_runtime_${originalApk.length()}_${originalApk.lastModified()}.apk"
+   150→   150→            val cacheApk = File(ctx.filesDir, cacheApkName)
+   151→   151→
+   152→   152→            if (!cacheApk.exists()) {
+   153→   153→                Log.i(TAG, "Creating new cached APK: $cacheApkName")
+   154→   154→                ctx.filesDir.listFiles()?.forEach { file ->
+   155→   155→                    if (file.name.startsWith("anymex_runtime_") && file.name.endsWith(".apk") && file.name != cacheApkName) {
+   156→   156→                        Log.d(TAG, "Deleting old cached APK: ${file.name}")
+   157→   157→                        file.delete()
+   158→   158→                    }
+   159→   159→                }
+   160→   160→
+   161→   161→                originalApk.inputStream().use { input ->
+   162→   162→                    FileOutputStream(cacheApk).use { output ->
+   163→   163→                        input.copyTo(output)
+   164→   164→                    }
+   165→   165→                }
+   166→   166→                cacheApk.setReadOnly()
+   167→   167→            } else {
+   168→   168→                Log.i(TAG, "Using existing cached APK: $cacheApkName")
+   169→   169→            }
+   170→   170→
+   171→   171→            ctx.cacheDir.listFiles()?.forEach { file ->
+   172→   172→                if (file.isDirectory && (file.name.startsWith("anymex_dex_") || file.name.startsWith("anymex_libs_"))) {
+   173→   173→                    file.deleteRecursively()
+   174→   174→                }
+   175→   175→            }
+   176→   176→
+   177→   177→            val optimizedDir = File(ctx.cacheDir, "anymex_dex_${System.currentTimeMillis()}")
+   178→   178→            optimizedDir.mkdirs()
+   179→   179→
+   180→   180→            val libsDir = File(ctx.cacheDir, "anymex_libs_${System.currentTimeMillis()}")
+   181→   181→            libsDir.mkdirs()
+   182→   182→
+   183→   183→            try {
+   184→   184→                java.util.zip.ZipFile(cacheApk).use { zip ->
+   185→   185→                    val abisList = android.os.Build.SUPPORTED_ABIS
+   186→   186→                    var selectedAbi: String? = null
+   187→   187→                    
+   188→   188→                    for (abi in abisList) {
+   189→   189→                        val prefix = "lib/$abi/"
+   190→   190→                        var found = false
+   191→   191→                        val entriesEnum = zip.entries()
+   192→   192→                        while (entriesEnum.hasMoreElements()) {
+   193→   193→                            val entry = entriesEnum.nextElement()
+   194→   194→                            if (entry.name.startsWith(prefix) && entry.name.endsWith(".so")) {
+   195→   195→                                found = true
+   196→   196→                                break
+   197→   197→                            }
+   198→   198→                        }
+   199→   199→                        if (found) {
+   200→   200→                            selectedAbi = abi
+   201→   201→                            break
+   202→   202→                        }
+   203→   203→                    }
+   204→   204→
+   205→   205→                    if (selectedAbi != null) {
+   206→   206→                        Log.i(TAG, "Extracting native libraries for ABI: $selectedAbi")
+   207→   207→                        val prefix = "lib/$selectedAbi/"
+   208→   208→                        val entriesEnum = zip.entries()
+   209→   209→                        while (entriesEnum.hasMoreElements()) {
+   210→   210→                            val entry = entriesEnum.nextElement()
+   211→   211→                            if (entry.name.startsWith(prefix) && entry.name.endsWith(".so")) {
+   212→   212→                                val libName = entry.name.substringAfterLast('/')
+   213→   213→                                val outFile = File(libsDir, libName)
+   214→   214→                                zip.getInputStream(entry).use { input ->
+   215→   215→                                    FileOutputStream(outFile).use { output ->
+   216→   216→                                        input.copyTo(output)
+   217→   217→                                    }
+   218→   218→                                }
+   219→   219→                                Log.d(TAG, "Extracted native library: $libName to ${outFile.absolutePath}")
+   220→   220→                            }
+   221→   221→                        }
+   222→   222→                    } else {
+   223→   223→                        Log.w(TAG, "No matching native libraries found in APK for supported ABIs: ${abisList.joinToString()}")
+   224→   224→                    }
+   225→   225→                }
+   226→   226→            } catch (e: Exception) {
+   227→   227→                Log.e(TAG, "Failed to extract native libraries: ${e.message}", e)
+   228→   228→            }
+   229→   229→
+   230→   230→            val loader = ChildFirstClassLoader(
+   231→   231→                cacheApk.absolutePath,
+   232→   232→                optimizedDir.absolutePath,
+   233→   233→                libsDir.absolutePath,
+   234→   234→                ctx.classLoader!!
+   235→   235→            )
+   236→   236→
+   237→   237→            bridgeClass = loader.loadClass("com.anymex.runtimehost.RuntimeBridge")
+   238→   238→            Log.d(TAG, "bridgeClass loaded: $bridgeClass")
+   239→   239→            runtimeBridge = bridgeClass!!.getField("INSTANCE").get(null)
+   240→   240→            
+   241→   241→            try {
+   242→   242→                val loggerClass = loader.loadClass("com.anymex.runtimehost.Logger")
+   243→   243→                val setLogCallbackMethod = loggerClass.getMethod("setLogCallback", Any::class.java, Method::class.java)
+   244→   244→                val ourLogMethod = AnymexExtensionRuntimeBridgePlugin::class.java.getMethod(
+   245→   245→                    "logFromHost",
+   246→   246→                    String::class.java,
+   247→   247→                    String::class.java,
+   248→   248→                    String::class.java
+   249→   249→                )
+   250→   250→                setLogCallbackMethod.invoke(null, this, ourLogMethod)
+   251→   251→                Log.i(TAG, "Logger callback registered successfully.")
+   252→   252→            } catch (e: Throwable) {
+   253→   253→                Log.e(TAG, "Failed to register Logger callback: ${e.message}")
+   254→   254→            }
+   255→   255→
+   256→   256→            Log.i(TAG, "AnymeX Runtime Bridge initialized successfully")
+   257→   257→            
+   258→   258→            try {
+   259→   259→                call("initialize", ctx, settingsMap)
+   260→   260→            } catch (e: Throwable) {
+   261→   261→                Log.e(TAG, "Failed to initialize RuntimeBridge: ${e.message}")
+   262→   262→                logToFlutter("ERROR", "BRIDGE_INIT", "Failed to initialize RuntimeBridge: ${e.message}\n${Log.getStackTraceString(e)}")
+   263→   263→            }
+   264→   264→
+   265→   265→            Log.i(TAG, "Runtime Host loaded successfully")
+   266→   266→            true
+   267→   267→        } catch (e: Throwable) {
+   268→   268→            Log.e(TAG, "Failed to load Runtime Host APK: ${e.message}")
+   269→   269→            logToFlutter("ERROR", "BRIDGE_LOAD", "Failed to load Runtime Host APK: ${e.message}\n${Log.getStackTraceString(e)}")
+   270→   270→            false
+   271→   271→        }
+   272→   272→    }
+   273→   273→
+   274→   274→    private fun handleAnymeX(call: MethodCall, result: MethodResult) {
+   275→   275→        when (call.method) {
+   276→   276→            "getAbi" -> {
+   277→   277→                val primaryAbi = android.os.Build.SUPPORTED_ABIS.firstOrNull() ?: "arm64-v8a"
+   278→   278→                result.success(primaryAbi)
+   279→   279→            }
+   280→   280→            "loadAnymeXRuntimeHost" -> {
+   281→   281→                val path = call.argument<String>("path")
+   282→   282→                val settingsMap = call.argument<Map<String, Any?>>("settings")
+   283→   283→                if (path.isNullOrBlank()) {
+   284→   284→                    result.error("INVALID_ARG", "path is required", null)
+   285→   285→                    return
+   286→   286→                }
+   287→   287→                scope.launch {
+   288→   288→                    try {
+   289→   289→                        val ok = loadAnymeXRuntimeHost(path, settingsMap)
+   290→   290→                        withContext(Dispatchers.Main) {
+   291→   291→                            if (ok) result.success(true)
+   292→   292→                            else result.error("LOAD_FAILED", "Failed to load runtime host APK", null)
+   293→   293→                        }
+   294→   294→                    } catch (e: Throwable) {
+   295→   295→                        sendError(result, "loadAnymeXRuntimeHost", e)
+   296→   296→                    }
+   297→   297→                }
+   298→   298→            }
+   299→   299→            "isLoaded" -> {
+   300→   300→                Log.d(TAG, "isLoaded check: runtimeBridge=$runtimeBridge, bridgeClass=$bridgeClass")
+   301→   301→                result.success(runtimeBridge != null)
+   302→   302→            }
+   303→   303→            "cancelRequest" -> {
+   304→   304→                val token = call.argument<String>("token")
+   305→   305→                if (token != null) {
+   306→   306→                    val ok = call("cancelRequest", token) as? Boolean ?: false
+   307→   307→                    result.success(ok)
+   308→   308→                } else {
+   309→   309→                    result.error("INVALID_ARG", "token is required", null)
+   310→   310→                }
+   311→   311→            }
+   312→   312→            "setCookies" -> {
+   313→   313→                val url = call.argument<String>("url")
+   314→   314→                val cookieString = call.argument<String>("cookieString")
+   315→   315→                if (url.isNullOrBlank() || cookieString == null) {
+   316→   316→                    result.error("INVALID_ARG", "url and cookieString are required", null)
+   317→   317→                    return
+   318→   318→                }
+   319→   319→                try {
+   320→   320→                    val mgr = android.webkit.CookieManager.getInstance()
+   321→   321→                    mgr.setAcceptCookie(true)
+   322→   322→                    cookieString.split(";").map { it.trim() }.filter { it.isNotEmpty() }.forEach { cookie ->
+   323→   323→                        mgr.setCookie(url, cookie)
+   324→   324→                    }
+   325→   325→                    mgr.flush()
+   326→   326→                    Log.d(TAG, "setCookies: applied ${cookieString.split(";").size} cookie(s) for $url")
+   327→   327→                    result.success(null)
+   328→   328→                } catch (e: Exception) {
+   329→   329→                    Log.e(TAG, "setCookies failed: ${e.message}")
+   330→   330→                    result.error("COOKIE_ERROR", e.message, null)
+   331→   331→                }
+   332→   332→            }
+   333→   333→            "setUserAgent" -> {
+   334→   334→                val url = call.argument<String>("url")
+   335→   335→                val userAgent = call.argument<String>("userAgent")
+   336→   336→                if (url.isNullOrBlank() || userAgent.isNullOrBlank()) {
+   337→   337→                    result.error("INVALID_ARG", "url and userAgent are required", null)
+   338→   338→                    return
+   339→   339→                }
+   340→   340→                try {
+   341→   341→                    val host = android.net.Uri.parse(url).host ?: url
+   342→   342→                    System.setProperty("anymex.ua.$host", userAgent)
+   343→   343→                    Log.d(TAG, "setUserAgent: stored UA for host=$host")
+   344→   344→                    result.success(null)
+   345→   345→                } catch (e: Exception) {
+   346→   346→                    Log.e(TAG, "setUserAgent failed: ${e.message}")
+   347→   347→                    result.error("UA_ERROR", e.message, null)
+   348→   348→                }
+   349→   349→            }
+   350→   350→            else -> result.notImplemented()
+   351→   351→
+   352→   352→        }
+   353→   353→    }
+   354→   354→
+   355→   355→    @Suppress("UNCHECKED_CAST")
+   356→   356→    private fun handleAniyomi(call: MethodCall, result: MethodResult) {
+   357→   357→        if (!ensureLoaded(result)) return
+   358→   358→        val ctx = effectiveContext() ?: return result.error("NO_CTX", "No context", null)
+   359→   359→
+   360→   360→        scope.launch {
+   361→   361→            try {
+   362→   362→                val res: Any? = when (call.method) {
+   363→   363→                    "getInstalledAnimeExtensions" -> {
+   364→   364→                        val path = call.arguments as? String?
+   365→   365→                        call("getInstalledAnimeExtensions", ctx, path)
+   366→   366→                    }
+   367→   367→                    "getInstalledMangaExtensions" -> {
+   368→   368→                        val path = call.arguments as? String?
+   369→   369→                        call("getInstalledMangaExtensions", ctx, path)
+   370→   370→                    }
+   371→   371→                    "installSourceInternal" -> {
+   372→   372→                        val apkPath = call.argument<String>("apkPath")
+   373→   373→                        val isAnime = call.argument<Boolean>("isAnime") ?: true
+   374→   374→                        if (apkPath.isNullOrBlank()) {
+   375→   375→                            result.error("INVALID_ARG", "apkPath is required", null)
+   376→   376→                            return@launch
+   377→   377→                        }
+   378→   378→                        val success = installSourceInternal(ctx, apkPath, isAnime)
+   379→   379→                        withContext(Dispatchers.Main) { result.success(success) }
+   380→   380→                        return@launch
+   381→   381→                    }
+   382→   382→                    "uninstallSourceInternal" -> {
+   383→   383→                        val packageName = call.argument<String>("packageName")
+   384→   384→                        val isAnime = call.argument<Boolean>("isAnime") ?: true
+   385→   385→                        if (packageName.isNullOrBlank()) {
+   386→   386→                            result.error("INVALID_ARG", "packageName is required", null)
+   387→   387→                            return@launch
+   388→   388→                        }
+   389→   389→                        val success = uninstallSourceInternal(ctx, packageName, isAnime)
+   390→   390→                        withContext(Dispatchers.Main) { result.success(success) }
+   391→   391→                        return@launch
+   392→   392→                    }
+   393→   393→                    "getPopular" -> {
+   394→   394→                        val args = call.arguments as Map<*, *>
+   395→   395→                        call("aniyomiGetPopular", ctx,
+   396→   396→                            args["sourceId"] as String,
+   397→   397→                            args["isAnime"] as Boolean,
+   398→   398→                            args["page"] as Int,
+   399→   399→                            args["parameters"] as? Map<String, Any?>)
+   400→   400→                    }
+   401→   401→                    "getLatestUpdates" -> {
+   402→   402→                        val args = call.arguments as Map<*, *>
+   403→   403→                        call("aniyomiGetLatestUpdates", ctx,
+   404→   404→                            args["sourceId"] as String,
+   405→   405→                            args["isAnime"] as Boolean,
+   406→   406→                            args["page"] as Int,
+   407→   407→                            args["parameters"] as? Map<String, Any?>)
+   408→   408→                    }
+   409→   409→                    "search" -> {
+   410→   410→                        val args = call.arguments as Map<*, *>
+   411→   411→                        call("aniyomiSearch", ctx,
+   412→   412→                            args["sourceId"] as String,
+   413→   413→                            args["isAnime"] as Boolean,
+   414→   414→                            args["query"] as String,
+   415→   415→                            args["page"] as Int,
+   416→   416→                            args["filters"] as? List<*>,
+   417→   417→                            args["parameters"] as? Map<String, Any?>)
+   418→   418→                    }
+   419→   419→                    "getFilterList" -> {
+   420→   420→                        val args = call.arguments as Map<*, *>
+   421→   421→                        call("aniyomiGetFilterList", ctx,
+   422→   422→                            args["sourceId"] as String,
+   423→   423→                            args["isAnime"] as Boolean)
+   424→   424→                    }
+   425→   425→                    "getDetail" -> {
+   426→   426→                        val args = call.arguments as Map<*, *>
+   427→   427→                        call("aniyomiGetDetail", ctx,
+   428→   428→                            args["sourceId"] as String,
+   429→   429→                            args["isAnime"] as Boolean,
+   430→   430→                            args["media"] as Map<String, Any?>,
+   431→   431→                            args["parameters"] as? Map<String, Any?>)
+   432→   432→                    }
+   433→   433→                    "getVideoList" -> {
+   434→   434→                        val args = call.arguments as Map<*, *>
+   435→   435→                        call("aniyomiGetVideoList", ctx,
+   436→   436→                            args["sourceId"] as String,
+   437→   437→                            args["isAnime"] as Boolean,
+   438→   438→                            args["episode"] as Map<String, Any?>,
+   439→   439→                            args["parameters"] as? Map<String, Any?>)
+   440→   440→                    }
+   441→   441→                    "stopHttpServer" -> {
+   442→   442→                        val args = call.arguments as Map<*, *>
+   443→   443→                        call("aniyomiStopHttpServer", ctx,
+   444→   444→                            args["sourceId"] as String,
+   445→   445→                            args["isAnime"] as Boolean)
+   446→   446→                    }
+   447→   447→                    "getImageBytes" -> {
+   448→   448→                        val args = call.arguments as Map<*, *>
+   449→   449→                        call("aniyomiGetImageBytes", ctx,
+   450→   450→                            args["sourceId"] as String,
+   451→   451→                            args["isAnime"] as Boolean,
+   452→   452→                            args["url"] as String)
+   453→   453→                    }
+   454→   454→                    "getPageList" -> {
+   455→   455→                        val args = call.arguments as Map<*, *>
+   456→   456→                        call("aniyomiGetPageList", ctx,
+   457→   457→                            args["sourceId"] as String,
+   458→   458→                            args["isAnime"] as Boolean,
+   459→   459→                            args["episode"] as Map<String, Any?>,
+   460→   460→                            args["parameters"] as? Map<String, Any?>)
+   461→   461→                    }
+   462→   462→                    "getPreference" -> {
+   463→   463→                        val args = call.arguments as Map<*, *>
+   464→   464→                        call("aniyomiGetPreference", ctx,
+   465→   465→                            args["sourceId"] as String,
+   466→   466→                            args["isAnime"] as Boolean)
+   467→   467→                    }
+   468→   468→                    "saveSourcePreference" -> {
+   469→   469→                        val args = call.arguments as Map<*, *>
+   470→   470→                        call("aniyomiSavePreference", ctx,
+   471→   471→                            args["sourceId"] as String,
+   472→   472→                            args["key"] as String,
+   473→   473→                            args["action"] as? String,
+   474→   474→                            args["value"])
+   475→   475→                    }
+   476→   476→                    else -> { withContext(Dispatchers.Main) { result.notImplemented() }; return@launch }
+   477→   477→                }
+   478→   478→                withContext(Dispatchers.Main) { result.success(res) }
+   479→   479→            } catch (e: Throwable) {
+   480→   480→                sendError(result, "Aniyomi.${call.method}", e)
+   481→   481→            }
+   482→   482→        }
+   483→   483→    }
+   484→   484→
+   485→   485→    private fun handleCloudStream(call: MethodCall, result: MethodResult) {
+   486→   486→        if (!ensureLoaded(result)) return
+   487→   487→        val ctx = effectiveContext() ?: return result.error("NO_CTX", "No context", null)
+   488→   488→
+   489→   489→        when (call.method) {
+   490→   490→            "initialize" -> {
+   491→   491→                call("initialize", ctx)
+   492→   492→                result.success(null)
+   493→   493→                return
+   494→   494→            }
+   495→   495→            "getRegisteredProviders" -> {
+   496→   496→                result.success(call("csGetRegisteredProviders"))
+   497→   497→                return
+   498→   498→            }
+   499→   499→        }
+   500→   500→
+   501→   501→        scope.launch {
+   502→   502→            try {
+   503→   503→                val res: Any? = when (call.method) {
+   504→   504→                    "loadPlugin" -> {
+   505→   505→                        val path = call.argument<String>("path")
+   506→   506→                            ?: return@launch withContext(Dispatchers.Main) {
+   507→   507→                                result.error("INVALID_ARG", "path required", null)
+   508→   508→                            }
+   509→   509→                        call("csLoadPlugin", ctx, path)
+   510→   510→                    }
+   511→   511→                    "search" -> {
+   512→   512→                        call("csSearch", ctx,
+   513→   513→                            call.argument<String>("query") ?: "",
+   514→   514→                            call.argument<String>("apiName"),
+   515→   515→                            call.argument<Int>("page") ?: 1,
+   516→   516→                            call.argument<Map<String, Any?>>("parameters"))
+   517→   517→                    }
+   518→   518→                    "getDetail" -> {
+   519→   519→                        call("csGetDetail", ctx,
+   520→   520→                            call.argument<String>("apiName") ?: "",
+   521→   521→                            call.argument<String>("url") ?: "",
+   522→   522→                            call.argument<Map<String, Any?>>("parameters"))
+   523→   523→                    }
+   524→   524→                    "getVideoList" -> {
+   525→   525→                        call("csGetVideoList", ctx,
+   526→   526→                            call.argument<String>("apiName") ?: "",
+   527→   527→                            call.argument<String>("url") ?: "",
+   528→   528→                            call.argument<Map<String, Any?>>("parameters"))
+   529→   529→                    }
+   530→   530→                    "deletePlugin" -> {
+   531→   531→                        val internalName = call.argument<String>("internalName")
+   532→   532→                            ?: return@launch withContext(Dispatchers.Main) {
+   533→   533→                                result.error("INVALID_ARG", "internalName required", null)
+   534→   534→                            }
+   535→   535→                        call("csUnloadPlugin", internalName)
+   536→   536→                    }
+   537→   537→                    "getExtensionSettings" -> {
+   538→   538→                        call("csGetExtensionSettings", ctx,
+   539→   539→                            call.argument<String>("pluginName") ?: "")
+   540→   540→                    }
+   541→   541→                    "setExtensionSettings" -> {
+   542→   542→                        call("csSetExtensionSettings", ctx,
+   543→   543→                            call.argument<String>("pluginName") ?: "",
+   544→   544→                            call.argument<String>("key") ?: "",
+   545→   545→                            call.argument<Any>("value"))
+   546→   546→                    }
+   547→   547→                    "openSettings" -> {
+   548→   548→                        val pluginName = call.argument<String>("pluginName") ?: ""
+   549→   549→                        val settingsActivity = activity ?: ctx
+   550→   550→                        withContext(Dispatchers.Main) {
+   551→   551→                            call("csOpenSettings", settingsActivity, pluginName)
+   552→   552→                        }
+   553→   553→                    }
+   554→   554→                    else -> { withContext(Dispatchers.Main) { result.notImplemented() }; return@launch }
+   555→   555→                }
+   556→   556→                withContext(Dispatchers.Main) { result.success(res) }
+   557→   557→            } catch (e: Throwable) {
+   558→   558→                sendError(result, "CloudStream.${call.method}", e)
+   559→   559→            }
+   560→   560→        }
+   561→   561→    }
+   562→   562→
+   563→   563→    @Suppress("UNCHECKED_CAST")
+   564→   564→    private fun handleVideoStream(apiName: String, url: String, parameters: Map<String, Any?>?, events: MethodEventSink?, sessionToken: String?) {
+   565→   565→        val ctx = effectiveContext() ?: run {
+   566→   566→            events?.error("NO_CTX", "No context available", null)
+   567→   567→            events?.endOfStream()
+   568→   568→            return
+   569→   569→        }
+   570→   570→        
+   571→   571→        if (videoStreamJob?.isActive == true && currentVideoStreamToken == sessionToken && currentVideoStreamUrl == url) {
+   572→   572→            Log.d(TAG, "Redundant stream request for token $sessionToken, ignoring.")
+   573→   573→            return
+   574→   574→        }
+   575→   575→
+   576→   576→        videoStreamJob?.cancel()
+   577→   577→        videoStreamJob = scope.launch {
+   578→   578→            currentVideoStreamToken = sessionToken
+   579→   579→            currentVideoStreamUrl = url
+   580→   580→            try {
+   581→   581→                val cls = bridgeClass ?: throw IllegalStateException("Runtime Host not loaded")
+   582→   582→                val loader = cls.classLoader ?: throw IllegalStateException("No Host ClassLoader")
+   583→   583→                val function1Class = loader.loadClass("kotlin.jvm.functions.Function1")
+   584→   584→                val unitClass = loader.loadClass("kotlin.Unit")
+   585→   585→                val unitInstance = unitClass.getField("INSTANCE").get(null)
+   586→   586→                val mainHandler = android.os.Handler(android.os.Looper.getMainLooper())
+   587→   587→
+   588→   588→                val proxyCallback = Proxy.newProxyInstance(
+   589→   589→                    loader,
+   590→   590→                    arrayOf(function1Class),
+   591→   591→                    object : InvocationHandler {
+   592→   592→                        override fun invoke(proxy: Any?, method: Method?, args: Array<out Any?>?): Any? {
+   593→   593→                            if (method?.name == "invoke") {
+   594→   594→                                val video = args?.get(0)
+   595→   595→                                mainHandler.post { events?.success(video) }
+   596→   596→                                return unitInstance
+   597→   597→                            }
+   598→   598→                            return null
+   599→   599→                        }
+   600→   600→                    }
+   601→   601→                )
+   602→   602→
+   603→   603→                call("csGetVideoListStream", ctx, apiName, url, proxyCallback, parameters)
+   604→   604→                mainHandler.post { events?.endOfStream() }
+   605→   605→            } catch (e: kotlinx.coroutines.CancellationException) {
+   606→   606→                throw e
+   607→   607→            } catch (e: Throwable) {
+   608→   608→                sendError(result = object : MethodResult {
+   609→   609→                    override fun success(res: Any?) {}
+   610→   610→                    override fun error(code: String, msg: String?, details: Any?) {
+   611→   611→                        events?.error(code, msg, details)
+   612→   612→                    }
+   613→   613→                    override fun notImplemented() {
+   614→   614→                        events?.endOfStream()
+   615→   615→                    }
+   616→   616→                }, methodName = "videoStream", e = e)
+   617→   617→                withContext(Dispatchers.Main) { events?.endOfStream() }
+   618→   618→            }
+   619→   619→        }
+   620→   620→    }
+   621→   621→
+   622→   622→    private fun sendError(result: MethodResult, methodName: String, e: Throwable) {
+   623→   623→        val realError = (e as? java.lang.reflect.InvocationTargetException)?.targetException ?: e
+   624→   624→        
+   625→   625→        val stackTrace = Log.getStackTraceString(e) 
+   626→   626→        val errorMessage = realError.message ?: realError.toString()
+   627→   627→        val detailedError = "Method: $methodName\nError: $errorMessage\n$stackTrace"
+   628→   628→        
+   629→   629→        Log.e(TAG, detailedError)
+   630→   630→        logToFlutter("ERROR", "BRIDGE", detailedError)
+   631→   631→        
+   632→   632→        scope.launch(Dispatchers.Main) {
+   633→   633→            result.error("BRIDGE_ERROR", errorMessage, detailedError)
+   634→   634→        }
+   635→   635→    }
+   636→   636→
+   637→   637→    private fun call(methodName: String, vararg args: Any?): Any? {
+   638→   638→        val bridge = runtimeBridge ?: throw IllegalStateException("Runtime Host not loaded")
+   639→   639→        val cls = bridgeClass ?: throw IllegalStateException("Runtime Host class not loaded")
+   640→   640→
+   641→   641→        val method = cls.methods.filter { it.name == methodName }
+   642→   642→            .firstOrNull { it.parameterTypes.size == args.size }
+   643→   643→            ?: cls.methods.firstOrNull { it.name == methodName }
+   644→   644→            ?: throw NoSuchMethodException("No method '$methodName' in RuntimeBridge")
+   645→   645→
+   646→   646→        val effectiveArgs = if (method.parameterTypes.size != args.size) {
+   647→   647→            logToFlutter("WARNING", "BRIDGE", "Argument count mismatch for $methodName. Expected ${method.parameterTypes.size}, got ${args.size}. Adjusting.")
+   648→   648→            if (args.size > method.parameterTypes.size) {
+   649→   649→                args.take(method.parameterTypes.size).toTypedArray()
+   650→   650→            } else {
+   651→   651→                val padded = args.toMutableList()
+   652→   652→                while (padded.size < method.parameterTypes.size) padded.add(null)
+   653→   653→                padded.toTypedArray()
+   654→   654→            }
+   655→   655→        } else {
+   656→   656→            args
+   657→   657→        }
+   658→   658→
+   659→   659→        logToFlutter("INFO", "BRIDGE", "Calling Method: RuntimeBridge.$methodName")
+   660→   660→        val result = method.invoke(bridge, *effectiveArgs)
+   661→   661→        logToFlutter("INFO", "BRIDGE", "Method '$methodName' completed successfully")
+   662→   662→
+   663→   663→        return result
+   664→   664→    }
+   665→   665→
+   666→   666→    private fun ensureLoaded(result: MethodResult): Boolean {
+   667→   667→        if (runtimeBridge == null) {
+   668→   668→            result.error("NOT_LOADED", "Runtime Host APK not loaded. Call loadAnymeXRuntimeHost first.", null)
+   669→   669→            return false
+   670→   670→        }
+   671→   671→        return true
+   672→   672→    }
+   673→   673→
+   674→   674→    private fun effectiveContext(): Context? = activity ?: context
+   675→   675→
+   676→   676→    private val logQueue = mutableListOf<Map<String, String>>()
+   677→   677→    private var flutterReady = false
+   678→   678→
+   679→   679→    fun logFromHost(level: String, tag: String, message: String) {
+   680→   680→        logToFlutter(level, tag, message)
+   681→   681→    }
+   682→   682→
+   683→   683→    private fun logToFlutter(level: String, tag: String, message: String) {
+   684→   684→        scope.launch(Dispatchers.Main) {
+   685→   685→            val logMap = mapOf("level" to level, "tag" to tag, "message" to message)
+   686→   686→            if (flutterReady) {
+   687→   687→                try {
+   688→   688→                    loggingChannel.invokeMethod("log", logMap)
+   689→   689→                } catch (e: Exception) {}
+   690→   690→            } else {
+   691→   691→                logQueue.add(logMap)
+   692→   692→                if (logQueue.size > 2000) logQueue.removeAt(0)
+   693→   693→            }
+   694→   694→        }
+   695→   695→    }
+   696→   696→
+   697→   697→    private fun handleKotatsu(call: MethodCall, result: MethodResult) {
+   698→   698→        if (!ensureLoaded(result)) return
+   699→   699→        val ctx = effectiveContext() ?: return result.error("NO_CTX", "No context", null)
+   700→   700→
+   701→   701→        scope.launch {
+   702→   702→            try {
+   703→   703→                val res: Any? = when (call.method) {
+   704→   704→                    "loadExtensions" -> {
+   705→   705→                        val path = call.argument<String>("folderPath")
+   706→   706→                        call("kotatsuLoadExtensions", ctx, path)
+   707→   707→                    }
+   708→   708→                    "getPopular" -> {
+   709→   709→                        call("kotatsuGetPopular", ctx,
+   710→   710→                            call.argument<String>("sourceId") ?: "",
+   711→   711→                            call.argument<Int>("page") ?: 1)
+   712→   712→                    }
+   713→   713→                    "getLatestUpdates" -> {
+   714→   714→                        call("kotatsuGetLatestUpdates", ctx,
+   715→   715→                            call.argument<String>("sourceId") ?: "",
+   716→   716→                            call.argument<Int>("page") ?: 1)
+   717→   717→                    }
+   718→   718→                    "search" -> {
+   719→   719→                        call("kotatsuSearch", ctx,
+   720→   720→                            call.argument<String>("sourceId") ?: "",
+   721→   721→                            call.argument<String>("query") ?: "",
+   722→   722→                            call.argument<Int>("page") ?: 1)
+   723→   723→                    }
+   724→   724→                    "getDetail" -> {
+   725→   725→                        call("kotatsuGetDetail", ctx,
+   726→   726→                            call.argument<String>("sourceId") ?: "",
+   727→   727→                            call.argument<String>("url") ?: "",
+   728→   728→                            call.argument<String>("title") ?: "",
+   729→   729→                            call.argument<String>("cover") ?: "")
+   730→   730→                    }
+   731→   731→                    "getPageList" -> {
+   732→   732→                        call("kotatsuGetPageList", ctx,
+   733→   733→                            call.argument<String>("sourceId") ?: "",
+   734→   734→                            call.argument<String>("url") ?: "",
+   735→   735→                            call.argument<String>("name") ?: "")
+   736→   736→                    }
+   737→   737→                    else -> { withContext(Dispatchers.Main) { result.notImplemented() }; return@launch }
+   738→   738→                }
+   739→   739→                withContext(Dispatchers.Main) { result.success(res) }
+   740→   740→            } catch (e: Throwable) {
+   741→   741→                sendError(result, "Kotatsu.${call.method}", e)
+   742→   742→            }
+   743→   743→        }
+   744→   744→    }
+   745→   745→
+   746→   746→    private fun installSourceInternal(context: Context, apkPath: String, isAnime: Boolean): Boolean {
+   747→   747→        return try {
+   748→   748→            val pm = context.packageManager
+   749→   749→            val packageInfo = pm.getPackageArchiveInfo(apkPath, 0)
+   750→   750→                ?: throw IllegalArgumentException("Invalid APK file at $apkPath")
+   751→   751→            val packageName = packageInfo.packageName
+   752→   752→
+   753→   753→            val dirName = if (isAnime) "exts" else "exts_manga"
+   754→   754→            val privateDir = File(context.filesDir, dirName)
+   755→   755→            if (!privateDir.exists()) {
+   756→   756→                privateDir.mkdirs()
+   757→   757→            }
+   758→   758→
+   759→   759→            val srcFile = File(apkPath)
+   760→   760→            val dstFile = File(privateDir, "$packageName.apk")
+   761→   761→            val tmpFile = File(privateDir, "$packageName.apk.tmp")
+   762→   762→
+   763→   763→            srcFile.inputStream().use { input ->
+   764→   764→                FileOutputStream(tmpFile).use { output ->
+   765→   765→                    input.copyTo(output)
+   766→   766→                }
+   767→   767→            }
+   768→   768→
+   769→   769→            if (dstFile.exists()) dstFile.delete()
+   770→   770→
+   771→   771→            if (tmpFile.renameTo(dstFile)) {
+   772→   772→                try {
+   773→   773→                    dstFile.setReadOnly()
+   774→   774→                } catch (_: Exception) {}
+   775→   775→                Log.i(TAG, "Successfully installed internal extension: $packageName to ${dstFile.absolutePath}")
+   776→   776→                true
+   777→   777→            } else {
+   778→   778→                tmpFile.delete()
+   779→   779→                false
+   780→   780→            }
+   781→   781→        } catch (e: Exception) {
+   782→   782→            Log.e(TAG, "Failed to install source internally: ${e.message}", e)
+   783→   783→            false
+   784→   784→        }
+   785→   785→    }
+   786→   786→
+   787→   787→    private fun uninstallSourceInternal(context: Context, packageName: String, isAnime: Boolean): Boolean {
+   788→   788→        return try {
+   789→   789→            val dirName = if (isAnime) "exts" else "exts_manga"
+   790→   790→            val privateDir = File(context.filesDir, dirName)
+   791→   791→            val apkFile = File(privateDir, "$packageName.apk")
+   792→   792→            if (apkFile.exists()) {
+   793→   793→                apkFile.delete()
+   794→   794→            }
+   795→   795→            val iconFile = File(context.cacheDir, "${packageName}_icon.png")
+   796→   796→            if (iconFile.exists()) {
+   797→   797→                iconFile.delete()
+   798→   798→            }
+   799→   799→            Log.i(TAG, "Successfully uninstalled internal extension: $packageName")
+   800→   800→            true
+   801→   801→        } catch (e: Exception) {
+   802→   802→            Log.e(TAG, "Failed to uninstall source internally: ${e.message}", e)
+   803→   803→            false
+   804→   804→        }
+   805→   805→    }
+   806→   806→
+   807→   807→    private class ChildFirstClassLoader(
+   808→   808→        dexPath: String,
+   809→   809→        optimizedDirectory: String?,
+   810→   810→        librarySearchPath: String?,
+   811→   811→        parent: ClassLoader
+   812→   812→    ) : DexClassLoader(dexPath, optimizedDirectory, librarySearchPath, parent) {
+   813→   813→
+   814→   814→        private val systemClassLoader: ClassLoader? = getSystemClassLoader()
+   815→   815→
+   816→   816→        private fun shouldDelegateToParent(name: String?): Boolean {
+   817→   817→            if (name == null) return false
+   818→   818→            return name.startsWith("androidx.")
+   819→   819→        }
+   820→   820→
+   821→   821→        override fun loadClass(name: String?, resolve: Boolean): Class<*> {
+   822→   822→            var c = findLoadedClass(name)
+   823→   823→
+   824→   824→            if (c == null && systemClassLoader != null) {
+   825→   825→                try {
+   826→   826→                    c = systemClassLoader.loadClass(name)
+   827→   827→                } catch (_: ClassNotFoundException) {}
+   828→   828→            }
+   829→   829→
+   830→   830→            if (c == null && shouldDelegateToParent(name)) {
+   831→   831→                try {
+   832→   832→                    c = parent.loadClass(name)
+   833→   833→                } catch (_: ClassNotFoundException) {}
+   834→   834→            }
+   835→   835→
+   836→   836→            if (c == null) {
+   837→   837→                try {
+   838→   838→                    c = findClass(name)
+   839→   839→                } catch (_: ClassNotFoundException) {
+   840→   840→                    c = super.loadClass(name, resolve)
+   841→   841→                }
+   842→   842→            }
+   843→   843→
+   844→   844→            if (resolve) {
+   845→   845→                resolveClass(c)
+   846→   846→            }
+   847→   847→
+   848→   848→            return c
+   849→   849→        }
+   850→   850→    }
+   851→   851→}
