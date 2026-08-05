@@ -1,0 +1,628 @@
+     1→# AnymeX JVM Bridge Server — Worklog
+     2→
+     3→## Task 1: JVM Bridge Server — Complete Project Implementation
+     4→
+     5→**Date**: 2025
+     6→**Status**: Completed
+     7→**Location**: `/home/z/my-project/jvm-bridge-server/`
+     8→
+     9→### Summary
+    10→Created a comprehensive, production-ready JVM Bridge Server for the AnymeX Extension Runtime Bridge project. The server enables iOS devices to execute Aniyomi, CloudStream, and Kotatsu extensions remotely via HTTP API, bypassing the need for Android's DexClassLoader on iOS.
+    11→
+    12→### Files Created (19 files)
+    13→
+    14→#### Build & Configuration (4 files)
+    15→1. **`build.gradle.kts`** — Gradle Kotlin DSL build script with Ktor, OkHttp, Gson, dexlib2, coroutines, and Shadow JAR plugin
+    16→2. **`settings.gradle.kts`** — Project settings
+    17→3. **`gradle.properties`** — JVM args, parallel builds, incremental compilation
+    18→4. **`gradle/libs.versions.toml`** — Centralized version catalog for all dependencies
+    19→
+    20→#### Server Core (2 files)
+    21→5. **`src/.../Application.kt`** — Ktor server entry point with CORS, content negotiation (Gson), call logging, status pages, and all route registration
+    22→6. **`src/.../ServerConfig.kt`** — Configurable via environment variables: port, host, cache dir, temp dir, memory limits, CORS origins, log level
+    23→
+    24→#### Data Models (2 files)
+    25→7. **`src/.../models/Requests.kt`** — 18 request data classes covering all Aniyomi (install, uninstall, search, popular, latest, detail, video-list, page-list, filter-list, preference, save-preference), CloudStream (install, uninstall, search, detail, video-list), and Kotatsu (install, uninstall, search, popular, latest, detail, page-list) endpoints
+    26→8. **`src/.../models/Responses.kt`** — Response envelope (`ApiResponse<T>` with success/data/error), extension metadata types, search results, media details, episode info, video sources, page items, filter entries, preference entries, health status, JVM info
+    27→
+    28→#### Utility (1 file)
+    29→9. **`src/.../util/HttpUtil.kt`** — OkHttp-based HTTP client with connection pooling, redirect following, logging interceptor, file download with progress callback, GET/POST helpers, URL filename extraction, and graceful shutdown
+    30→
+    31→#### Extension System (4 files)
+    32→10. **`src/.../extension/ExtensionCache.kt`** — Disk-based extension cache manager: downloads files to organized subdirectories, JSON manifest persistence per extension type, in-memory registries with ConcurrentHashMap, install/uninstall lifecycle
+    33→11. **`src/.../extension/AniyomiExtensionLoader.kt`** — Aniyomi APK loader: extracts DEX from APK via dexlib2, converts DEX→JAR, creates isolated URLClassLoader per extension, reflection-based method invocation, in-memory preference store replacing SharedPreferences
+    34→12. **`src/.../extension/CloudStreamPluginLoader.kt`** — CloudStream .cs3 loader: direct URLClassLoader loading (cs3 files are JARs), provider discovery, reflection-based method invocation
+    35→13. **`src/.../extension/KotatsuExtensionLoader.kt`** — Kotatsu .jar loader: direct URLClassLoader, JAR scanning for parser classes, reflection-based method invocation
+    36→
+    37→#### REST API Routes (5 files)
+    38→14. **`src/.../routes/HealthRoutes.kt`** — `GET /api/health` with JVM runtime info, uptime, extension counts
+    39→15. **`src/.../routes/AniyomiRoutes.kt`** — 12 Aniyomi endpoints (install, uninstall, extensions, search, popular, latest, detail, video-list, page-list, filter-list, preference, save-preference)
+    40→16. **`src/.../routes/CloudStreamRoutes.kt`** — 6 CloudStream endpoints (install, uninstall, providers, search, detail, video-list)
+    41→17. **`src/.../routes/KotatsuRoutes.kt`** — 8 Kotatsu endpoints (install, uninstall, extensions, search, popular, latest, detail, page-list)
+    42→18. **`src/.../routes/ImageProxyRoutes.kt`** — `GET /api/proxy/image` with Referer header spoofing, content-type detection, streaming response
+    43→
+    44→#### Deployment (2 files)
+    45→19. **`Dockerfile`** — Multi-stage build (JDK 17 build → JRE 17 runtime), non-root user, health checks, configurable env vars
+    46→20. **`README.md`** — Architecture diagram, API docs, configuration table, example curl commands, project structure, technology stack
+    47→
+    48→### Design Decisions
+    49→- **Headless JVM**: No Android Context, no UI code — pure JVM server
+    50→- **DEX→JAR conversion**: Uses dexlib2 to parse APK DEX files and convert to loadable JAR
+    51→- **Isolated ClassLoaders**: Each extension gets its own URLClassLoader to prevent class conflicts
+    52→- **In-memory preferences**: Replaces Android SharedPreferences with ConcurrentHashMap
+    53→- **Standardized response envelope**: All endpoints return `{ success, data, error }` matching the Flutter MethodChannel pattern
+    54→- **CORS enabled**: Cross-origin support for iOS app web requests
+    55→- **Image proxy**: Handles Referer-based anti-hotlinking on manga sources
+    56→- **Reflection-based invocation**: Extension methods invoked via reflection since we can't compile against extension interfaces
+    57→
+    58→---
+    59→
+    60→## Task 6: iOS Remote Proxy Extension Classes — Flutter Client Implementation
+    61→
+    62→**Date**: 2025
+    63→**Status**: Completed
+    64→**Location**: `/home/z/my-project/AnymeXExtensionRuntimeBridge/lib/`
+    65→
+    66→### Summary
+    67→Created iOS-compatible remote proxy classes for the AnymeX Extension Runtime Bridge Flutter project. These classes replace the native Android MethodChannel-based source methods with HTTP calls to the remote JVM Bridge Server (Task 1), enabling full Aniyomi, CloudStream, and Kotatsu support on iOS.
+    68→
+    69→### Architecture
+    70→```
+    71→iOS Flutter App
+    72→  └─ ExtensionManager
+    73→       ├─ SoraExtensions (JS-based, works natively)
+    74→       ├─ MangayomiExtensions (JS-based, works natively)
+    75→       └─ Remote Extensions (NEW — HTTP proxy to JVM Bridge Server)
+    76→            ├─ RemoteAniyomiExtensions → RemoteAniyomiSourceMethods
+    77→            ├─ RemoteCloudStreamExtensions → RemoteCloudStreamSourceMethods
+    78→            └─ RemoteKotatsuExtensions → RemoteKotatsuSourceMethods
+    79→                  │
+    80→                  ▼ HTTP (JSON)
+    81→            JVM Bridge Server (Task 1)
+    82→```
+    83→
+    84→### Files Created (7 new files + 1 modified)
+    85→
+    86→#### Runtime Layer (1 file)
+    87→1. **`lib/Runtime/RemoteBridgeClient.dart`** — Singleton HTTP client with:
+    88→   - Configurable base URL, persisted via KvStore
+    89→   - POST/GET methods with standard `{ success, data, error }` envelope parsing
+    90→   - 30-second timeout, 1 automatic retry on network errors
+    91→   - Retry on `SocketException`, `TimeoutException`, `http.ClientException`
+    92→   - No retry on HTTP 4xx/5xx (application errors)
+    93→
+    94→#### Remote Extension Proxies (6 files)
+    95→
+    96→2. **`lib/Services/Remote/RemoteAniyomiExtensions.dart`** — Remote Aniyomi extension manager:
+    97→   - `id = 'aniyomi-remote'`, `supportsAnime = true`, `supportsManga = true`
+    98→   - `requiresPlugin = false` (server handles plugin loading)
+    99→   - Repo browsing stays client-side (protobuf + JSON index parsing via `PbDecoder`)
+   100→   - Shares repo KvStore keys with native AniyomiExtensions (no re-add needed)
+   101→   - `fetchInstalledAnimeExtensions/MangaExtensions` — calls `GET /api/aniyomi/extensions`
+   102→   - `installSource` — calls `POST /api/aniyomi/install` with download URL
+   103→   - `uninstallSource` — calls `POST /api/aniyomi/uninstall`
+   104→
+   105→3. **`lib/Services/Remote/RemoteAniyomiSourceMethods.dart`** — Remote Aniyomi source execution:
+   106→   - `getPopular`, `getLatestUpdates`, `search`, `getDetail`, `getVideoList`, `getPageList`
+   107→   - `getFilterList`, `getPreference`, `setPreference`
+   108→   - Full filter mapping (Header, Separator, CheckBox, TriState, Select, Sort, Text, Group)
+   109→   - Response parsing via `compute()` for off-main-thread work
+   110→   - Reuses `mapToSourcePreference` from native `AniyomiSourceMethods`
+   111→
+   112→4. **`lib/Services/Remote/RemoteCloudStreamExtensions.dart`** — Remote CloudStream extension manager:
+   113→   - `id = 'cloudstream-remote'`, `supportsAnime = true`, `supportsManga = false`
+   114→   - Repo browsing stays client-side (JSON format with meta-repo support)
+   115→   - `fetchInstalledAnimeExtensions` — calls `GET /api/cloudstream/providers`
+   116→   - `installSource` — calls `POST /api/cloudstream/install`
+   117→   - `uninstallSource` — calls `POST /api/cloudstream/uninstall`
+   118→
+   119→5. **`lib/Services/Remote/RemoteCloudStreamSourceMethods.dart`** — Remote CloudStream source execution:
+   120→   - `search`, `getDetail`, `getVideoList` (via `POST /api/cloudstream/*`)
+   121→   - `getPopular`, `getLatestUpdates` return empty (same as native)
+   122→   - `getVideoList` uses `Video.fromCs` parser for CloudStream video format
+   123→   - No video stream support over HTTP (stream = null)
+   124→
+   125→6. **`lib/Services/Remote/RemoteKotatsuExtensions.dart`** — Remote Kotatsu extension manager:
+   126→   - `id = 'kotatsu-remote'`, `supportsAnime = false`, `supportsManga = true`
+   127→   - `fetchMangaExtensions/InstalledMangaExtensions` — calls `GET /api/kotatsu/extensions`
+   128→   - Install/uninstall uses active-sources list persisted in KvStore
+   129→   - Shares repo KvStore keys with native KotatsuExtensions
+   130→
+   131→7. **`lib/Services/Remote/RemoteKotatsuSourceMethods.dart`** — Remote Kotatsu source execution:
+   132→   - `getPopular`, `getLatestUpdates`, `search`, `getDetail`, `getPageList`
+   133→   - Episodes reversed after detail fetch (Kotatsu convention)
+   134→   - `getVideoList` returns empty (Kotatsu is manga-only)
+   135→
+   136→#### Modified Files (1 file)
+   137→
+   138→8. **`lib/ExtensionManager.dart`** — Updated with:
+   139→   - New imports for `RemoteBridgeClient` and all three remote extensions
+   140→   - iOS branch in `onRuntimeBridgeInitialization()`: reads `remote_bridge_server_url` from KvStore, configures `RemoteBridgeClient`, registers remote extensions
+   141→   - `getSourceManager()` extension updated with fallback chain: native → desktop → remote for ASource, CloudStreamSource, KotatsuSource
+   142→
+   143→### Key Design Decisions
+   144→- **Same request/response format as MethodChannel**: The remote proxy classes send the exact same JSON payloads that `platform.invokeMethod` sends, ensuring the server can handle them identically
+   145→- **Client-side repo browsing**: Repo index fetching/parsing stays on the client (pure HTTP to GitHub). Only source execution needs the server
+   146→- **Shared KvStore keys**: Remote extensions use the same repo KvStore keys as their native counterparts, so users don't need to re-add repos
+   147→- **`requiresPlugin = false`**: Remote extensions don't need local plugin loading since the server handles it
+   148→- **Graceful degradation**: If the server is not configured or not reachable, remote extensions simply won't be registered (no crash)
+   149→- **No `dart:async` imports in source methods**: Cleaned up unused imports since cancelRequest is a no-op for remote
+   150→Task ID: 8-9
+   151→Agent: main
+   152→Task: Build Next.js management dashboard for the bridge server
+   153→
+   154→Work Log:
+   155→- Created Prisma schema with BridgeServerConfig model
+   156→- Built API proxy route at /api/bridge/[...path]/route.ts
+   157→- Built config management API at /api/bridge-config/route.ts
+   158→- Created Zustand store for bridge state
+   159→- Built comprehensive dashboard page with health stats, extensions tabs, and quick search
+   160→- Verified dashboard renders correctly via agent-browser
+   161→
+   162→Stage Summary:
+   163→- Dashboard is fully functional with connection management, extension display, and search testing
+   164→- All 28 server API endpoints are proxied through the Next.js API route
+   165→- Dashboard shows skeleton loading, error toasts, and responsive layout
+   166→
+   167→---
+   168→
+   169→## Task ID: REPO-ANALYSIS-1
+   170→Agent: repo-analyst
+   171→Task: Comprehensive analysis of AnymeX extension & repository management system
+   172→
+   173→## 1. Extension Repos
+   174→
+   175→### 1.1 Repo JSON Format
+   176→
+   177→There is **no single universal repo format**. Each extension type (Aniyomi, CloudStream, Kotatsu, Sora, Mangayomi) defines its own repo index format:
+   178→
+   179→**Aniyomi** (protobuf or JSON):
+   180→- Protobuf binary (`.pb` / `.pb.gz`) OR JSON (`.min.json`)
+   181→- File: `lib/Services/Aniyomi/AniyomiExtensions.dart` lines 207-312
+   182→- Fields per entry: `name`, `pkg`, `apk`, `lang`, `version`, `isNsfw`, `sources[{id}]`
+   183→- Anime vs manga detected by: name prefix (`"Aniyomi: "` → anime, `"Tachiyomi: "` → manga) OR pkg name contains `.anime.` or `.manga.`
+   184→- Icons at: `{baseRepoUrl}/icon/{pkg}.png`
+   185→- APK download at: `{baseRepoUrl}/apk/{apkName}`
+   186→- Example URL pattern: `https://raw.githubusercontent.com/.../index.min.json` or `index.pb.gz`
+   187→
+   188→**CloudStream** (JSON):
+   189→- File: `lib/Services/CloudStream/CloudStreamExtensions.dart` lines 117-193
+   190→- Direct JSON array of plugin objects
+   191→- Fields: `name`, `url` (download URL), `internalName`, `iconUrl`, `language`, `version`, `isNsfw`, `hasSettings`
+   192→- Supports **meta-repos**: JSON object with `pluginLists` array of sub-repo URLs
+   193→- Each entry is a `.cs3` plugin file
+   194→
+   195→**Kotatsu** (single JAR URL):
+   196→- File: `lib/Services/Kotatsu/KotatsuExtensions.dart` lines 52-95
+   197→- The repo URL points directly to a JAR file (the entire repo is one JAR containing all parsers)
+   198→- The JAR is downloaded and loaded via MethodChannel `loadExtensions`
+   199→
+   200→**Sora** (JSON):
+   201→- File: `lib/Services/Sora/SoraExtensions.dart` lines 200-255
+   202→- JSON array OR JSON object (map of extensions)
+   203→- Fields: `sourceName`, `type` (e.g. "animes", "mangas", "novels"), `language`, `version`, `iconUrl`/`iconURL`, `baseUrl`, `scriptUrl`/`scriptURL`
+   204→- Type detection: `type.contains('anime')`, `type.contains('mangas')`, `type.contains('novels')`
+   205→
+   206→**Mangayomi** (JSON):
+   207→- File: `lib/Services/Mangayomi/MangayomiExtensions.dart` lines 261-280
+   208→- JSON array of extension objects
+   209→- Fields: same as base `Source` model + `sourceCodeUrl`, `sourceCodeLanguage` (dart/js/lnreader)
+   210→- Extension source code is downloaded and stored in-memory (Dart code executed locally)
+   211→
+   212→### 1.2 Repo Data Model (Dart)
+   213→
+   214→File: `lib/Extensions/Extensions.dart` lines 141-174
+   215→
+   216→```dart
+   217→class Repo {
+   218→  final String url;          // The index URL
+   219→  final String? name;        // Display name (Sora uses this from author.name)
+   220→  final String? iconUrl;     // Icon URL (Sora uses this from author.icon)
+   221→  final String? extensions;  // Extension count string (Sora)
+   222→  final String? managerId;   // Which extension manager owns this repo
+   223→}
+   224→```
+   225→
+   226→### 1.3 How Repos are Stored
+   227→
+   228→All repos are stored in **Isar KvStore** as `List<String>` of JSON-encoded `Repo` objects. Key pattern: `{managerId}{itemTypeName}Repos`
+   229→
+   230→| Manager ID | Key | Notes |
+   231→|---|---|---|
+   232→| `aniyomi` | `aniyomiAnimeRepos` | Shared with `aniyomi-desktop` |
+   233→| `aniyomi` | `aniyomiMangaRepos` | Shared with `aniyomi-desktop` |
+   234→| `cloudstream` | `cloudstreamAnimeRepos` | |
+   235→| `kotatsu` | `kotatsuMangaRepos` | |
+   236→| `mangayomi` | `mangayomiAnimeRepos` | |
+   237→| `mangayomi` | `mangayomiMangaRepos` | |
+   238→| `mangayomi` | `mangayomiNovelRepos` | |
+   239→| `sora` | `soraAnimeRepos` | |
+   240→| `sora` | `soraMangaRepos` | |
+   241→| `sora` | `soraNovelRepos` | |
+   242→
+   243→**No default repos are pre-populated.** Users add repos manually via the `GitHubRepoDialog` widget.
+   244→
+   245→### 1.4 Key Repo Source Files
+   246→
+   247→- `AnymeXExtensionRuntimeBridge/lib/Extensions/Extensions.dart` — `Extension` abstract class, `Repo` model
+   248→- `AnymeXExtensionRuntimeBridge/lib/ExtensionManager.dart` — Central manager with `addRepo/removeRepo/getAllRepos`
+   249→- `AnymeXExtensionRuntimeBridge/lib/Services/Aniyomi/AniyomiExtensions.dart` — Aniyomi repo loading/parsing
+   250→- `AnymeXExtensionRuntimeBridge/lib/Services/CloudStream/CloudStreamExtensions.dart` — CloudStream repos (with meta-repo support)
+   251→- `AnymeXExtensionRuntimeBridge/lib/Services/Kotatsu/KotatsuExtensions.dart` — Kotatsu repo (single JAR)
+   252→- `AnymeXExtensionRuntimeBridge/lib/Services/Sora/SoraExtensions.dart` — Sora repos
+   253→- `AnymeXExtensionRuntimeBridge/lib/Services/Mangayomi/MangayomiExtensions.dart` — Mangayomi repos
+   254→- `AnymeX/lib/screens/settings/sub_settings/widgets/repo_dialog.dart` — UI for adding repos
+   255→
+   256→---
+   257→
+   258→## 2. Extension Download Flow
+   259→
+   260→### 2.1 Download Flow by Extension Type
+   261→
+   262→**Aniyomi (Android):**
+   263→1. APK downloaded from `{repoBase}/apk/{apkName}` to temp directory
+   264→2. Optional: save to custom path (`use_internal_anime_extension_loading` / `use_internal_manga_extension_loading` settings)
+   265→3. Install via `InstallPlugin.installApk()` (system package manager) OR `platform.invokeMethod('installSourceInternal')` (private/internal install)
+   266→4. Installed extensions discovered by `platform.invokeMethod('getInstalledAnimeExtensions')` which scans installed APKs
+   267→5. Temp file cleaned up after install (unless custom path)
+   268→
+   269→**Aniyomi (Desktop):**
+   270→1. APK downloaded to `{runtimeDir}/Extensions/Aniyomi/`
+   271→2. APK converted to JAR via `BridgeDispatcher().invokeMethod('convertApk')` (sidecar uses `de.femtopedia.dex2jar`)
+   272→3. JAR stays on disk at `{extensionsDir}/Aniyomi/{pkgName}.jar`
+   273→4. Icon URL and version saved to KvStore as `desktop_ext_icon_{pkgName}` and `desktop_ext_version_{pkgName}`
+   274→5. `BridgeDispatcher().invokeMethod('loadExtensions', {folderPath})` scans the folder
+   275→
+   276→**CloudStream (Android):**
+   277→1. `.cs3` file downloaded from `pluginUrl` to `{documentsDir}/AnymeX/cloudstream_plugins/{internalName}.cs3`
+   278→2. Written via temp file (`.tmp`) then renamed
+   279→3. Loaded via `platform.invokeMethod('loadPlugin', {path})`
+   280→4. Metadata saved to KvStore as `cs_meta_{normalizedInternalName}` (JSON with iconUrl, language, version, pluginUrl, repo)
+   281→
+   282→**CloudStream (Desktop):**
+   283→1. Same `.cs3` download to `{documentsDir}/AnymeX/cloudstream_plugins/`
+   284→2. Loaded via `BridgeDispatcher().invokeMethod('loadPlugin')` or `BridgeDispatcher().invokeMethod('loadExtensions')`
+   285→
+   286→**Kotatsu (Android):**
+   287→1. JAR downloaded from repo URL to `{documentsDir}/AnymeX/kotatsu_plugins/plugin.jar`
+   288→2. Loaded via `platform.invokeMethod('loadExtensions', {folderPath})`
+   289→3. Active sources tracked in KvStore as `kotatsu_active_sources` (List<String> of source IDs)
+   290→4. Install/uninstall just adds/removes IDs from the active list (no file changes)
+   291→
+   292→**Kotatsu (Desktop):**
+   293→1. Same JAR download to `{documentsDir}/AnymeX/kotatsu_plugins/plugin.jar`
+   294→2. Loaded via `BridgeDispatcher().invokeMethod('loadExtensions')`
+   295→
+   296→**Sora:**
+   297→1. Source code (JS/Dart) downloaded from `sourceCodeUrl`/`scriptUrl`
+   298→2. Stored **in-memory** as `sourceCode` field on `SSource`
+   299→3. Entire installed list persisted as JSON-encoded list in KvStore: `sora-Installed-{type.name}`
+   300→
+   301→**Mangayomi:**
+   302→1. Source code (Dart/JS) downloaded from `sourceCodeUrl`
+   303→2. Stored **in-memory** as `sourceCode` field on `MSource`
+   304→3. Headers captured via `getExtensionService(target).getHeaders()`
+   305→4. Entire installed list persisted as JSON-encoded list in KvStore: `mangayomi-Installed-{type.name}`
+   306→
+   307→### 2.2 File Formats Summary
+   308→
+   309→| Type | Format | Storage |
+   310→|---|---|---|
+   311→| Aniyomi (Android) | `.apk` (Android package) | System package manager OR internal APK dir |
+   312→| Aniyomi (Desktop) | `.jar` (converted from APK) | `{runtimeDir}/Extensions/Aniyomi/` |
+   313→| CloudStream | `.cs3` (JAR with metadata) | `{documentsDir}/AnymeX/cloudstream_plugins/` |
+   314→| Kotatsu | `.jar` (Kotlin JAR) | `{documentsDir}/AnymeX/kotatsu_plugins/` |
+   315→| Sora | JS/Dart source code | In-memory + KvStore JSON |
+   316→| Mangayomi | Dart/JS source code | In-memory + KvStore JSON |
+   317→
+   318→### 2.3 No Central Manifest File
+   319→
+   320→There is **no single installed-extensions manifest file**. Each extension type manages its own install tracking:
+   321→- **Aniyomi/CloudStream/Kotatsu**: Discovered dynamically from the runtime bridge (Android) or sidecar (desktop) by scanning files/loaded classes
+   322→- **Sora/Mangayomi**: Persisted as JSON-encoded lists in KvStore
+   323→
+   324→---
+   325→
+   326→## 3. Extension Storage (Database/Schema)
+   327→
+   328→### 3.1 Database: Isar (isar_community)
+   329→
+   330→File: `AnymeX/lib/database/database.dart` lines 20-36
+   331→
+   332→The app uses a **single shared Isar instance** named `'AnymeX'` containing both app and bridge schemas:
+   333→
+   334→```dart
+   335→Isar.openSync(
+   336→  schemas: [
+   337→    ...AnymeXExtensionBridge.isarSchema,  // [KvEntrySchema]
+   338→    KeyValueSchema,                        // App-level KV
+   339→    OfflineMediaSchema,
+   340→    CustomListSchema
+   341→  ],
+   342→  directory: dir.path,
+   343→  name: 'AnymeX',
+   344→  inspector: true,
+   345→)
+   346→```
+   347→
+   348→### 3.2 Isar Collections
+   349→
+   350→**KvEntry** (from bridge plugin): `lib/Settings/KvStore.dart` lines 11-18
+   351→```dart
+   352→@collection
+   353→class KvEntry {
+   354→  Id id = Isar.autoIncrement;
+   355→  @Index(unique: true)
+   356→  late String key;
+   357→  late String value;  // JSON-encoded with type wrapper: {t: "string", v: "..."}
+   358→}
+   359→```
+   360→
+   361→**KeyValue** (from main app): `lib/database/isar_models/key_value.dart`
+   362→```dart
+   363→@collection
+   364→class KeyValue {
+   365→  Id id = Isar.autoIncrement;
+   366→  @Index(unique: true, replace: true)
+   367→  late String key;
+   368→  String? value;  // JSON-encoded: {"val": <any>}
+   369→}
+   370→```
+   371→
+   372→### 3.3 Fields Stored Per Extension
+   373→
+   374→**Base Source** (`lib/Models/Source.dart`):
+   375→`id`, `name`, `baseUrl`, `lang`, `isNsfw`, `iconUrl`, `version`, `versionLast`, `itemType` (enum index), `repo`, `managerId`, `hasUpdate`, `isPrivate`, `supportsLatest`, `supportsPopular`
+   376→
+   377→**ASource** (Aniyomi - `lib/Services/Aniyomi/Models/Source.dart`):
+   378→+ `pkgName`, `apkName`, `langs` (List<ASource> for multi-language grouping)
+   379→
+   380→**MSource** (Mangayomi - `lib/Services/Mangayomi/Models/Source.dart`):
+   381→+ `sourceCode` (full Dart/JS source), `sourceCodeUrl`, `headers`, `sourceCodeLanguage` (dart/javascript/lnreader)
+   382→
+   383→**SSource** (Sora - `lib/Services/Sora/Models/Source.dart`):
+   384→+ `sourceCode`, `sourceCodeUrl`
+   385→
+   386→**CloudStreamSource** (`lib/Services/CloudStream/Models/CloudStreamSource.dart`):
+   387→+ `internalName`, `pluginUrl`, `jarUrl`, `hasSettings`
+   388→
+   389→**KotatsuSource** (`lib/Services/Kotatsu/Models/Source.dart`):
+   390→+ `jarName`, `pkgName`
+   391→
+   392→### 3.4 Extension Preferences
+   393→
+   394→Per-source preferences are **not stored locally** — they are retrieved from the extension itself at runtime via `SourceMethods.getPreference()`. For Aniyomi/CloudStream/Kotatsu, preferences come from the Android/bridge runtime. For Sora/Mangayomi, they are defined in the extension source code.
+   395→
+   396→When preferences are saved, they go through `SourceMethods.setPreference()` which calls the runtime bridge (Android: MethodChannel, Desktop: Sidecar/JNI bridge).
+   397→
+   398→### 3.5 No Migration Files
+   399→
+   400→Isar handles schema migrations automatically. No manual migration files exist.
+   401→
+   402→---
+   403→
+   404→## 4. Extension Loading (Desktop/Non-Android)
+   405→
+   406→### 4.1 Architecture Overview
+   407→
+   408→```
+   409→Desktop Flutter App
+   410→  └─ BridgeDispatcher
+   411→       ├─ JniBridge (JNI direct call via jnigen) [mode: jni]
+   412→       └─ SidecarBridge (subprocess JVM via stdin/stdout JSON) [mode: sidecar, DEFAULT]
+   413→            │
+   414→            ▼ Process.start()
+   415→      java -jar anymex_desktop_runtime.jar
+   416→```
+   417→
+   418→### 4.2 BridgeDispatcher
+   419→File: `lib/Runtime/Bridge/BridgeDispatcher.dart`
+   420→
+   421→Two modes:
+   422→- **`BridgeType.jni`**: Uses `JniBridge` for direct JNI calls (requires JVM lib loaded in-process)
+   423→- **`BridgeType.sidecar`** (default): Spawns a Java subprocess and communicates via stdin/stdout JSON
+   424→
+   425→The mode is stored in `ExtensionManager.bridgeType` (GetX observable).
+   426→
+   427→### 4.3 SidecarBridge Protocol
+   428→File: `lib/Runtime/Bridge/SidecarBridge.dart`
+   429→
+   430→**Request format** (JSON on stdin, newline-delimited):
+   431→```json
+   432→{"method": "loadExtensions", "args": {"folderPath": "/path/to/ext"}, "id": "123"}
+   433→```
+   434→
+   435→**Response format** (JSON on stdout, newline-delimited):
+   436→```json
+   437→{"id": "123", "status": "ok", "data": [...]}
+   438→```
+   439→
+   440→- Requests are matched by `id` (falls back to auto-increment)
+   441→- Stream responses use `status: "ok"` (data chunks), `status: "completed"`, `status: "error"`
+   442→- Default timeout: 60 seconds
+   443→- Cancellation: `{"method": "cancel", "args": {"id": "123"}}`
+   444→
+   445→### 4.4 Sidecar Process Startup
+   446→```bash
+   447→java -Dfile.encoding=UTF-8 -Dsun.stdout.encoding=UTF-8 \
+   448→     -Dsun.stderr.encoding=UTF-8 -Xms128m -Xmx512m -noverify \
+   449→     -jar /path/to/anymex_desktop_runtime.jar
+   450→```
+   451→
+   452→Startup detected by: stderr line containing `"AnymeX Sidecar Process Started"`
+   453→
+   454→### 4.5 Desktop Extension Install Flow
+   455→
+   456→1. APK downloaded from repo
+   457→2. `BridgeDispatcher().invokeMethod('convertApk', {apkPath, outJarPath})` → sidecar converts APK to JAR using embedded dex2jar
+   458→3. JAR saved to `{runtimeDir}/Extensions/Aniyomi/{pkgName}.jar`
+   459→4. `BridgeDispatcher().invokeMethod('loadExtensions', {folderPath})` → sidecar scans directory and loads all JARs
+   460→
+   461→### 4.6 Desktop vs Android Differences
+   462→
+   463→| Aspect | Android | Desktop |
+   464→|---|---|---|
+   465→| Runtime bridge | APK loaded via `DexClassLoader` (`MethodChannel('anymeXBridge')`) | JAR launched as subprocess (`SidecarBridge`) or JNI (`JniBridge`) |
+   466→| MethodChannel | `aniyomiExtensionBridge`, `cloudstreamExtensionBridge`, `kotatsuExtensionBridge` | `BridgeDispatcher` (sidecar stdin/stdout or JNI) |
+   467→| Aniyomi install | System package manager OR internal APK dir | APK→JAR conversion, stored in Extensions dir |
+   468→| CloudStream plugins | `.cs3` loaded from app data dir | Same `.cs3` loading via sidecar |
+   469→| Kotatsu plugins | `plugin.jar` loaded via MethodChannel | Same JAR loading via sidecar |
+   470→| Cookie/UA handling | `MethodChannel('anymeXBridge')` | `BridgeDispatcher` |
+   471→
+   472→### 4.7 Key Files
+   473→
+   474→- `lib/Runtime/Bridge/BridgeDispatcher.dart` — Bridge mode selector
+   475→- `lib/Runtime/Bridge/SidecarBridge.dart` — Subprocess JVM communication
+   476→- `lib/Runtime/Bridge/JniBridge.dart` — JNI direct calls
+   477→- `lib/Runtime/RuntimePaths.dart` — Paths: `{docsDir}/AnymeX/Tools/` (Windows) or `Runtime/` (others)
+   478→- `lib/Runtime/RuntimeDownloader.dart` — Downloads `anymex_desktop_runtime.jar` + JRE 17 + dex2jar
+   479→- `lib/Runtime/DesktopExtensionBase.dart` — Base class for desktop extensions
+   480→- `proxy-method/RuntimeBridge.kt` — Android-side Kotlin bridge (894 lines)
+   481→
+   482→---
+   483→
+   484→## 5. Extension Types & Formats
+   485→
+   486→### 5.1 Extension Manager Registration
+   487→
+   488→File: `lib/ExtensionManager.dart` lines 48-103
+   489→
+   490→```
+   491→_initDefaultManagers() →  [SoraExtensions, MangayomiExtensions]  (always, no plugin needed)
+   492→
+   493→onRuntimeBridgeInitialization() → (if bridge loaded)
+   494→  Android: [AniyomiExtensions, CloudStreamExtensions, KotatsuExtensions]
+   495→  Desktop: [DesktopAniyomiExtensions, DesktopCloudStreamExtensions, DesktopKotatsuExtensions]
+   496→  iOS: [RemoteAniyomiExtensions, RemoteCloudStreamExtensions, RemoteKotatsuExtensions] (if server URL configured)
+   497→```
+   498→
+   499→### 5.2 Extension Type Matrix
+   500→
+   501→| Manager | ID | Anime | Manga | Novel | Requires Plugin | File Format | Runtime |
+   502→|---|---|---|---|---|---|---|
+   503→| Aniyomi | `aniyomi` | ✓ | ✓ | ✗ | Yes (Android) | `.apk` | Android DexClassLoader / Desktop Sidecar |
+   504→| Aniyomi Desktop | `aniyomi-desktop` | ✓ | ✓ | ✗ | Yes | `.jar` (converted APK) | Sidecar/JNI |
+   505→| CloudStream | `cloudstream` | ✓ | ✗ | ✗ | Yes | `.cs3` | Android MethodChannel / Desktop Sidecar |
+   506→| CloudStream Desktop | `cloudstream-desktop` | ✓ | ✗ | ✗ | Yes | `.cs3` | Sidecar |
+   507→| Kotatsu | `kotatsu` | ✗ | ✓ | ✗ | Yes | `.jar` | Android MethodChannel / Desktop Sidecar |
+   508→| Kotatsu Desktop | `kotatsu-desktop` | ✗ | ✓ | ✗ | Yes | `.jar` | Sidecar |
+   509→| Sora | `sora` | ✓ | ✓ | ✓ | No | JS/Dart source | In-app JS/Dart engine |
+   510→| Mangayomi | `mangayomi` | ✓ | ✓ | ✓ | No | Dart/JS source | In-app Dart eval engine |
+   511→| Aniyomi Remote | `aniyomi-remote` | ✓ | ✓ | ✗ | No | N/A (server) | HTTP to JVM Bridge Server |
+   512→| CloudStream Remote | `cloudstream-remote` | ✓ | ✗ | ✗ | No | N/A (server) | HTTP to JVM Bridge Server |
+   513→| Kotatsu Remote | `kotatsu-remote` | ✗ | ✓ | ✗ | No | N/A (server) | HTTP to JVM Bridge Server |
+   514→
+   515→### 5.3 Source Resolution
+   516→
+   517→File: `lib/ExtensionManager.dart` lines 379-401
+   518→
+   519→`getSourceManager(source)` resolves which manager handles a source via `is` type checks:
+   520→- `ASource` → `aniyomi` || `aniyomi-desktop` || `aniyomi-remote`
+   521→- `MSource` → `mangayomi`
+   522→- `SSource` → `sora`
+   523→- `CloudStreamSource` → `cloudstream` || `cloudstream-desktop` || `cloudstream-remote`
+   524→- `KotatsuSource` → `kotatsu` || `kotatsu-desktop` || `kotatsu-remote`
+   525→
+   526→### 5.4 SourceMethods Interface
+   527→
+   528→File: `lib/Extensions/SourceMethods.dart`
+   529→
+   530→All source methods implementations must implement:
+   531→- `getPopular(int page)`, `getLatestUpdates(int page)`, `search(query, page, filters)`, `getDetail(media)`, `getPageList(episode)`, `getVideoList(episode)`
+   532→- `getFilterList()`, `getPreference()`, `setPreference(pref, value)`, `cancelRequest(token)`
+   533→- Optional: `getVideoListStream()`, `getNovelContent()`, `stopHttpServer()`
+   534→
+   535→---
+   536→
+   537→## 6. User Data
+   538→
+   539→### 6.1 Extension-Related User Data Storage
+   540→
+   541→All stored in Isar `KvEntry` or `KeyValue` collections:
+   542→
+   543→**Repos** (per manager per type):
+   544→- `aniyomiAnimeRepos`, `aniyomiMangaRepos` → `List<String>` of JSON `Repo`
+   545→- `cloudstreamAnimeRepos` → `List<String>` of JSON `Repo`
+   546→- `kotatsuMangaRepos` → `List<String>` of JSON `Repo`
+   547→- `mangayomi{Anime|Manga|Novel}Repos` → `List<String>` of JSON `Repo`
+   548→- `sora{Anime|Manga|Novel}Repos` → `List<String>` of JSON `Repo`
+   549→
+   550→**Installed Extensions** (only Sora/Mangayomi persist full lists):
+   551→- `sora-Installed-{type}` → `List<String>` of JSON `SSource` (includes `sourceCode`!)
+   552→- `mangayomi-Installed-{type}` → `List<String>` of JSON `MSource` (includes `sourceCode`!)
+   553→
+   554→**CloudStream Metadata** (per plugin):
+   555→- `cs_meta_{normalizedInternalName}` → JSON `{iconUrl, language, version, versionLast, pluginUrl, repo}`
+   556→
+   557→**Kotatsu Active Sources**:
+   558→- `kotatsu_active_sources` → `List<String>` of source IDs
+   559→
+   560→**Desktop Aniyomi** (per package):
+   561→- `desktop_ext_icon_{pkgName}` → icon URL string
+   562→- `desktop_ext_version_{pkgName}` → version string
+   563→
+   564→**Runtime Bridge**:
+   565→- `runtime_host_path` → APK/JAR path
+   566→- `runtime_host_installed_version` → version string
+   567→- `runtime_host_installed_release_title` → release title
+   568→- `remote_bridge_server_url` → server URL (iOS only)
+   569→
+   570→**Aniyomi Manager Settings**:
+   571→- `use_internal_anime_extension_loading` → bool
+   572→- `use_internal_manga_extension_loading` → bool
+   573→- `custom_anime_apk_path` → string
+   574→- `custom_manga_apk_path` → string
+   575→
+   576→### 6.2 App-Level User Data (AnymeX Main App)
+   577→
+   578→File: `lib/database/data_keys/keys.dart`
+   579→
+   580→Key enums for settings:
+   581→- `SourceKeys`: `activeAnimeRepo`, `activeMangaRepo`, `activeNovelRepo`, `extensionsServiceAllowed`, `activeSourceId`, `animeExtensionOrder`, etc.
+   582→- `AuthKeys`: `authToken` (AniList), `malAuthToken`, `simklAuthToken`, etc.
+   583→- `PluginKeys`: `runtimeHostInstalledVersion`, `bridgeMode`, `useInternalExtensionLoading`
+   584→- `General`, `ThemeKeys`, `PlayerKeys`, `ReaderKeys`, `DownloadKeys`, etc.
+   585→
+   586→### 6.3 User Authentication
+   587→
+   588→No custom auth system. The app delegates to external services:
+   589→- **AniList** (OAuth) — `AuthKeys.authToken`
+   590→- **MyAnimeList** — `AuthKeys.malAuthToken`, `AuthKeys.malRefreshToken`
+   591→- **Simkl** — `AuthKeys.simklAuthToken`
+   592→- **Discord** (RPC only, no login) — `discord_rpcEnabled`
+   593→- **Gist Sync** (GitHub Gist) — `SyncKeys.gistGithubToken`, `SyncKeys.gistGithubUsername`
+   594→
+   595→### 6.4 Per-Source Preferences
+   596→
+   597→Per-source preferences are NOT stored in the local database. They are:
+   598→1. Retrieved from the extension at runtime via `getPreference()`
+   599→2. Saved back via `setPreference()` which calls the native bridge (Android: SharedPreferences via MethodChannel, Desktop: sidecar/JNI, Remote: HTTP to server)
+   600→3. On the server side (Task 1 JVM Bridge Server), preferences are stored in-memory `ConcurrentHashMap`
+   601→
+   602→### 6.5 Backup/Restore
+   603→
+   604→File: `lib/controllers/services/backup_restore/backup_restore_service.dart`
+   605→
+   606→The app has a backup/restore system (via `lib/screens/settings/sub_settings/settings_backup.dart`). Extension-related data (installed Mangayomi/Sora source code, repo lists) would be backed up as part of the Isar database export.
+   607→
+   608→### 6.6 Directory Structure on Disk
+   609→
+   610→```
+   611→{documentsDir}/AnymeX/
+   612→├── AnymeX.isar                  # Main Isar database
+   613→├── isar/                        # Bridge plugin Isar database (KvEntry)
+   614→├── cloudstream_plugins/         # .cs3 plugin files
+   615→├── kotatsu_plugins/              # plugin.jar
+   616→├── Tools/  (Windows)
+   617→│   ├── anymex_desktop_runtime.jar
+   618→│   ├── jre/                       # Adoptium JRE 17
+   619→│   └── dex-tools-v2.4/
+   620→├── Runtime/  (macOS/Linux)
+   621→│   ├── anymex_runtime_host.apk    # (Android path on non-Android is unused)
+   622→│   ├── anymex_desktop_runtime.jar
+   623→│   ├── jre/
+   624→│   └── Extensions/
+   625→│       └── Aniyomi/               # Converted .jar files
+   626→└── webview/                      # WebView user data (Windows)
+   627→```
+   628→
