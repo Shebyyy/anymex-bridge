@@ -648,3 +648,25 @@ Stage Summary:
 - Shared repos + shared extension files + per-user install tracking
 - Auto-update extensions from repos on startup
 - Plan documented and presented to user
+
+---
+Task ID: 4
+Agent: main
+Task: Build lightweight SSH bridge server from scratch
+
+Work Log:
+- Deleted old Kotlin jvm-bridge-server
+- Created anymex-bridge/ with Bun + ssh2 (1 dependency)
+- Built 5 files: index.ts, server.ts, db.ts, repos.ts, extensions.ts, jar-runner.ts
+- DB: users (username+password), repos (global), extensions (global), user_installed (per-user)
+- HTTP on :8080 for /register and /health
+- SSH on :3022 with password auth
+- Auto-downloads anymex_desktop_runtime.jar v2.2.0 from GitHub releases (43MB)
+- Wire protocol: newline-delimited JSON over SSH exec channel
+- Actions: hello, addRepo, removeRepo, listRepos, listAvailable, listInstalled, install, uninstall, invoke, invokeStream, cancel
+- Tested: JAR auto-download, health endpoint, user registration, duplicate rejection, both ports listening
+
+Stage Summary:
+- Server runs, JAR auto-downloads, user registration works
+- SSH server with password auth operational on port 3022
+- Next: Flutter client side (RemoteSidecarBridge with password auth)
