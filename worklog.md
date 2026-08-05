@@ -625,3 +625,26 @@ The app has a backup/restore system (via `lib/screens/settings/sub_settings/sett
 │       └── Aniyomi/               # Converted .jar files
 └── webview/                      # WebView user data (Windows)
 ```
+
+---
+Task ID: 3
+Agent: main
+Task: Create lightweight server plan based on research findings
+
+Work Log:
+- Read worklog sections 1-6 from previous research agent
+- Read RuntimeDownloader.dart — found official anymex_desktop_runtime.jar download URL from GitHub releases
+- Read SidecarBridge.dart — documented stdin/stdout JSON protocol (request: {method, args, id}, response: {id, status, data})
+- Read DesktopAniyomiSourceMethods.dart — documented all bridge methods (getPopular, search, getDetail, getVideoList, getPageList, getFilterList, aniyomiGetPreferences, aniyomiSavePreference, stopHttpServer)
+- Read DesktopAniyomiExtensions.dart — documented repo parsing (protobuf or JSON), APK download, convertApk flow, loadExtensions, install/uninstall flow
+- Read DesktopCloudStreamExtensions.dart — documented .cs3 handling, meta-repo support, csLoadExtensions, JAR conversion for CloudStream
+- Read DesktopKotatsuExtensions.dart — documented single plugin.jar per repo, kotatsuLoadExtensions, active sources tracking
+- Key discovery: anymex_desktop_runtime.jar handles ALL extension logic. Server just needs to be a thin HTTP proxy + repo/extension manager.
+
+Stage Summary:
+- Server architecture redesigned: Bun + Hono + SQLite (lightweight) instead of Kotlin/Ktor (heavy)
+- Server spawns official anymex_desktop_runtime.jar as subprocess, proxies HTTP↔stdin/stdout JSON
+- Zero coupling risk — JAR auto-updates from GitHub releases
+- Shared repos + shared extension files + per-user install tracking
+- Auto-update extensions from repos on startup
+- Plan documented and presented to user
