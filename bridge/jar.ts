@@ -81,19 +81,38 @@ export async function startSidecar(): Promise<{ ok: boolean; error?: string }> {
     }, 10000)
 
     proc.stderr.on('data', (chunk: Buffer) => {
- const line = chunk.toString()
-      console.log('[sidecar stderr]', line.trimEnd())
-      if (line.includes('AnymeX Sidecar Process Started') && !started) {
-        started = true
-        clearTimeout(startupTimer)
-        _process = proc
-        jarReady = true
-        console.log('[sidecar] Process started')
-        resolve({ ok: true })
+      const lines = chunk.toString().split('\n')
+      for (const line of lines) {
+        if (!line.trim()) continue
+        // JAR redirects all stdout to stderr for IPC safety
+        // So JSON responses come via stderr too
+        try {
+          const resp = JSON.parse(line)
+          const id = resp.id?.toString()
+          const data = resp.data
+          if (id && _completers.has(id)) {
+            const c = _completers.get(id)!
+            clearTimeout(c.timer)
+            _completers.delete(id)
+            c.resolve(data)
+          }
+        } catch {
+          // Not JSON — it's a log line
+          console.log('[sidecar stderr]', line.trimEnd())
+          if (line.includes('AnymeX Sidecar Process Started') && !started) {
+            started = true
+            clearTimeout(startupTimer)
+            _process = proc
+            jarReady = true
+            console.log('[sidecar] Process started')
+            resolve({ ok: true })
+          }
+        }
       }
     })
 
     proc.stdout.on('data', (chunk: Buffer) => {
+      // Some versions may still use stdout
       for (const line of chunk.toString().split('\n')) {
         if (!line.trim()) continue
         try {
