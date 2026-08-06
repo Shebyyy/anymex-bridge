@@ -48,10 +48,8 @@ export async function checkOrDownloadJar(): Promise<{ ok: boolean; error?: strin
 // ─── Persistent Sidecar Process ────────────────────────────
 // Matches the Dart SidecarBridge.dart protocol exactly:
 //   stdin:  {"method":"...","args":{...},"id":"..."}\n
-//   stdout: {"id":"...","status":"...","data":...}\n
-//   stderr: "AnymeX Sidecar Process Started" (startup signal)
-//   status absent/other → resolve completer with data
-//   stream methods use invokeStream (not implemented here yet)
+//   stderr: JSON responses + log lines (JAR redirects stdout to stderr)
+//   stdout: (unused - JAR says it redirects to stderr for IPC safety)
 
 export async function startSidecar(): Promise<{ ok: boolean; error?: string }> {
   if (!existsSync(JAR_PATH)) {
@@ -80,52 +78,54 @@ export async function startSidecar(): Promise<{ ok: boolean; error?: string }> {
       }
     }, 10000)
 
+    // Line buffers to handle chunked TCP output
+    let stderrBuf = ''
+    let stdoutBuf = ''
+
+    function tryHandleJson(line: string): boolean {
+      if (!line.trim()) return false
+      try {
+        const resp = JSON.parse(line)
+        const id = resp.id?.toString()
+        const data = resp.data
+        if (id && _completers.has(id)) {
+          const c = _completers.get(id)!
+          clearTimeout(c.timer)
+          _completers.delete(id)
+          c.resolve(data)
+          return true
+        }
+        return false
+      } catch {
+        return false
+      }
+    }
+
     proc.stderr.on('data', (chunk: Buffer) => {
-      const lines = chunk.toString().split('\n')
+      stderrBuf += chunk.toString()
+      const lines = stderrBuf.split('\n')
+      stderrBuf = lines.pop() || '' // keep incomplete last line
       for (const line of lines) {
-        if (!line.trim()) continue
-        // JAR redirects all stdout to stderr for IPC safety
-        // So JSON responses come via stderr too
-        try {
-          const resp = JSON.parse(line)
-          const id = resp.id?.toString()
-          const data = resp.data
-          if (id && _completers.has(id)) {
-            const c = _completers.get(id)!
-            clearTimeout(c.timer)
-            _completers.delete(id)
-            c.resolve(data)
-          }
-        } catch {
-          // Not JSON — it's a log line
-          console.log('[sidecar stderr]', line.trimEnd())
-          if (line.includes('AnymeX Sidecar Process Started') && !started) {
-            started = true
-            clearTimeout(startupTimer)
-            _process = proc
-            jarReady = true
-            console.log('[sidecar] Process started')
-            resolve({ ok: true })
-          }
+        if (tryHandleJson(line)) continue
+        // Not a matched response — it's a log line
+        console.log('[sidecar]', line.trimEnd())
+        if (line.includes('AnymeX Sidecar Process Started') && !started) {
+          started = true
+          clearTimeout(startupTimer)
+          _process = proc
+          jarReady = true
+          console.log('[sidecar] Process started')
+          resolve({ ok: true })
         }
       }
     })
 
     proc.stdout.on('data', (chunk: Buffer) => {
-      // Some versions may still use stdout
-      for (const line of chunk.toString().split('\n')) {
-        if (!line.trim()) continue
-        try {
-          const resp = JSON.parse(line)
-          const id = resp.id?.toString()
-          const data = resp.data
-          if (id && _completers.has(id)) {
-            const c = _completers.get(id)!
-            clearTimeout(c.timer)
-            _completers.delete(id)
-            c.resolve(data)
-          }
-        } catch {}
+      stdoutBuf += chunk.toString()
+      const lines = stdoutBuf.split('\n')
+      stdoutBuf = lines.pop() || ''
+      for (const line of lines) {
+        tryHandleJson(line)
       }
     })
 
@@ -133,7 +133,6 @@ export async function startSidecar(): Promise<{ ok: boolean; error?: string }> {
       console.log(`[sidecar] Process exited with code ${code}`)
       jarReady = false
       _process = null
-      // Reject all pending
       for (const [id, c] of _completers) {
         clearTimeout(c.timer)
         c.reject(new Error(`Sidecar process exited (code ${code})`))
@@ -149,7 +148,6 @@ export async function startSidecar(): Promise<{ ok: boolean; error?: string }> {
       }
     })
 
-    // Store immediately so we can kill if needed
     _process = proc
   })
 }
@@ -174,7 +172,6 @@ export function invokeJar(method: string, args: Record<string, any>, timeoutMs =
     const id = String(++_reqId)
     const timer = setTimeout(() => {
       _completers.delete(id)
-      // Send cancel
       try {
         _process?.stdin?.write(JSON.stringify({ method: 'cancel', args: { id } }) + '\n')
       } catch {}
