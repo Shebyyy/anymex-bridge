@@ -1,4 +1,4 @@
-import { getRepoByUrl, addRepo, upsertExtension } from './db.js'
+import { addUserRepo, getUserRepos, upsertExtension } from './db.js'
 
 export interface ExtMeta {
   id: string
@@ -13,27 +13,24 @@ export interface ExtMeta {
 }
 
 /**
- * Fetch a repo URL, detect its type, parse extensions, store in DB.
- * Returns the list of parsed extensions.
+ * Add a repo for a user, fetch its index, store extensions globally (deduped).
  */
-export async function addAndFetchRepo(repoUrl: string, userId: string): Promise<{ repo: any; extensions: ExtMeta[] }> {
-  // Try to detect type from URL or content
-  const detected = await detectRepoType(repoUrl)
-  const type = detected.type
+export async function addAndFetchRepo(repoUrl: string, userId: string, type?: string): Promise<{ repoUrl: string; type: string; extensions: ExtMeta[] }> {
+  // Detect type if not provided
+  const detectedType = type || (await detectRepoType(repoUrl)).type
 
-  // Store repo globally
-  const repo = addRepo(repoUrl, type, userId)
+  // Store repo for this user
+  addUserRepo(userId, repoUrl, detectedType)
 
   // Parse extensions from the index
-  const extensions = await parseRepoIndex(repoUrl, type)
+  const extensions = await parseRepoIndex(repoUrl, detectedType)
 
-  // Upsert each extension
+  // Upsert each extension (global, deduped by id)
   for (const ext of extensions) {
     upsertExtension({
       id: ext.id,
       name: ext.name,
-      type,
-      repo_id: repo.id,
+      type: ext.type,
       version: ext.version,
       icon_url: ext.iconUrl,
       lang: ext.lang,
@@ -42,20 +39,39 @@ export async function addAndFetchRepo(repoUrl: string, userId: string): Promise<
     })
   }
 
-  return { repo, extensions }
+  return { repoUrl, type: detectedType, extensions }
+}
+
+/**
+ * Get extensions available to a user (from their repos only).
+ * We re-fetch their repo indexes and return extensions.
+ */
+export async function getAvailableForUser(userId: string): Promise<ExtMeta[]> {
+  const userRepos = getUserRepos(userId)
+  const allExts: ExtMeta[] = []
+
+  for (const repo of userRepos) {
+    try {
+      const exts = await parseRepoIndex(repo.url, repo.type)
+      allExts.push(...exts)
+    } catch (e: any) {
+      console.error(`[repos] failed to fetch ${repo.url}: ${e.message}`)
+    }
+  }
+
+  // Dedup by id
+  const seen = new Set<string>()
+  return allExts.filter(e => {
+    if (seen.has(e.id)) return false
+    seen.add(e.id)
+    return true
+  })
 }
 
 // ── Detection ──────────────────────────────────────────
 
 async function detectRepoType(url: string): Promise<{ type: string }> {
-  // If URL contains known keywords
   const u = url.toLowerCase()
-  if (u.includes('aniyomi')) {
-    // Could be anime or manga — check by fetching
-    const repo = getRepoByUrl(url)
-    if (repo) return { type: repo.type }
-    // Default: try fetching and see what we get
-  }
   if (u.includes('cloudstream') || u.includes('cloudstream-extensions')) {
     return { type: 'cloudstream' }
   }
@@ -63,7 +79,6 @@ async function detectRepoType(url: string): Promise<{ type: string }> {
     return { type: 'kotatsu' }
   }
 
-  // Try to fetch and detect from content
   try {
     const res = await fetch(url, { signal: AbortSignal.timeout(15_000) })
     const ct = res.headers.get('content-type') || ''
@@ -71,18 +86,14 @@ async function detectRepoType(url: string): Promise<{ type: string }> {
       return { type: 'kotatsu' }
     }
     const text = await res.text()
-    // CloudStream: JSON array of plugins or meta-repo
     try {
       const json = JSON.parse(text)
       if (Array.isArray(json)) {
         if (json[0]?.url || json[0]?.internalName) return { type: 'cloudstream' }
-        if (json[0]?.apk || json[0]?.pkg) return { type: 'aniyomi-anime' } // will refine below
-        if (json[0]?.sourceCodeUrl) return { type: 'aniyomi-anime' } // could be sora/mangayomi
+        if (json[0]?.apk || json[0]?.pkg) return { type: 'aniyomi-anime' }
       }
       if (json.pluginLists) return { type: 'cloudstream' }
     } catch {}
-
-    // Default to aniyomi-anime (most common)
     return { type: 'aniyomi-anime' }
   } catch {
     return { type: 'aniyomi-anime' }
@@ -110,29 +121,20 @@ async function parseRepoIndex(url: string, type: string): Promise<ExtMeta[]> {
   }
 }
 
-/**
- * CloudStream repos are JSON arrays of plugins.
- * Supports meta-repos (object with pluginLists).
- */
 async function parseCloudStreamRepo(url: string): Promise<ExtMeta[]> {
   const res = await fetch(url, { signal: AbortSignal.timeout(15_000) })
   const text = await res.text()
   const json = JSON.parse(text)
 
-  // Meta-repo: expand sub-repos
   if (json.pluginLists && Array.isArray(json.pluginLists)) {
     const all: ExtMeta[] = []
     for (const subUrl of json.pluginLists) {
-      try {
-        const sub = await parseCloudStreamRepo(subUrl)
-        all.push(...sub)
-      } catch {}
+      try { all.push(...await parseCloudStreamRepo(subUrl)) } catch {}
     }
     return all
   }
 
   if (!Array.isArray(json)) return []
-
   const baseRepo = url.substring(0, url.lastIndexOf('/') + 1)
 
   return json
@@ -150,9 +152,6 @@ async function parseCloudStreamRepo(url: string): Promise<ExtMeta[]> {
     }))
 }
 
-/**
- * Kotatsu repos are a single JAR URL. We represent it as one "extension" entry.
- */
 function parseKotatsuRepo(url: string): ExtMeta[] {
   return [{
     id: 'kotatsu-' + hashUrl(url),
@@ -163,15 +162,9 @@ function parseKotatsuRepo(url: string): ExtMeta[] {
   }]
 }
 
-/**
- * Aniyomi repos are either protobuf (.pb/.pb.gz) or JSON (.min.json).
- * We try JSON first, fall back to raw URL for manual install.
- */
 async function parseAniyomiRepo(url: string, type: string): Promise<ExtMeta[]> {
-  // Try JSON format first
   let jsonUrl = url
   if (!url.endsWith('.json') && !url.endsWith('.min.json')) {
-    // Try common JSON index paths
     const base = url.endsWith('/') ? url : url + '/'
     jsonUrl = base + 'index.min.json'
   }
@@ -180,7 +173,6 @@ async function parseAniyomiRepo(url: string, type: string): Promise<ExtMeta[]> {
     const res = await fetch(jsonUrl, { signal: AbortSignal.timeout(15_000) })
     if (!res.ok) throw new Error(`HTTP ${res.status}`)
     const json = await res.json()
-
     if (!Array.isArray(json)) return []
 
     const baseRepo = jsonUrl.substring(0, jsonUrl.lastIndexOf('/') + 1)
@@ -188,7 +180,6 @@ async function parseAniyomiRepo(url: string, type: string): Promise<ExtMeta[]> {
     return json
       .filter((e: any) => e.pkg)
       .map((e: any) => {
-        // Detect anime vs manga from name prefix or pkg
         const nameStr = (e.name || '').toLowerCase()
         const pkgStr = (e.pkg || '').toLowerCase()
         const isAnime = nameStr.startsWith('aniyomi:') || pkgStr.includes('.anime.') ||
@@ -205,16 +196,11 @@ async function parseAniyomiRepo(url: string, type: string): Promise<ExtMeta[]> {
           lang: e.lang,
           isNsfw: e.isNsfw || false,
           downloadUrl: `${baseRepo}apk/${e.apk}`,
-          extra: {
-            apkName: e.apk,
-            sources: e.sources || [],
-          },
+          extra: { apkName: e.apk, sources: e.sources || [] },
         } as ExtMeta
       })
   } catch (e: any) {
     console.error(`[repos] aniyomi JSON parse failed (${jsonUrl}): ${e.message}`)
-    // If JSON fails, it might be protobuf — we can't parse protobuf easily
-    // Return empty and let user install manually
     return []
   }
 }

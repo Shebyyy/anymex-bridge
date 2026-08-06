@@ -8,18 +8,18 @@ mkdirSync(DATA_DIR, { recursive: true })
 const JAR_PATH = join(DATA_DIR, 'anymex_desktop_runtime.jar')
 
 // ── JAR auto-download from GitHub ───────────────────────
-const GITHUB_REPO = 'keiyoushi/extensions-sources'
+// Source: https://github.com/RyanYuuki/AnymeXExtensionRuntimeBridge
+const JAR_DOWNLOAD_URL = 'https://github.com/RyanYuuki/AnymeXExtensionRuntimeBridge/releases/latest/download/anymex_desktop_runtime.jar'
 
 async function getLatestJarUrl(): Promise<{ url: string; tag: string } | null> {
   try {
-    const res = await fetch(`https://api.github.com/repos/${GITHUB_REPO}/releases/latest`)
+    // Get the latest release tag for version tracking
+    const res = await fetch('https://api.github.com/repos/RyanYuuki/AnymeXExtensionRuntimeBridge/releases/latest')
     if (!res.ok) return null
     const release = await res.json() as any
-    const asset = release.assets?.find((a: any) => a.name === 'anymex_desktop_runtime.jar')
-    if (!asset) return null
-    return { url: asset.browser_download_url, tag: release.tag_name }
+    return { url: JAR_DOWNLOAD_URL, tag: release.tag_name }
   } catch {
-    return null
+    return { url: JAR_DOWNLOAD_URL, tag: 'unknown' }
   }
 }
 
