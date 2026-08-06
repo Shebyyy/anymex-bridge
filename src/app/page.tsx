@@ -4,8 +4,7 @@ import { useEffect, useCallback, useState } from 'react'
 import { toast } from 'sonner'
 import {
   Server, Wifi, WifiOff, Users, FolderGit2, Package,
-  Activity, Shield, Terminal, RefreshCw, Plus, Trash2,
-  UserPlus, Key, Database, Copy, Check
+  Activity, Terminal, RefreshCw, UserPlus, Key
 } from 'lucide-react'
 
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card'
@@ -20,15 +19,11 @@ import { Separator } from '@/components/ui/separator'
 // ── Types ──────────────────────────────────────────────
 
 interface HealthData {
-  ok: boolean
-  jar: boolean
-  jarReady: boolean
-  ssh: number
-  http: number
-  users?: number
-  repos?: number
-  extensions?: number
-  installs?: number
+  dbPresent: boolean
+  users: number
+  repos: number
+  extensions: number
+  installs: number
 }
 
 interface User {
@@ -39,12 +34,11 @@ interface User {
 }
 
 interface Repo {
-  id: string
+  user_id: string
   url: string
   type: string
-  added_by_name: string
-  ext_count: number
-  created: string
+  added: string
+  username: string
 }
 
 interface Extension {
@@ -55,8 +49,8 @@ interface Extension {
   icon_url: string | null
   lang: string | null
   is_nsfw: number
+  extra: any
   install_count: number
-  repo_url: string | null
 }
 
 interface Install {
@@ -134,7 +128,7 @@ export default function DashboardPage() {
 
   useEffect(() => { refresh() }, [refresh])
 
-  const online = health?.ok && !error
+  const online = health?.dbPresent && !error
 
   return (
     <div className="min-h-screen bg-background flex flex-col">
@@ -183,7 +177,7 @@ export default function DashboardPage() {
               <StatCard icon={<FolderGit2 className="h-4 w-4" />} label="Repos" value={repos.length} />
               <StatCard icon={<Package className="h-4 w-4" />} label="Extensions" value={extensions.length} />
               <StatCard icon={<Key className="h-4 w-4" />} label="Installs" value={installs.length} />
-              <StatCard icon={<Activity className="h-4 w-4" />} label="SSH Port" value={health?.ssh ?? '-'} />
+              <StatCard icon={<Activity className="h-4 w-4" />} label="DB Status" value={health?.dbPresent ? 'OK' : 'No DB'} />
             </>
           )}
         </div>
@@ -229,28 +223,30 @@ export default function DashboardPage() {
           <TabsContent value="repos" className="mt-4">
             <Card>
               <CardHeader className="pb-3">
-                <CardTitle className="text-base">Global Repos</CardTitle>
-                <CardDescription className="text-xs">One user adds a repo, everyone sees it</CardDescription>
+                <CardTitle className="text-base">User Repos</CardTitle>
+                <CardDescription className="text-xs">Each user manages their own repos via SSH</CardDescription>
               </CardHeader>
               <CardContent>
                 {repos.length === 0 ? (
                   <p className="text-sm text-muted-foreground py-8 text-center">No repos added yet. Users add repos via SSH.</p>
                 ) : (
-                  <div className="space-y-2">
-                    {repos.map(r => (
-                      <div key={r.id} className="flex items-start gap-3 p-3 rounded-lg bg-muted/30 hover:bg-muted/50 transition-colors">
-                        <FolderGit2 className="h-4 w-4 mt-0.5 text-muted-foreground shrink-0" />
-                        <div className="flex-1 min-w-0">
-                          <p className="text-sm font-mono truncate text-foreground/80">{r.url}</p>
-                          <div className="flex items-center gap-2 mt-1">
-                            <Badge variant="outline" className={`text-xs ${TYPE_COLORS[r.type] || ''}`}>{TYPE_LABELS[r.type] || r.type}</Badge>
-                            <span className="text-xs text-muted-foreground">{r.ext_count} extensions</span>
-                            {r.added_by_name && <span className="text-xs text-muted-foreground">by {r.added_by_name}</span>}
+                  <ScrollArea className="max-h-96">
+                    <div className="space-y-2">
+                      {repos.map((r, i) => (
+                        <div key={`${r.user_id}-${r.url}-${i}`} className="flex items-start gap-3 p-3 rounded-lg bg-muted/30 hover:bg-muted/50 transition-colors">
+                          <FolderGit2 className="h-4 w-4 mt-0.5 text-muted-foreground shrink-0" />
+                          <div className="flex-1 min-w-0">
+                            <p className="text-sm font-mono truncate text-foreground/80">{r.url}</p>
+                            <div className="flex items-center gap-2 mt-1">
+                              <Badge variant="outline" className={`text-xs ${TYPE_COLORS[r.type] || ''}`}>{TYPE_LABELS[r.type] || r.type}</Badge>
+                              <span className="text-xs text-muted-foreground">by {r.username}</span>
+                              {r.added && <span className="text-xs text-muted-foreground">{new Date(r.added).toLocaleDateString()}</span>}
+                            </div>
                           </div>
                         </div>
-                      </div>
-                    ))}
-                  </div>
+                      ))}
+                    </div>
+                  </ScrollArea>
                 )}
               </CardContent>
             </Card>
@@ -334,26 +330,20 @@ export default function DashboardPage() {
               </CardTitle>
             </CardHeader>
             <CardContent>
-              <div className="grid grid-cols-2 md:grid-cols-4 gap-4 text-sm">
+              <div className="grid grid-cols-2 md:grid-cols-3 gap-4 text-sm">
                 <div>
                   <p className="text-xs text-muted-foreground">SSH Port</p>
-                  <p className="font-mono">{health.ssh}</p>
+                  <p className="font-mono">3022</p>
                 </div>
                 <div>
-                  <p className="text-xs text-muted-foreground">HTTP Port</p>
-                  <p className="font-mono">{health.http}</p>
-                </div>
-                <div>
-                  <p className="text-xs text-muted-foreground">Runtime JAR</p>
-                  <Badge variant={health.jar ? 'default' : 'destructive'} className="text-xs mt-1">
-                    {health.jar ? 'Present' : 'Not Found'}
+                  <p className="text-xs text-muted-foreground">Bridge DB</p>
+                  <Badge variant={health.dbPresent ? 'default' : 'destructive'} className="text-xs mt-1">
+                    {health.dbPresent ? 'Connected' : 'Not Found'}
                   </Badge>
                 </div>
                 <div>
-                  <p className="text-xs text-muted-foreground">JAR Ready</p>
-                  <Badge variant={health.jarReady ? 'default' : 'destructive'} className="text-xs mt-1">
-                    {health.jarReady ? 'Ready' : 'Not Running'}
-                  </Badge>
+                  <p className="text-xs text-muted-foreground">Protocol</p>
+                  <p className="text-xs mt-1">SidecarBridge JSON over SSH</p>
                 </div>
               </div>
             </CardContent>

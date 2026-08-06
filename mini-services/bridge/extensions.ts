@@ -1,5 +1,5 @@
-import { existsSync, mkdirSync, createWriteStream, renameSync } from 'node:fs'
-import { join, basename } from 'node:path'
+import { existsSync, mkdirSync, writeFileSync, renameSync, unlinkSync } from 'node:fs'
+import { join } from 'node:path'
 import { getExtension, upsertExtension, installForUser, uninstallForUser, getExtUserCount } from './db.js'
 import { jar } from './jar.js'
 import type { ExtMeta } from './repos.js'
@@ -19,11 +19,6 @@ mkdirSync(join(EXT_DIR, 'Kotatsu'), { recursive: true })
 export async function installExtension(extId: string, userId: string): Promise<any> {
   const ext = getExtension(extId)
   if (!ext) throw new Error(`extension not found: ${extId}`)
-
-  // Already installed for this user?
-  if (installForUser.__proto__.constructor.name === 'Function') {
-    // We call it below after download
-  }
 
   // Download file if not present
   const extra = ext.extra ? JSON.parse(ext.extra) : {}
@@ -50,7 +45,6 @@ export async function uninstallExtension(extId: string, userId: string): Promise
     // Safe to delete file
     const ext = getExtension(extId)
     if (ext?.file_path && existsSync(ext.file_path)) {
-      const { unlinkSync } = await import('node:fs')
       try { unlinkSync(ext.file_path) } catch {}
       console.log(`[ext] deleted file: ${ext.file_path}`)
       // Clear file_path in DB
@@ -151,10 +145,7 @@ async function convertApkToJar(apkPath: string, outJarPath: string): Promise<voi
   }
 
   // Clean up APK
-  try {
-    const { unlinkSync } = await import('node:fs')
-    unlinkSync(apkPath)
-  } catch {}
+  try { unlinkSync(apkPath) } catch {}
 
   console.log(`[ext] conversion done: ${outJarPath}`)
 }
@@ -168,27 +159,11 @@ async function downloadFile(url: string, destPath: string): Promise<string> {
   if (!res.ok) throw new Error(`download failed: HTTP ${res.status}`)
 
   const tmpPath = destPath + '.tmp'
-  const file = createWriteStream(tmpPath)
-  const reader = res.body!.getReader()
+  const buf = Buffer.from(await res.arrayBuffer())
+  writeFileSync(tmpPath, buf)
+  renameSync(tmpPath, destPath)
 
-  while (true) {
-    const { done, value } = await reader.read()
-    if (done) break
-    file.write(value)
-  }
-  file.end()
-
-  // Atomic rename
-  await new Promise<void>((resolve, reject) => {
-    file.on('finish', () => {
-      renameSync(tmpPath, destPath)
-      resolve()
-    })
-    file.on('error', reject)
-  })
-
-  const { statSync } = await import('node:fs')
-  const size = (statSync(destPath).size / 1024).toFixed(0)
+  const size = (buf.length / 1024).toFixed(0)
   console.log(`[ext] downloaded ${size}KB → ${destPath}`)
   return destPath
 }
