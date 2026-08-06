@@ -4,7 +4,7 @@ import { generateKeyPairSync } from 'node:crypto'
 import { join } from 'node:path'
 import { Server as SshServer } from 'ssh2'
 import { authenticateUser, createUser, getStats, getUserExtensions } from './db.js'
-import { checkOrDownloadJar, isJarReady, invokeJar } from './jar.js'
+import { isJarReady, invokeJar, invokeJarOnce } from './jar.js'
 import { addRepo } from './repos.js'
 import { installExtension, downloadExtension } from './extensions.js'
 import { db } from './db.js'
@@ -56,6 +56,29 @@ export function startHttpServer() {
         const type = url.searchParams.get('type') || undefined
         const data = queryData(section, type)
         res.end(JSON.stringify(data))
+        return
+      }
+
+      // ── Management endpoints (auth required) ──
+      if (url.pathname === '/addRepo' && req.method === 'POST') {
+        const body = await readBody(req)
+        const { username, password, url: repoUrl, type } = JSON.parse(body)
+        const user = authenticateUser(username, password)
+        if (!user) { res.writeHead(401); res.end(JSON.stringify({ ok: false, error: 'invalid credentials' })); return }
+        if (!repoUrl) { res.writeHead(400); res.end(JSON.stringify({ ok: false, error: 'url required' })); return }
+        const result = await addRepo(user.id, repoUrl, type)
+        res.end(JSON.stringify(result))
+        return
+      }
+
+      if (url.pathname === '/installExtension' && req.method === 'POST') {
+        const body = await readBody(req)
+        const { username, password, extId } = JSON.parse(body)
+        const user = authenticateUser(username, password)
+        if (!user) { res.writeHead(401); res.end(JSON.stringify({ ok: false, error: 'invalid credentials' })); return }
+        if (!extId) { res.writeHead(400); res.end(JSON.stringify({ ok: false, error: 'extId required' })); return }
+        const result = await installExtension(user.id, Number(extId))
+        res.end(JSON.stringify(result))
         return
       }
 
@@ -246,10 +269,14 @@ async function handleMethod(userId: string, username: string, msg: any): Promise
     }
 
     default:
-      // Forward to JAR
-      if (isJarReady()) {
-        return invokeJar(method, args || {})
+      // Forward to JAR sidecar (persistent) or one-shot fallback
+      try {
+        if (isJarReady()) return await invokeJar(method, args || {})
+        // Try one-shot as fallback
+        const { invokeJarOnce } = await import('./jar.js')
+        return await invokeJarOnce(method, args || {})
+      } catch (e: any) {
+        throw new Error(`${method}: ${e.message}`)
       }
-      throw new Error(`Unknown method: ${method} (and JAR not available)`)
   }
 }
