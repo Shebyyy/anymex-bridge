@@ -1,24 +1,24 @@
-# AnymeX Bridge Server — Worklog
+# AnymeX SSH Bridge - Work Log
 
 ---
 Task ID: 1
 Agent: main
-Task: Rebuild bridge mini-service from scratch (lost from previous session)
+Task: Build SSH bridge server for iOS AnymeX users
 
 Work Log:
-- Created `/home/z/my-project/bridge/` with 6 files: package.json, db.ts, jar.ts, repos.ts, extensions.ts, ssh.ts, index.ts
-- Read SidecarBridge.dart source to understand exact protocol
-- JAR downloads from `https://github.com/RyanYuuki/AnymeXExtensionRuntimeBridge/releases/latest/download/anymex_desktop_runtime.jar` (41.9MB)
-- Implemented persistent Sidecar process (matches Dart SidecarBridge.dart): single JAR process, stdin/stdout JSON lines, startup signal detection
-- Added one-shot fallback (invokeJarOnce) for when sidecar isn't running
-- SSH server on port 3022 with RSA 2048 host key, username/password auth, SidecarBridge JSON protocol over exec channels
-- HTTP server on port 8081 with /health, /register, /addRepo, /installExtension, /data endpoints
-- User-based repos (user_repos join table) and extensions (user_extensions join table)
-- Added yuzono/anime-repo (255 extensions) and keiyoushi/extensions (auto-resolved .pb → .min.json, 2 extensions)
-- Fixed bridge-db.ts DB path from mini-services/data to bridge/data
+- Confirmed JAR filename: `anymex_desktop_runtime.jar` from `RyanYuuki/AnymeXExtensionRuntimeBridge/releases/latest/download/`
+- Verified SidecarBridge protocol matches desktop exactly (newline-delimited JSON, stderr IPC)
+- Fixed JAR stderr response parsing (JAR redirects stdout to stderr for IPC safety)
+- Ported Dart PbDecoder to TypeScript for keiyoushi protobuf parsing (gzip + custom nested protobuf, NOT standard length-delimited)
+- Fixed Aniyomi download URLs: `{baseUrl}/apk/{apkName}` and icons `{baseUrl}/icon/{pkg}.png` (matching runtime's ASource.apkUrl getter)
+- Added CloudStream support: JSON array repos, pluginUrl/plugin/url field priority, meta-repo with pluginLists
+- Added Kotatsu support: repo URL = JAR file itself
+- Added both repos: yuzono/anime-repo (255 exts, JSON) + keiyoushi/extensions (1369 exts, gzip protobuf) = 1624 total
+- Verified APK downloads work (AnimeOnsen from yuzono, MangaDex from keiyoushi)
+- Bridge running: SSH :3022, HTTP :8081, JAR sidecar active
 
 Stage Summary:
-- Bridge running on ports 3022 (SSH) + 8081 (HTTP)
-- JAR downloaded and sidecar process started successfully
-- 1 user, 2 repos, 257 extensions in database
-- Dashboard reads from bridge/data/bridge.db via better-sqlite3
+- Bridge at `/home/z/my-project/bridge/` - fully operational
+- 1624 extensions cataloged, 2 installed and downloaded
+- Protocol verified against desktop AnymeXExtensionRuntimeBridge source
+- User `testuser` / `test1234` registered
