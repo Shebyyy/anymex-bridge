@@ -3,11 +3,8 @@ import { readFileSync, writeFileSync } from 'node:fs'
 import { generateKeyPairSync } from 'node:crypto'
 import { join } from 'node:path'
 import { Server as SshServer } from 'ssh2'
-import { authenticateUser, createUser, getStats, getUserExtensions } from './db.js'
+import { authenticateUser, createUser, getAllUsers } from './db.js'
 import { isJarReady, invokeJar, invokeJarOnce } from './jar.js'
-import { addRepo } from './repos.js'
-import { installExtension, downloadExtension } from './extensions.js'
-import { db } from './db.js'
 
 const SSH_PORT = 3022
 const HTTP_PORT = 8081
@@ -24,7 +21,7 @@ function getHostKey(): Buffer {
   return Buffer.from(key.privateKey)
 }
 
-// ─── HTTP Server (for dashboard proxy) ─────────────────────
+// ─── HTTP Server (user registration only) ──────────────────
 
 export function startHttpServer() {
   const server = createHttpServer(async (req, res) => {
@@ -32,12 +29,17 @@ export function startHttpServer() {
     res.setHeader('Content-Type', 'application/json')
 
     try {
+      // Health check
       if (url.pathname === '/health') {
-        const stats = getStats()
-        res.end(JSON.stringify({ ...stats, dbPresent: true }))
+        res.end(JSON.stringify({
+          status: 'ok',
+          jarReady: isJarReady(),
+          users: getAllUsers().length,
+        }))
         return
       }
 
+      // Register user
       if (url.pathname === '/register' && req.method === 'POST') {
         const body = await readBody(req)
         const { username, password } = JSON.parse(body)
@@ -47,37 +49,6 @@ export function startHttpServer() {
           return
         }
         const result = createUser(username, password)
-        res.end(JSON.stringify(result))
-        return
-      }
-
-      if (url.pathname === '/data' && req.method === 'GET') {
-        const section = url.searchParams.get('section') || 'health'
-        const type = url.searchParams.get('type') || undefined
-        const data = queryData(section, type)
-        res.end(JSON.stringify(data))
-        return
-      }
-
-      // ── Management endpoints (auth required) ──
-      if (url.pathname === '/addRepo' && req.method === 'POST') {
-        const body = await readBody(req)
-        const { username, password, url: repoUrl, type } = JSON.parse(body)
-        const user = authenticateUser(username, password)
-        if (!user) { res.writeHead(401); res.end(JSON.stringify({ ok: false, error: 'invalid credentials' })); return }
-        if (!repoUrl) { res.writeHead(400); res.end(JSON.stringify({ ok: false, error: 'url required' })); return }
-        const result = await addRepo(user.id, repoUrl, type)
-        res.end(JSON.stringify(result))
-        return
-      }
-
-      if (url.pathname === '/installExtension' && req.method === 'POST') {
-        const body = await readBody(req)
-        const { username, password, extId } = JSON.parse(body)
-        const user = authenticateUser(username, password)
-        if (!user) { res.writeHead(401); res.end(JSON.stringify({ ok: false, error: 'invalid credentials' })); return }
-        if (!extId) { res.writeHead(400); res.end(JSON.stringify({ ok: false, error: 'extId required' })); return }
-        const result = await installExtension(user.id, Number(extId))
         res.end(JSON.stringify(result))
         return
       }
@@ -102,48 +73,6 @@ function readBody(req: any): Promise<string> {
   })
 }
 
-function queryData(section: string, type?: string) {
-  switch (section) {
-    case 'health': {
-      const r = getStats()
-      return { users: r?.users || 0, repos: r?.repos || 0, extensions: r?.extensions || 0, installs: r?.installs || 0, dbPresent: true }
-    }
-    case 'users': {
-      return db.query(`
-        SELECT u.id, u.username,
-          (SELECT COUNT(*) FROM user_repos WHERE user_id = u.id) as repo_count,
-          (SELECT COUNT(*) FROM user_extensions WHERE user_id = u.id) as ext_count
-        FROM users u ORDER BY u.username
-      `).all()
-    }
-    case 'repos': {
-      return db.query(`
-        SELECT ur.user_id, ur.url, r.type, r.added, u.username
-        FROM user_repos ur JOIN repos r ON ur.repo_id = r.id JOIN users u ON ur.user_id = u.id
-        ORDER BY r.added DESC
-      `).all()
-    }
-    case 'extensions': {
-      let sql = 'SELECT e.id, e.name, e.type, e.version, e.icon_url, e.lang, e.is_nsfw, e.extra, (SELECT COUNT(*) FROM user_extensions WHERE ext_id = e.id) as install_count FROM extensions e'
-      if (type) sql += ' WHERE e.type = ?'
-      sql += ' ORDER BY e.name'
-      const stmt = db.prepare(sql)
-      const rows = type ? stmt.all(type) : stmt.all()
-      return rows
-    }
-    case 'installs': {
-      return db.query(`
-        SELECT ue.user_id, ue.ext_id, u.username, e.name as ext_name, e.type
-        FROM user_extensions ue
-        JOIN users u ON ue.user_id = u.id
-        JOIN extensions e ON ue.ext_id = e.id
-        ORDER BY u.username, e.name
-      `).all()
-    }
-    default: return null
-  }
-}
-
 // ─── SSH Server ────────────────────────────────────────────
 
 export function startSshServer() {
@@ -154,14 +83,12 @@ export function startSshServer() {
   })
 
   sshServer.on('connection', (client) => {
-    let userId: string | null = null
     let username: string | null = null
 
     client.on('authentication', (ctx) => {
       if (ctx.method === 'password') {
         const user = authenticateUser(ctx.username, ctx.password as string)
         if (user) {
-          userId = user.id
           username = user.username
           ctx.accept()
         } else {
@@ -188,12 +115,11 @@ export function startSshServer() {
             return
           }
 
-          // Parse SidecarBridge JSON protocol
+          // Parse SidecarBridge JSON protocol — forward directly to JAR
           try {
             const msg = JSON.parse(raw)
-            handleMethod(userId!, username!, msg).then(result => {
-              const resp = JSON.stringify({ id: msg.id || '0', status: 'ok', data: result }) + '\n'
-              channel.write(resp)
+            forwardToJar(msg).then(data => {
+              channel.write(JSON.stringify({ id: msg.id || '0', status: 'ok', data }) + '\n')
               channel.close()
             }).catch(e => {
               channel.write(JSON.stringify({ id: msg.id || '0', status: 'error', error: e.message }) + '\n')
@@ -217,66 +143,21 @@ export function startSshServer() {
   })
 }
 
-// ─── Method Router ─────────────────────────────────────────
+// ─── Forward everything to JAR runtime ─────────────────────
 
-async function handleMethod(userId: string, username: string, msg: any): Promise<any> {
+async function forwardToJar(msg: any): Promise<any> {
   const { method, args } = msg
 
-  // Management methods (handled server-side)
-  switch (method) {
-    case 'addRepo': {
-      const { url, type } = args || {}
-      if (!url) throw new Error('url required')
-      return addRepo(userId, url, type)
-    }
+  // Only health is handled server-side
+  if (method === 'health') {
+    return { status: 'ok', jarReady: isJarReady() }
+  }
 
-    case 'installExtension': {
-      const { extId } = args || {}
-      if (!extId) throw new Error('extId required')
-      return installExtension(userId, Number(extId))
-    }
-
-    case 'listExtensions': {
-      return getUserExtensions(userId)
-    }
-
-    case 'downloadExtension': {
-      const { extId } = args || {}
-      if (!extId) throw new Error('extId required')
-      return downloadExtension(Number(extId))
-    }
-
-    case 'getExtensions': {
-      const { type, query } = args || {}
-      let sql = 'SELECT id, name, pkg, type, version, icon_url, lang, is_nsfw, extra FROM extensions'
-      const params: any[] = []
-      if (type) { sql += ' WHERE type = ?'; params.push(type) }
-      if (query) { sql += (params.length ? ' AND' : ' WHERE') + ' name LIKE ?'; params.push(`%${query}%`) }
-      sql += ' ORDER BY name'
-      return db.prepare(sql).all(...params)
-    }
-
-    case 'getRepos': {
-      return db.query(`
-        SELECT r.id, r.url, r.type, r.name, r.last_fetched
-        FROM repos r JOIN user_repos ur ON r.id = ur.repo_id
-        WHERE ur.user_id = ?
-      `).all(userId)
-    }
-
-    case 'health': {
-      return { status: 'ok', user: username, jarReady: isJarReady() }
-    }
-
-    default:
-      // Forward to JAR sidecar (persistent) or one-shot fallback
-      try {
-        if (isJarReady()) return await invokeJar(method, args || {})
-        // Try one-shot as fallback
-        const { invokeJarOnce } = await import('./jar.js')
-        return await invokeJarOnce(method, args || {})
-      } catch (e: any) {
-        throw new Error(`${method}: ${e.message}`)
-      }
+  // Everything else → JAR sidecar (persistent) or one-shot fallback
+  try {
+    if (isJarReady()) return await invokeJar(method, args || {})
+    return await invokeJarOnce(method, args || {})
+  } catch (e: any) {
+    throw new Error(`JAR error [${method}]: ${e.message}`)
   }
 }
