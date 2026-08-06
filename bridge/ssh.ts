@@ -3,13 +3,14 @@ import { readFileSync, writeFileSync } from 'node:fs'
 import { generateKeyPairSync } from 'node:crypto'
 import { join } from 'node:path'
 import { Server as SshServer } from 'ssh2'
-import { authenticateUser, createUser, getAllUsers } from './db.js'
+import { authenticateUser, createUser, getUserExtensions, getAllUsers, db } from './db.js'
 import { isJarReady, invokeJar, invokeJarOnce } from './jar.js'
+import { addRepo } from './repos.js'
+import { installExtension, downloadExtension } from './extensions.js'
 
 const SSH_PORT = 3022
 const HTTP_PORT = 8081
 
-// Generate or load RSA host key
 const HOST_KEY_DIR = join(import.meta.dir, 'data')
 const HOST_KEY_PATH = join(HOST_KEY_DIR, 'host_key')
 
@@ -21,7 +22,7 @@ function getHostKey(): Buffer {
   return Buffer.from(key.privateKey)
 }
 
-// ─── HTTP Server (user registration only) ──────────────────
+// ─── HTTP Server (registration + data endpoints) ──────────
 
 export function startHttpServer() {
   const server = createHttpServer(async (req, res) => {
@@ -29,17 +30,12 @@ export function startHttpServer() {
     res.setHeader('Content-Type', 'application/json')
 
     try {
-      // Health check
       if (url.pathname === '/health') {
-        res.end(JSON.stringify({
-          status: 'ok',
-          jarReady: isJarReady(),
-          users: getAllUsers().length,
-        }))
+        const stats = db.query(`SELECT (SELECT COUNT(*) FROM users) as users, (SELECT COUNT(*) FROM extensions) as extensions, (SELECT COUNT(*) FROM user_extensions) as installs`).get() as any
+        res.end(JSON.stringify({ ...stats, jarReady: isJarReady() }))
         return
       }
 
-      // Register user
       if (url.pathname === '/register' && req.method === 'POST') {
         const body = await readBody(req)
         const { username, password } = JSON.parse(body)
@@ -48,8 +44,27 @@ export function startHttpServer() {
           res.end(JSON.stringify({ ok: false, error: 'username min 3 chars, password min 4 chars' }))
           return
         }
-        const result = createUser(username, password)
-        res.end(JSON.stringify(result))
+        res.end(JSON.stringify(createUser(username, password)))
+        return
+      }
+
+      if (url.pathname === '/addRepo' && req.method === 'POST') {
+        const body = await readBody(req)
+        const { username, password, url: repoUrl, type } = JSON.parse(body)
+        const user = authenticateUser(username, password)
+        if (!user) { res.writeHead(401); res.end(JSON.stringify({ ok: false, error: 'invalid credentials' })); return }
+        if (!repoUrl) { res.writeHead(400); res.end(JSON.stringify({ ok: false, error: 'url required' })); return }
+        res.end(JSON.stringify(await addRepo(user.id, repoUrl, type)))
+        return
+      }
+
+      if (url.pathname === '/installExtension' && req.method === 'POST') {
+        const body = await readBody(req)
+        const { username, password, extId } = JSON.parse(body)
+        const user = authenticateUser(username, password)
+        if (!user) { res.writeHead(401); res.end(JSON.stringify({ ok: false, error: 'invalid credentials' })); return }
+        if (!extId) { res.writeHead(400); res.end(JSON.stringify({ ok: false, error: 'extId required' })); return }
+        res.end(JSON.stringify(await installExtension(user.id, Number(extId))))
         return
       }
 
@@ -83,20 +98,15 @@ export function startSshServer() {
   })
 
   sshServer.on('connection', (client) => {
+    let userId: string | null = null
     let username: string | null = null
 
     client.on('authentication', (ctx) => {
       if (ctx.method === 'password') {
         const user = authenticateUser(ctx.username, ctx.password as string)
-        if (user) {
-          username = user.username
-          ctx.accept()
-        } else {
-          ctx.reject()
-        }
-      } else {
-        ctx.reject()
-      }
+        if (user) { userId = user.id; username = user.username; ctx.accept() }
+        else ctx.reject()
+      } else ctx.reject()
     })
 
     client.on('ready', () => {
@@ -111,15 +121,13 @@ export function startSshServer() {
 
           if (!raw) {
             channel.write(JSON.stringify({ id: '0', status: 'error', error: 'empty command' }) + '\n')
-            channel.close()
-            return
+            channel.close(); return
           }
 
-          // Parse SidecarBridge JSON protocol — forward directly to JAR
           try {
             const msg = JSON.parse(raw)
-            forwardToJar(msg).then(data => {
-              channel.write(JSON.stringify({ id: msg.id || '0', status: 'ok', data }) + '\n')
+            handleMethod(userId!, username!, msg).then(result => {
+              channel.write(JSON.stringify({ id: msg.id || '0', status: 'ok', data: result }) + '\n')
               channel.close()
             }).catch(e => {
               channel.write(JSON.stringify({ id: msg.id || '0', status: 'error', error: e.message }) + '\n')
@@ -133,31 +141,55 @@ export function startSshServer() {
       })
     })
 
-    client.on('close', () => {
-      console.log(`[ssh] User '${username}' disconnected`)
-    })
+    client.on('close', () => console.log(`[ssh] User '${username}' disconnected`))
   })
 
-  sshServer.listen(SSH_PORT, '0.0.0.0', () => {
-    console.log(`[ssh] Listening on port ${SSH_PORT}`)
-  })
+  sshServer.listen(SSH_PORT, '0.0.0.0', () => console.log(`[ssh] Listening on port ${SSH_PORT}`))
 }
 
-// ─── Forward everything to JAR runtime ─────────────────────
+// ─── Method Router ─────────────────────────────────────────
 
-async function forwardToJar(msg: any): Promise<any> {
+async function handleMethod(userId: string, username: string, msg: any): Promise<any> {
   const { method, args } = msg
 
-  // Only health is handled server-side
-  if (method === 'health') {
-    return { status: 'ok', jarReady: isJarReady() }
-  }
-
-  // Everything else → JAR sidecar (persistent) or one-shot fallback
-  try {
-    if (isJarReady()) return await invokeJar(method, args || {})
-    return await invokeJarOnce(method, args || {})
-  } catch (e: any) {
-    throw new Error(`JAR error [${method}]: ${e.message}`)
+  switch (method) {
+    case 'addRepo': {
+      const { url, type } = args || {}
+      if (!url) throw new Error('url required')
+      return addRepo(userId, url, type)
+    }
+    case 'installExtension': {
+      const { extId } = args || {}
+      if (!extId) throw new Error('extId required')
+      return installExtension(userId, Number(extId))
+    }
+    case 'listExtensions':
+      return getUserExtensions(userId)
+    case 'downloadExtension': {
+      const { extId } = args || {}
+      if (!extId) throw new Error('extId required')
+      return downloadExtension(Number(extId))
+    }
+    case 'getExtensions': {
+      const { type, query } = args || {}
+      let sql = 'SELECT id, name, pkg, type, version, icon_url, lang, is_nsfw, extra FROM extensions'
+      const params: any[] = []
+      if (type) { sql += ' WHERE type = ?'; params.push(type) }
+      if (query) { sql += (params.length ? ' AND' : ' WHERE') + ' name LIKE ?'; params.push(`%${query}%`) }
+      sql += ' ORDER BY name'
+      return db.prepare(sql).all(...params)
+    }
+    case 'getRepos':
+      return db.query(`SELECT r.id, r.url, r.type, r.name, r.last_fetched FROM repos r JOIN user_repos ur ON r.id = ur.repo_id WHERE ur.user_id = ?`).all(userId)
+    case 'health':
+      return { status: 'ok', user: username, jarReady: isJarReady() }
+    default:
+      // Forward to JAR sidecar or one-shot fallback
+      try {
+        if (isJarReady()) return await invokeJar(method, args || {})
+        return await invokeJarOnce(method, args || {})
+      } catch (e: any) {
+        throw new Error(`${method}: ${e.message}`)
+      }
   }
 }
