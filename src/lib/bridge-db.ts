@@ -2,7 +2,7 @@ import { join } from 'node:path'
 import { existsSync } from 'node:fs'
 import Database from 'better-sqlite3'
 
-const DB_PATH = join(process.cwd(), 'mini-services', 'data', 'bridge.db')
+const DB_PATH = join(process.cwd(), 'bridge', 'data', 'bridge.db')
 
 export async function queryBridgeData(section: string, type?: string) {
   if (!existsSync(DB_PATH)) return null
