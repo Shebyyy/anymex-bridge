@@ -3,1120 +3,453 @@
 import { useEffect, useCallback, useState } from 'react'
 import { toast } from 'sonner'
 import {
-  Server, Wifi, WifiOff, Search, Download, Trash2, Activity,
-  Clock, Cpu, BookOpen, Tv, Package, Loader2, RefreshCw, Globe
+  Server, Wifi, WifiOff, Users, FolderGit2, Package,
+  Activity, Shield, Terminal, RefreshCw, Plus, Trash2,
+  UserPlus, Key, Database, Copy, Check
 } from 'lucide-react'
 
-import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
+import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
-import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { Badge } from '@/components/ui/badge'
-import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar'
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from '@/components/ui/select'
+import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { Skeleton } from '@/components/ui/skeleton'
 import { ScrollArea } from '@/components/ui/scroll-area'
+import { Separator } from '@/components/ui/separator'
 
-import { useBridgeStore, type AniyomiExtension, type CloudStreamProvider, type KotatsuExtension } from '@/stores/bridge-store'
+// ── Types ──────────────────────────────────────────────
 
-// ─── Helper: format uptime ─────────────────────────────
-function formatUptime(seconds: number): string {
-  const d = Math.floor(seconds / 86400)
-  const h = Math.floor((seconds % 86400) / 3600)
-  const m = Math.floor((seconds % 3600) / 60)
-  if (d > 0) return `${d}d ${h}h ${m}m`
-  if (h > 0) return `${h}h ${m}m`
-  return `${m}m`
+interface HealthData {
+  ok: boolean
+  jar: boolean
+  jarReady: boolean
+  ssh: number
+  http: number
+  users?: number
+  repos?: number
+  extensions?: number
+  installs?: number
 }
 
-// ─── Skeleton Loaders ───────────────────────────────────
-function StatCardSkeleton() {
-  return (
-    <Card className="border-border/50">
-      <CardContent className="p-4">
-        <div className="flex items-center gap-3">
-          <Skeleton className="h-10 w-10 rounded-lg" />
-          <div className="space-y-2 flex-1">
-            <Skeleton className="h-3 w-20" />
-            <Skeleton className="h-5 w-28" />
-          </div>
-        </div>
-      </CardContent>
-    </Card>
-  )
+interface User {
+  id: string
+  username: string
+  ext_count: number
+  repo_count: number
 }
 
-function ExtensionCardSkeleton() {
-  return (
-    <Card className="border-border/50">
-      <CardContent className="p-4">
-        <div className="flex items-start gap-3">
-          <Skeleton className="h-10 w-10 rounded-full shrink-0" />
-          <div className="flex-1 space-y-2 min-w-0">
-            <Skeleton className="h-4 w-3/4" />
-            <Skeleton className="h-3 w-1/2" />
-            <Skeleton className="h-3 w-full" />
-            <div className="flex gap-2 pt-1">
-              <Skeleton className="h-5 w-14 rounded-full" />
-              <Skeleton className="h-5 w-16 rounded-full" />
-            </div>
-          </div>
-        </div>
-      </CardContent>
-    </Card>
-  )
+interface Repo {
+  id: string
+  url: string
+  type: string
+  added_by_name: string
+  ext_count: number
+  created: string
 }
 
-// ─── Stat Card ───────────────────────────────────────────
-function StatCard({ icon: Icon, label, value, color }: {
-  icon: React.ElementType
-  label: string
-  value: string
-  color: string
-}) {
-  return (
-    <Card className="border-border/50 transition-shadow hover:shadow-md">
-      <CardContent className="p-4">
-        <div className="flex items-center gap-3">
-          <div className={`p-2.5 rounded-lg ${color}`}>
-            <Icon className="h-5 w-5" />
-          </div>
-          <div className="min-w-0">
-            <p className="text-xs text-muted-foreground font-medium truncate">{label}</p>
-            <p className="text-sm font-semibold truncate">{value}</p>
-          </div>
-        </div>
-      </CardContent>
-    </Card>
-  )
+interface Extension {
+  id: string
+  name: string
+  type: string
+  version: string | null
+  icon_url: string | null
+  lang: string | null
+  is_nsfw: number
+  install_count: number
+  repo_url: string | null
 }
 
-// ─── Extension Card ──────────────────────────────────────
-function AniyomiExtCard({ ext }: { ext: AniyomiExtension }) {
-  const [uninstalling, setUninstalling] = useState(false)
-  const [installing, setInstalling] = useState(false)
-
-  const handleUninstall = async (e: React.MouseEvent) => {
-    e.stopPropagation()
-    if (!ext.pkgName) return
-    setUninstalling(true)
-    try {
-      const res = await fetch('/api/bridge/api/aniyomi/uninstall', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ pkgName: ext.pkgName })
-      })
-      const data = await res.json()
-      if (data.success) {
-        toast.success(`Uninstalled ${ext.name}`)
-        window.location.reload()
-      } else {
-        toast.error(data.error || 'Uninstall failed')
-      }
-    } catch {
-      toast.error('Failed to uninstall extension')
-    } finally {
-      setUninstalling(false)
-    }
-  }
-
-  const handleInstall = async (e: React.MouseEvent) => {
-    e.stopPropagation()
-    if (!ext.downloadUrl) {
-      toast.error('No download URL available')
-      return
-    }
-    setInstalling(true)
-    try {
-      const res = await fetch('/api/bridge/api/aniyomi/install', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ downloadUrl: ext.downloadUrl, pkgName: ext.pkgName })
-      })
-      const data = await res.json()
-      if (data.success) {
-        toast.success(`Installed ${ext.name}`)
-        window.location.reload()
-      } else {
-        toast.error(data.error || 'Install failed')
-      }
-    } catch {
-      toast.error('Failed to install extension')
-    } finally {
-      setInstalling(false)
-    }
-  }
-
-  return (
-    <Card className="border-border/50 transition-all hover:shadow-md group">
-      <CardContent className="p-4">
-        <div className="flex items-start gap-3">
-          <Avatar className="h-10 w-10 shrink-0">
-            {ext.iconUrl && <AvatarImage src={ext.iconUrl} alt={ext.name} />}
-            <AvatarFallback className="bg-emerald-100 text-emerald-700 text-sm font-semibold">
-              {ext.name?.charAt(0)?.toUpperCase() || '?'}
-            </AvatarFallback>
-          </Avatar>
-          <div className="flex-1 min-w-0">
-            <div className="flex items-start justify-between gap-2">
-              <h3 className="text-sm font-semibold truncate leading-tight">{ext.name}</h3>
-              <div className="flex gap-1 shrink-0">
-                {ext.downloadUrl && !ext.versionName && (
-                  <Button
-                    variant="ghost"
-                    size="icon"
-                    className="h-7 w-7 text-emerald-600 hover:text-emerald-700 hover:bg-emerald-50"
-                    onClick={handleInstall}
-                    disabled={installing}
-                  >
-                    {installing ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Download className="h-3.5 w-3.5" />}
-                  </Button>
-                )}
-                {ext.versionName && (
-                  <Button
-                    variant="ghost"
-                    size="icon"
-                    className="h-7 w-7 text-rose-500 hover:text-rose-600 hover:bg-rose-50 opacity-0 group-hover:opacity-100 transition-opacity"
-                    onClick={handleUninstall}
-                    disabled={uninstalling}
-                  >
-                    {uninstalling ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Trash2 className="h-3.5 w-3.5" />}
-                  </Button>
-                )}
-              </div>
-            </div>
-            <p className="text-xs text-muted-foreground mt-0.5 font-mono truncate">{ext.pkgName}</p>
-            {ext.baseUrl && (
-              <p className="text-xs text-muted-foreground mt-0.5 flex items-center gap-1 truncate">
-                <Globe className="h-3 w-3 shrink-0" />
-                {ext.baseUrl}
-              </p>
-            )}
-            <div className="flex flex-wrap items-center gap-1.5 mt-2">
-              {ext.lang && (
-                <Badge variant="secondary" className="text-[10px] px-1.5 py-0 h-5 font-medium">
-                  {ext.lang.toUpperCase()}
-                </Badge>
-              )}
-              <Badge variant={ext.isAnime ? "default" : "outline"} className="text-[10px] px-1.5 py-0 h-5">
-                {ext.isAnime ? (
-                  <span className="flex items-center gap-0.5"><Tv className="h-2.5 w-2.5" />Anime</span>
-                ) : (
-                  <span className="flex items-center gap-0.5"><BookOpen className="h-2.5 w-2.5" />Manga</span>
-                )}
-              </Badge>
-              {ext.isNsfw && (
-                <Badge variant="destructive" className="text-[10px] px-1.5 py-0 h-5">18+</Badge>
-              )}
-              {ext.versionName && (
-                <Badge variant="outline" className="text-[10px] px-1.5 py-0 h-5 text-emerald-600 border-emerald-200 bg-emerald-50">
-                  v{ext.versionName}
-                </Badge>
-              )}
-            </div>
-          </div>
-        </div>
-      </CardContent>
-    </Card>
-  )
+interface Install {
+  user_id: string
+  username: string
+  ext_id: string
+  ext_name: string
+  type: string
 }
 
-function CloudStreamProviderCard({ provider }: { provider: CloudStreamProvider }) {
-  const [uninstalling, setUninstalling] = useState(false)
-  const [installing, setInstalling] = useState(false)
+// ── Helpers ────────────────────────────────────────────
 
-  const handleUninstall = async (e: React.MouseEvent) => {
-    e.stopPropagation()
-    if (!provider.apiName) return
-    setUninstalling(true)
-    try {
-      const res = await fetch('/api/bridge/api/cloudstream/uninstall', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ apiName: provider.apiName })
-      })
-      const data = await res.json()
-      if (data.success) {
-        toast.success(`Uninstalled ${provider.name}`)
-        window.location.reload()
-      } else {
-        toast.error(data.error || 'Uninstall failed')
-      }
-    } catch {
-      toast.error('Failed to uninstall provider')
-    } finally {
-      setUninstalling(false)
-    }
-  }
-
-  const handleInstall = async (e: React.MouseEvent) => {
-    e.stopPropagation()
-    if (!provider.downloadUrl) {
-      toast.error('No download URL available')
-      return
-    }
-    setInstalling(true)
-    try {
-      const res = await fetch('/api/bridge/api/cloudstream/install', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ downloadUrl: provider.downloadUrl, fileName: provider.name })
-      })
-      const data = await res.json()
-      if (data.success) {
-        toast.success(`Installed ${provider.name}`)
-        window.location.reload()
-      } else {
-        toast.error(data.error || 'Install failed')
-      }
-    } catch {
-      toast.error('Failed to install provider')
-    } finally {
-      setInstalling(false)
-    }
-  }
-
-  return (
-    <Card className="border-border/50 transition-all hover:shadow-md group">
-      <CardContent className="p-4">
-        <div className="flex items-start gap-3">
-          <Avatar className="h-10 w-10 shrink-0">
-            {provider.iconUrl && <AvatarImage src={provider.iconUrl} alt={provider.name} />}
-            <AvatarFallback className="bg-amber-100 text-amber-700 text-sm font-semibold">
-              {provider.name?.charAt(0)?.toUpperCase() || '?'}
-            </AvatarFallback>
-          </Avatar>
-          <div className="flex-1 min-w-0">
-            <div className="flex items-start justify-between gap-2">
-              <h3 className="text-sm font-semibold truncate leading-tight">{provider.name}</h3>
-              <div className="flex gap-1 shrink-0">
-                {provider.downloadUrl && !provider.version && (
-                  <Button
-                    variant="ghost"
-                    size="icon"
-                    className="h-7 w-7 text-emerald-600 hover:text-emerald-700 hover:bg-emerald-50"
-                    onClick={handleInstall}
-                    disabled={installing}
-                  >
-                    {installing ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Download className="h-3.5 w-3.5" />}
-                  </Button>
-                )}
-                {provider.version && (
-                  <Button
-                    variant="ghost"
-                    size="icon"
-                    className="h-7 w-7 text-rose-500 hover:text-rose-600 hover:bg-rose-50 opacity-0 group-hover:opacity-100 transition-opacity"
-                    onClick={handleUninstall}
-                    disabled={uninstalling}
-                  >
-                    {uninstalling ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Trash2 className="h-3.5 w-3.5" />}
-                  </Button>
-                )}
-              </div>
-            </div>
-            <p className="text-xs text-muted-foreground mt-0.5 font-mono truncate">{provider.apiName}</p>
-            {provider.mainUrl && (
-              <p className="text-xs text-muted-foreground mt-0.5 flex items-center gap-1 truncate">
-                <Globe className="h-3 w-3 shrink-0" />
-                {provider.mainUrl}
-              </p>
-            )}
-            <div className="flex flex-wrap items-center gap-1.5 mt-2">
-              {provider.lang && (
-                <Badge variant="secondary" className="text-[10px] px-1.5 py-0 h-5 font-medium">
-                  {provider.lang.toUpperCase()}
-                </Badge>
-              )}
-              <Badge variant="outline" className="text-[10px] px-1.5 py-0 h-5">
-                <span className="flex items-center gap-0.5"><Tv className="h-2.5 w-2.5" />Stream</span>
-              </Badge>
-              {provider.version && (
-                <Badge variant="outline" className="text-[10px] px-1.5 py-0 h-5 text-emerald-600 border-emerald-200 bg-emerald-50">
-                  v{provider.version}
-                </Badge>
-              )}
-            </div>
-          </div>
-        </div>
-      </CardContent>
-    </Card>
-  )
+async function fetchBridge<T>(section: string): Promise<T> {
+  const res = await fetch(`/api/bridge-data?section=${section}`)
+  if (res.status === 503) throw new Error('Bridge service not running')
+  const data = await res.json()
+  if (data.error) throw new Error(data.error)
+  return data as T
 }
 
-function KotatsuExtCard({ ext }: { ext: KotatsuExtension }) {
-  const [uninstalling, setUninstalling] = useState(false)
-  const [installing, setInstalling] = useState(false)
-
-  const handleUninstall = async (e: React.MouseEvent) => {
-    e.stopPropagation()
-    if (!ext.sourceId) return
-    setUninstalling(true)
-    try {
-      const res = await fetch('/api/bridge/api/kotatsu/uninstall', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ sourceId: ext.sourceId })
-      })
-      const data = await res.json()
-      if (data.success) {
-        toast.success(`Uninstalled ${ext.name}`)
-        window.location.reload()
-      } else {
-        toast.error(data.error || 'Uninstall failed')
-      }
-    } catch {
-      toast.error('Failed to uninstall extension')
-    } finally {
-      setUninstalling(false)
-    }
-  }
-
-  const handleInstall = async (e: React.MouseEvent) => {
-    e.stopPropagation()
-    if (!ext.downloadUrl) {
-      toast.error('No download URL available')
-      return
-    }
-    setInstalling(true)
-    try {
-      const res = await fetch('/api/bridge/api/kotatsu/install', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ downloadUrl: ext.downloadUrl, sourceId: ext.sourceId })
-      })
-      const data = await res.json()
-      if (data.success) {
-        toast.success(`Installed ${ext.name}`)
-        window.location.reload()
-      } else {
-        toast.error(data.error || 'Install failed')
-      }
-    } catch {
-      toast.error('Failed to install extension')
-    } finally {
-      setInstalling(false)
-    }
-  }
-
-  return (
-    <Card className="border-border/50 transition-all hover:shadow-md group">
-      <CardContent className="p-4">
-        <div className="flex items-start gap-3">
-          <Avatar className="h-10 w-10 shrink-0">
-            {ext.iconUrl && <AvatarImage src={ext.iconUrl} alt={ext.name} />}
-            <AvatarFallback className="bg-violet-100 text-violet-700 text-sm font-semibold">
-              {ext.name?.charAt(0)?.toUpperCase() || '?'}
-            </AvatarFallback>
-          </Avatar>
-          <div className="flex-1 min-w-0">
-            <div className="flex items-start justify-between gap-2">
-              <h3 className="text-sm font-semibold truncate leading-tight">{ext.name}</h3>
-              <div className="flex gap-1 shrink-0">
-                {ext.downloadUrl && !ext.version && (
-                  <Button
-                    variant="ghost"
-                    size="icon"
-                    className="h-7 w-7 text-emerald-600 hover:text-emerald-700 hover:bg-emerald-50"
-                    onClick={handleInstall}
-                    disabled={installing}
-                  >
-                    {installing ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Download className="h-3.5 w-3.5" />}
-                  </Button>
-                )}
-                {ext.version && (
-                  <Button
-                    variant="ghost"
-                    size="icon"
-                    className="h-7 w-7 text-rose-500 hover:text-rose-600 hover:bg-rose-50 opacity-0 group-hover:opacity-100 transition-opacity"
-                    onClick={handleUninstall}
-                    disabled={uninstalling}
-                  >
-                    {uninstalling ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Trash2 className="h-3.5 w-3.5" />}
-                  </Button>
-                )}
-              </div>
-            </div>
-            <p className="text-xs text-muted-foreground mt-0.5">Source #{ext.sourceId}</p>
-            {ext.baseUrl && (
-              <p className="text-xs text-muted-foreground mt-0.5 flex items-center gap-1 truncate">
-                <Globe className="h-3 w-3 shrink-0" />
-                {ext.baseUrl}
-              </p>
-            )}
-            <div className="flex flex-wrap items-center gap-1.5 mt-2">
-              {ext.lang && (
-                <Badge variant="secondary" className="text-[10px] px-1.5 py-0 h-5 font-medium">
-                  {ext.lang.toUpperCase()}
-                </Badge>
-              )}
-              <Badge variant="outline" className="text-[10px] px-1.5 py-0 h-5">
-                <span className="flex items-center gap-0.5"><BookOpen className="h-2.5 w-2.5" />Manga</span>
-              </Badge>
-              {ext.isNsfw && (
-                <Badge variant="destructive" className="text-[10px] px-1.5 py-0 h-5">18+</Badge>
-              )}
-              {ext.version && (
-                <Badge variant="outline" className="text-[10px] px-1.5 py-0 h-5 text-emerald-600 border-emerald-200 bg-emerald-50">
-                  v{ext.version}
-                </Badge>
-              )}
-            </div>
-          </div>
-        </div>
-      </CardContent>
-    </Card>
-  )
+async function fetchProxy<T>(path: string, opts?: RequestInit): Promise<T> {
+  const res = await fetch(`/api/bridge?path=${path}`, opts)
+  const data = await res.json()
+  if (data.error) throw new Error(data.error)
+  return data as T
 }
 
-// ─── Empty State ─────────────────────────────────────────
-function EmptyState({ message }: { message: string }) {
-  return (
-    <div className="flex flex-col items-center justify-center py-16 text-center">
-      <Package className="h-12 w-12 text-muted-foreground/40 mb-4" />
-      <p className="text-sm text-muted-foreground">{message}</p>
-    </div>
-  )
+const TYPE_COLORS: Record<string, string> = {
+  'aniyomi-anime': 'bg-orange-500/10 text-orange-600 dark:text-orange-400 border-orange-500/20',
+  'aniyomi-manga': 'bg-purple-500/10 text-purple-600 dark:text-purple-400 border-purple-500/20',
+  'cloudstream': 'bg-cyan-500/10 text-cyan-600 dark:text-cyan-400 border-cyan-500/20',
+  'kotatsu': 'bg-pink-500/10 text-pink-600 dark:text-pink-400 border-pink-500/20',
 }
 
-// ─── Main Dashboard ──────────────────────────────────────
-export default function Dashboard() {
-  const store = useBridgeStore()
-  const [urlInput, setUrlInput] = useState('')
-  const [connecting, setConnecting] = useState(false)
+const TYPE_LABELS: Record<string, string> = {
+  'aniyomi-anime': 'Aniyomi Anime',
+  'aniyomi-manga': 'Aniyomi Manga',
+  'cloudstream': 'CloudStream',
+  'kotatsu': 'Kotatsu',
+}
 
-  // Search state
-  const [searchType, setSearchType] = useState('aniyomi')
-  const [searchSourceId, setSearchSourceId] = useState('')
-  const [searchQuery, setSearchQuery] = useState('')
-  const [searching, setSearching] = useState(false)
+// ── Component ──────────────────────────────────────────
 
-  // Load saved config on mount
-  const loadConfig = useCallback(async () => {
+export default function DashboardPage() {
+  const [health, setHealth] = useState<HealthData | null>(null)
+  const [users, setUsers] = useState<User[]>([])
+  const [repos, setRepos] = useState<Repo[]>([])
+  const [extensions, setExtensions] = useState<Extension[]>([])
+  const [installs, setInstalls] = useState<Install[]>([])
+  const [loading, setLoading] = useState(true)
+  const [error, setError] = useState<string | null>(null)
+
+  const refresh = useCallback(async () => {
+    setLoading(true)
+    setError(null)
     try {
-      const res = await fetch('/api/bridge-config')
-      const data = await res.json()
-      if (data.success && data.data) {
-        if (data.data.serverUrl) {
-          store.setServerUrl(data.data.serverUrl)
-          setUrlInput(data.data.serverUrl)
-          store.setIsConnected(true)
-        }
-      }
-    } catch {
-      // Config not available yet
-    }
-  }, [store])
-
-  // Fetch health data
-  const fetchHealth = useCallback(async () => {
-    if (!store.isConnected) return
-    store.setHealthLoading(true)
-    try {
-      const res = await fetch('/api/bridge/api/health')
-      const data = await res.json()
-      if (data.success && data.data) {
-        store.setHealth(data.data)
-      } else {
-        store.setHealth(null)
-      }
-    } catch {
-      store.setHealth(null)
-    } finally {
-      store.setHealthLoading(false)
-    }
-  }, [store.isConnected, store])
-
-  // Fetch extensions
-  const fetchExtensions = useCallback(async () => {
-    if (!store.isConnected) return
-    store.setExtensionsLoading(true)
-    try {
-      const [aniyomiRes, csRes, kotatsuRes] = await Promise.allSettled([
-        fetch('/api/bridge/api/aniyomi/extensions').then(r => r.json()),
-        fetch('/api/bridge/api/cloudstream/providers').then(r => r.json()),
-        fetch('/api/bridge/api/kotatsu/extensions').then(r => r.json()),
+      const [h, u, r, e, i] = await Promise.all([
+        fetchBridge<HealthData>('health'),
+        fetchBridge<User[]>('users'),
+        fetchBridge<Repo[]>('repos'),
+        fetchBridge<Extension[]>('extensions'),
+        fetchBridge<Install[]>('installs'),
       ])
-
-      if (aniyomiRes.status === 'fulfilled' && aniyomiRes.value.success) {
-        store.setAniyomiExtensions(aniyomiRes.value.data || [])
-      }
-      if (csRes.status === 'fulfilled' && csRes.value.success) {
-        store.setCsProviders(csRes.value.data || [])
-      }
-      if (kotatsuRes.status === 'fulfilled' && kotatsuRes.value.success) {
-        store.setKotatsuExtensions(kotatsuRes.value.data || [])
-      }
-    } catch {
-      // silently fail
+      setHealth(h)
+      setUsers(u)
+      setRepos(r)
+      setExtensions(e)
+      setInstalls(i)
+    } catch (e: any) {
+      setError(e.message)
     } finally {
-      store.setExtensionsLoading(false)
+      setLoading(false)
     }
-  }, [store.isConnected, store])
+  }, [])
 
-  useEffect(() => {
-    loadConfig()
-  }, [loadConfig])
+  useEffect(() => { refresh() }, [refresh])
 
-  useEffect(() => {
-    if (store.isConnected) {
-      fetchHealth()
-      fetchExtensions()
-    } else {
-      store.setHealth(null)
-      store.setAniyomiExtensions([])
-      store.setCsProviders([])
-      store.setKotatsuExtensions([])
-    }
-  }, [store.isConnected])
-
-  // Connect handler
-  const handleConnect = async () => {
-    const url = urlInput.trim()
-    if (!url) {
-      toast.error('Please enter a server URL')
-      return
-    }
-    if (!url.startsWith('http://') && !url.startsWith('https://')) {
-      toast.error('URL must start with http:// or https://')
-      return
-    }
-    setConnecting(true)
-    try {
-      // First save and activate
-      const configRes = await fetch('/api/bridge-config', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ serverUrl: url, action: 'connect' })
-      })
-      const configData = await configRes.json()
-      if (!configData.success) {
-        toast.error(configData.error || 'Failed to save configuration')
-        setConnecting(false)
-        return
-      }
-
-      // Test the connection
-      const healthRes = await fetch('/api/bridge/api/health')
-      const healthData = await healthRes.json()
-      if (healthData.success) {
-        store.setServerUrl(url)
-        store.setIsConnected(true)
-        store.setHealth(healthData.data)
-        toast.success('Connected to bridge server!')
-        // Fetch extensions after successful connection
-        fetchExtensions()
-      } else {
-        toast.error(healthData.error || 'Server responded with an error')
-        // Still activate but warn
-        store.setServerUrl(url)
-        store.setIsConnected(true)
-      }
-    } catch {
-      toast.error('Failed to connect. Check the server URL and try again.')
-    } finally {
-      setConnecting(false)
-    }
-  }
-
-  // Disconnect handler
-  const handleDisconnect = async () => {
-    try {
-      await fetch('/api/bridge-config', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ serverUrl: store.serverUrl, action: 'disconnect' })
-      })
-    } catch {
-      // ignore
-    }
-    store.setIsConnected(false)
-    store.setHealth(null)
-    store.setAniyomiExtensions([])
-    store.setCsProviders([])
-    store.setKotatsuExtensions([])
-    store.setSearchResults([])
-    toast.info('Disconnected from bridge server')
-  }
-
-  // Refresh handler
-  const handleRefresh = () => {
-    fetchHealth()
-    fetchExtensions()
-    toast.success('Refreshing data...')
-  }
-
-  // Search handler
-  const handleSearch = async () => {
-    if (!searchQuery.trim()) {
-      toast.error('Please enter a search query')
-      return
-    }
-
-    setSearching(true)
-    store.setSearchResults([])
-
-    try {
-      let endpoint = ''
-      let body: Record<string, unknown> = { query: searchQuery.trim(), page: 1 }
-
-      if (searchType === 'aniyomi') {
-        if (!searchSourceId) {
-          toast.error('Please select an extension')
-          setSearching(false)
-          return
-        }
-        const ext = store.aniyomiExtensions.find(e => String(e.sourceId) === searchSourceId)
-        endpoint = '/api/bridge/api/aniyomi/search'
-        body.sourceId = Number(searchSourceId)
-        body.isAnime = ext?.isAnime ?? true
-      } else if (searchType === 'cloudstream') {
-        if (!searchSourceId) {
-          toast.error('Please select a provider')
-          setSearching(false)
-          return
-        }
-        endpoint = '/api/bridge/api/cloudstream/search'
-        body.apiName = searchSourceId
-      } else if (searchType === 'kotatsu') {
-        if (!searchSourceId) {
-          toast.error('Please select an extension')
-          setSearching(false)
-          return
-        }
-        endpoint = '/api/bridge/api/kotatsu/search'
-        body.sourceId = Number(searchSourceId)
-      }
-
-      const res = await fetch(endpoint, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(body)
-      })
-      const data = await res.json()
-
-      if (data.success) {
-        const results = data.data || []
-        store.setSearchResults(Array.isArray(results) ? results : (results.list || []))
-        if (Array.isArray(results) ? results.length === 0 : (results.list || []).length === 0) {
-          toast.info('No results found')
-        }
-      } else {
-        toast.error(data.error || 'Search failed')
-      }
-    } catch {
-      toast.error('Search request failed')
-    } finally {
-      setSearching(false)
-    }
-  }
-
-  // Compute totals
-  const totalExtensions =
-    (store.health?.aniyomiExtensionCount || 0) +
-    (store.health?.csProviderCount || 0) +
-    (store.health?.kotatsuExtensionCount || 0)
-
-  const animeExts = store.aniyomiExtensions.filter(e => e.isAnime)
-  const mangaExts = store.aniyomiExtensions.filter(e => !e.isAnime)
-
-  // Search source options
-  const searchSourceOptions = searchType === 'aniyomi'
-    ? store.aniyomiExtensions.map(e => ({ value: String(e.sourceId), label: e.name }))
-    : searchType === 'cloudstream'
-      ? store.csProviders.map(p => ({ value: p.apiName, label: p.name }))
-      : store.kotatsuExtensions.map(e => ({ value: String(e.sourceId), label: e.name }))
+  const online = health?.ok && !error
 
   return (
-    <div className="min-h-screen bg-background">
-      {/* ─── Header / Config Bar ──────────────────── */}
-      <header className="sticky top-0 z-50 bg-background/80 backdrop-blur-md border-b border-border">
-        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
-          <div className="flex flex-col sm:flex-row items-start sm:items-center gap-3 py-3 sm:py-4">
-            {/* Title + Status */}
-            <div className="flex items-center gap-2.5 shrink-0 w-full sm:w-auto">
-              <div className="p-1.5 rounded-lg bg-primary text-primary-foreground">
-                <Server className="h-4 w-4" />
-              </div>
-              <div className="min-w-0">
-                <h1 className="text-sm sm:text-base font-bold tracking-tight truncate">
-                  AnymeX Bridge Server
-                </h1>
-                <div className="flex items-center gap-1.5">
-                  <span className={`h-2 w-2 rounded-full ${store.isConnected ? 'bg-emerald-500 shadow-[0_0_6px_rgba(16,185,129,0.5)]' : 'bg-rose-400'}`} />\n                  <span className="text-[11px] text-muted-foreground">
-                    {store.isConnected ? 'Connected' : 'Disconnected'}
-                  </span>
-                </div>
-              </div>
-            </div>
-
-            {/* URL Input + Buttons */}
-            <div className="flex items-center gap-2 flex-1 w-full sm:w-auto sm:max-w-md">
-              <Input
-                placeholder="http://your-server:8080"
-                value={urlInput}
-                onChange={(e) => setUrlInput(e.target.value)}
-                onKeyDown={(e) => e.key === 'Enter' && !store.isConnected && handleConnect()}
-                className="h-9 text-sm flex-1"
-                disabled={connecting}
-              />
-              {store.isConnected ? (
-                <Button
-                  variant="outline"
-                  size="sm"
-                  className="h-9 gap-1.5 shrink-0 text-rose-600 border-rose-200 hover:bg-rose-50 hover:text-rose-700"
-                  onClick={handleDisconnect}
-                >
-                  <WifiOff className="h-3.5 w-3.5" />
-                  <span className="hidden sm:inline">Disconnect</span>
-                </Button>
-              ) : (
-                <Button
-                  size="sm"
-                  className="h-9 gap-1.5 shrink-0"
-                  onClick={handleConnect}
-                  disabled={connecting}
-                >
-                  {connecting ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Wifi className="h-3.5 w-3.5" />}
-                  <span className="hidden sm:inline">Connect</span>
-                </Button>
-              )}
-              {store.isConnected && (
-                <Button
-                  variant="ghost"
-                  size="icon"
-                  className="h-9 w-9 shrink-0"
-                  onClick={handleRefresh}
-                >
-                  <RefreshCw className="h-3.5 w-3.5" />
-                </Button>
-              )}
-            </div>
+    <div className="min-h-screen bg-background flex flex-col">
+      {/* Header */}
+      <header className="border-b border-border/50 bg-card/50 backdrop-blur-sm sticky top-0 z-10">
+        <div className="max-w-6xl mx-auto px-4 py-3 flex items-center gap-3">
+          <div className="h-9 w-9 rounded-lg bg-primary/10 flex items-center justify-center">
+            <Server className="h-5 w-5 text-primary" />
+          </div>
+          <div className="flex-1">
+            <h1 className="text-lg font-semibold">AnymeX Bridge</h1>
+            <p className="text-xs text-muted-foreground">SSH + JAR proxy server for iOS users</p>
+          </div>
+          <div className="flex items-center gap-2">
+            <Badge variant={online ? 'default' : 'destructive'} className="text-xs gap-1.5">
+              {online ? <Wifi className="h-3 w-3" /> : <WifiOff className="h-3 w-3" />}
+              {online ? 'Online' : 'Offline'}
+            </Badge>
+            <Button variant="outline" size="sm" onClick={refresh} disabled={loading}>
+              <RefreshCw className={`h-3.5 w-3.5 ${loading ? 'animate-spin' : ''}`} />
+            </Button>
           </div>
         </div>
       </header>
 
-      <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-6 space-y-6">
-        {/* ─── Not Connected State ──────────────────── */}
-        {!store.isConnected && (
-          <div className="flex flex-col items-center justify-center py-24 text-center">
-            <div className="p-4 rounded-2xl bg-muted/50 mb-6">
-              <Server className="h-12 w-12 text-muted-foreground/50" />
-            </div>
-            <h2 className="text-xl font-semibold mb-2">No Bridge Server Connected</h2>
-            <p className="text-sm text-muted-foreground max-w-md">
-              Enter your AnymeX JVM Bridge Server URL above and click Connect to start managing your extensions.
-            </p>
-          </div>
+      <main className="flex-1 max-w-6xl mx-auto px-4 py-6 space-y-6">
+        {/* Error */}
+        {error && (
+          <Card className="border-destructive/30 bg-destructive/5">
+            <CardContent className="p-4 flex items-center gap-3">
+              <WifiOff className="h-5 w-5 text-destructive" />
+              <p className="text-sm text-destructive">{error}</p>
+            </CardContent>
+          </Card>
         )}
 
-        {/* ─── Connected State ──────────────────── */}
-        {store.isConnected && (
-          <>
-            {/* ─── Health Stats ──────────────── */}
-            <section aria-label="Server Health Statistics">
-              {store.healthLoading && !store.health ? (
-                <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 sm:gap-4">
-                  <StatCardSkeleton />
-                  <StatCardSkeleton />
-                  <StatCardSkeleton />
-                  <StatCardSkeleton />
-                </div>
-              ) : store.health ? (
-                <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 sm:gap-4">
-                  <StatCard
-                    icon={Cpu}
-                    label="JVM Version"
-                    value={store.health.jvmVersion || 'Unknown'}
-                    color="bg-zinc-100 text-zinc-700"
-                  />
-                  <StatCard
-                    icon={Clock}
-                    label="Uptime"
-                    value={formatUptime(store.health.uptime)}
-                    color="bg-amber-100 text-amber-700"
-                  />
-                  <StatCard
-                    icon={Package}
-                    label="Total Extensions"
-                    value={`${totalExtensions} installed`}
-                    color="bg-emerald-100 text-emerald-700"
-                  />
-                  <StatCard
-                    icon={Activity}
-                    label="Server Status"
-                    value={store.health.status || 'Running'}
-                    color="bg-emerald-100 text-emerald-700"
-                  />
-                </div>
-              ) : (
-                <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 sm:gap-4">
-                  <StatCard icon={Cpu} label="JVM Version" value="—" color="bg-zinc-100 text-zinc-400" />
-                  <StatCard icon={Clock} label="Uptime" value="—" color="bg-zinc-100 text-zinc-400" />
-                  <StatCard icon={Package} label="Total Extensions" value="—" color="bg-zinc-100 text-zinc-400" />
-                  <StatCard icon={Activity} label="Server Status" value="Unreachable" color="bg-rose-100 text-rose-600" />
-                </div>
-              )}
+        {/* Stats */}
+        <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
+          {loading && !health ? (
+            Array.from({ length: 5 }).map((_, i) => (
+              <Card key={i}><CardContent className="p-4"><Skeleton className="h-8 w-20" /></CardContent></Card>
+            ))
+          ) : (
+            <>
+              <StatCard icon={<Users className="h-4 w-4" />} label="Users" value={users.length} />
+              <StatCard icon={<FolderGit2 className="h-4 w-4" />} label="Repos" value={repos.length} />
+              <StatCard icon={<Package className="h-4 w-4" />} label="Extensions" value={extensions.length} />
+              <StatCard icon={<Key className="h-4 w-4" />} label="Installs" value={installs.length} />
+              <StatCard icon={<Activity className="h-4 w-4" />} label="SSH Port" value={health?.ssh ?? '-'} />
+            </>
+          )}
+        </div>
 
-              {/* OS Info row */}
-              {store.health && (
-                <div className="mt-3 flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-muted-foreground">
-                  <span className="flex items-center gap-1">
-                    <Cpu className="h-3 w-3" /> {store.health.osName || 'Unknown OS'}
-                  </span>
-                  {store.health.javaVersion && (
-                    <span className="font-mono">Java {store.health.javaVersion}</span>
-                  )}
-                </div>
-              )}
-            </section>
+        {/* Tabs */}
+        <Tabs defaultValue="users">
+          <TabsList className="grid w-full grid-cols-4">
+            <TabsTrigger value="users" className="gap-1.5"><Users className="h-3.5 w-3.5" /> Users</TabsTrigger>
+            <TabsTrigger value="repos" className="gap-1.5"><FolderGit2 className="h-3.5 w-3.5" /> Repos</TabsTrigger>
+            <TabsTrigger value="extensions" className="gap-1.5"><Package className="h-3.5 w-3.5" /> Extensions</TabsTrigger>
+            <TabsTrigger value="installs" className="gap-1.5"><Key className="h-3.5 w-3.5" /> Installs</TabsTrigger>
+          </TabsList>
 
-            {/* ─── Extensions Tabs ──────────── */}
-            <section aria-label="Extensions">
-              <Tabs value={store.activeTab} onValueChange={store.setActiveTab}>
-                <TabsList className="w-full sm:w-auto grid grid-cols-3 sm:inline-flex">
-                  <TabsTrigger value="aniyomi" className="gap-1.5 text-xs sm:text-sm">
-                    <Tv className="h-3.5 w-3.5" />
-                    Aniyomi
-                    {store.aniyomiExtensions.length > 0 && (
-                      <Badge variant="secondary" className="ml-1 h-5 min-w-5 px-1.5 text-[10px]">
-                        {store.aniyomiExtensions.length}
-                      </Badge>
-                    )}
-                  </TabsTrigger>
-                  <TabsTrigger value="cloudstream" className="gap-1.5 text-xs sm:text-sm">
-                    <Activity className="h-3.5 w-3.5" />
-                    CloudStream
-                    {store.csProviders.length > 0 && (
-                      <Badge variant="secondary" className="ml-1 h-5 min-w-5 px-1.5 text-[10px]">
-                        {store.csProviders.length}
-                      </Badge>
-                    )}
-                  </TabsTrigger>
-                  <TabsTrigger value="kotatsu" className="gap-1.5 text-xs sm:text-sm">
-                    <BookOpen className="h-3.5 w-3.5" />
-                    Kotatsu
-                    {store.kotatsuExtensions.length > 0 && (
-                      <Badge variant="secondary" className="ml-1 h-5 min-w-5 px-1.5 text-[10px]">
-                        {store.kotatsuExtensions.length}
-                      </Badge>
-                    )}
-                  </TabsTrigger>
-                </TabsList>
-
-                {/* Aniyomi Tab */}
-                <TabsContent value="aniyomi" className="mt-4">
-                  {store.extensionsLoading && store.aniyomiExtensions.length === 0 ? (
-                    <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
-                      {Array.from({ length: 6 }).map((_, i) => (
-                        <ExtensionCardSkeleton key={i} />
-                      ))}
-                    </div>
-                  ) : (
-                    <>
-                      {/* Anime section */}
-                      {animeExts.length > 0 && (
-                        <div className="mb-6">
-                          <h3 className="text-xs font-semibold text-muted-foreground uppercase tracking-wider mb-3 flex items-center gap-1.5">
-                            <Tv className="h-3.5 w-3.5" />
-                            Anime Sources ({animeExts.length})
-                          </h3>
-                          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
-                            {animeExts.map((ext) => (
-                              <AniyomiExtCard key={ext.pkgName || ext.sourceId} ext={ext} />
-                            ))}
-                          </div>
+          <TabsContent value="users" className="mt-4">
+            <Card>
+              <CardHeader className="pb-3 flex-row items-center justify-between">
+                <CardTitle className="text-base">Registered Users</CardTitle>
+                <RegisterUserForm onRegistered={refresh} />
+              </CardHeader>
+              <CardContent>
+                {users.length === 0 ? (
+                  <p className="text-sm text-muted-foreground py-8 text-center">No users registered yet</p>
+                ) : (
+                  <div className="space-y-2">
+                    {users.map(u => (
+                      <div key={u.id} className="flex items-center gap-3 p-3 rounded-lg bg-muted/30 hover:bg-muted/50 transition-colors">
+                        <div className="h-8 w-8 rounded-full bg-primary/10 flex items-center justify-center text-primary text-sm font-medium">
+                          {u.username[0].toUpperCase()}
                         </div>
-                      )}
-                      {/* Manga section */}
-                      {mangaExts.length > 0 && (
-                        <div>
-                          <h3 className="text-xs font-semibold text-muted-foreground uppercase tracking-wider mb-3 flex items-center gap-1.5">
-                            <BookOpen className="h-3.5 w-3.5" />
-                            Manga Sources ({mangaExts.length})
-                          </h3>
-                          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
-                            {mangaExts.map((ext) => (
-                              <AniyomiExtCard key={ext.pkgName || ext.sourceId} ext={ext} />
-                            ))}
-                          </div>
+                        <div className="flex-1 min-w-0">
+                          <p className="text-sm font-medium truncate">{u.username}</p>
+                          <p className="text-xs text-muted-foreground">{u.ext_count} extensions · {u.repo_count} repos</p>
                         </div>
-                      )}
-                      {store.aniyomiExtensions.length === 0 && (
-                        <EmptyState message="No Aniyomi extensions found on the server." />
-                      )}
-                    </>
-                  )}
-                </TabsContent>
-
-                {/* CloudStream Tab */}
-                <TabsContent value="cloudstream" className="mt-4">
-                  {store.extensionsLoading && store.csProviders.length === 0 ? (
-                    <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
-                      {Array.from({ length: 6 }).map((_, i) => (
-                        <ExtensionCardSkeleton key={i} />
-                      ))}
-                    </div>
-                  ) : store.csProviders.length > 0 ? (
-                    <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
-                      {store.csProviders.map((provider) => (
-                        <CloudStreamProviderCard key={provider.apiName} provider={provider} />
-                      ))}
-                    </div>
-                  ) : (
-                    <EmptyState message="No CloudStream providers found on the server." />
-                  )}
-                </TabsContent>
-
-                {/* Kotatsu Tab */}
-                <TabsContent value="kotatsu" className="mt-4">
-                  {store.extensionsLoading && store.kotatsuExtensions.length === 0 ? (
-                    <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
-                      {Array.from({ length: 6 }).map((_, i) => (
-                        <ExtensionCardSkeleton key={i} />
-                      ))}
-                    </div>
-                  ) : store.kotatsuExtensions.length > 0 ? (
-                    <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
-                      {store.kotatsuExtensions.map((ext) => (
-                        <KotatsuExtCard key={ext.sourceId} ext={ext} />
-                      ))}
-                    </div>
-                  ) : (
-                    <EmptyState message="No Kotatsu extensions found on the server." />
-                  )}
-                </TabsContent>
-              </Tabs>
-            </section>
-
-            {/* ─── Quick Search / Test Panel ──── */}
-            <section aria-label="Extension Search">
-              <Card className="border-border/50">
-                <CardHeader className="pb-3">
-                  <CardTitle className="text-sm font-semibold flex items-center gap-2">
-                    <Search className="h-4 w-4" />
-                    Quick Search &amp; Test
-                  </CardTitle>
-                </CardHeader>
-                <CardContent className="space-y-3">
-                  <div className="grid grid-cols-1 sm:grid-cols-4 gap-3">
-                    {/* Extension Type */}
-                    <Select value={searchType} onValueChange={(v) => {
-                      setSearchType(v)
-                      setSearchSourceId('')
-                    }}>
-                      <SelectTrigger className="h-9 text-sm">
-                        <SelectValue placeholder="Extension Type" />
-                      </SelectTrigger>
-                      <SelectContent>
-                        <SelectItem value="aniyomi">Aniyomi</SelectItem>
-                        <SelectItem value="cloudstream">CloudStream</SelectItem>
-                        <SelectItem value="kotatsu">Kotatsu</SelectItem>
-                      </SelectContent>
-                    </Select>
-
-                    {/* Specific Extension */}
-                    <Select value={searchSourceId} onValueChange={setSearchSourceId}>
-                      <SelectTrigger className="h-9 text-sm">
-                        <SelectValue placeholder="Select extension..." />
-                      </SelectTrigger>
-                      <SelectContent>
-                        {searchSourceOptions.map((opt) => (
-                          <SelectItem key={opt.value} value={opt.value}>
-                            {opt.label}
-                          </SelectItem>
-                        ))}
-                        {searchSourceOptions.length === 0 && (
-                          <SelectItem value="_none" disabled>
-                            No extensions available
-                          </SelectItem>
-                        )}
-                      </SelectContent>
-                    </Select>
-
-                    {/* Search Input */}
-                    <Input
-                      placeholder="Search query..."
-                      value={searchQuery}
-                      onChange={(e) => setSearchQuery(e.target.value)}
-                      onKeyDown={(e) => e.key === 'Enter' && handleSearch()}
-                      className="h-9 text-sm sm:col-span-1"
-                    />
-
-                    {/* Search Button */}
-                    <Button
-                      onClick={handleSearch}
-                      disabled={searching || !searchSourceId || !searchQuery.trim()}
-                      className="h-9 gap-1.5"
-                    >
-                      {searching ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Search className="h-3.5 w-3.5" />}
-                      Search
-                    </Button>
+                        <Badge variant="outline" className="text-xs shrink-0">{u.id.slice(0, 8)}</Badge>
+                      </div>
+                    ))}
                   </div>
+                )}
+              </CardContent>
+            </Card>
+          </TabsContent>
 
-                  {/* Search Results */}
-                  {store.searchResults.length > 0 && (
-                    <div className="mt-4">
-                      <h4 className="text-xs font-semibold text-muted-foreground uppercase tracking-wider mb-2">
-                        Results ({store.searchResults.length})
-                      </h4>
-                      <ScrollArea className="max-h-96">
-                        <div className="space-y-2 pr-4">
-                          {store.searchResults.map((result, idx) => (
-                            <Card key={idx} className="border-border/40">
-                              <CardContent className="p-3">
-                                <div className="flex items-start gap-3">
-                                  {result.imageUrl && (
-                                    <img
-                                      src={result.imageUrl}
-                                      alt=""
-                                      className="h-16 w-12 object-cover rounded shrink-0 bg-muted"
-                                    />
-                                  )}
-                                  <div className="flex-1 min-w-0">
-                                    <h5 className="text-sm font-medium truncate">{result.name || 'Untitled'}</h5>
-                                    {result.url && (
-                                      <p className="text-xs text-muted-foreground truncate mt-0.5 font-mono">
-                                        {result.url}
-                                      </p>
-                                    )}
-                                    {result.type && (
-                                      <Badge variant="secondary" className="text-[10px] mt-1.5 h-5">
-                                        {result.type}
-                                      </Badge>
-                                    )}
-                                    {result.author && (
-                                      <p className="text-xs text-muted-foreground mt-1">By {result.author}</p>
-                                    )}
-                                    {result.genre && result.genre.length > 0 && (
-                                      <div className="flex flex-wrap gap-1 mt-1.5">
-                                        {result.genre.slice(0, 5).map((g, gi) => (
-                                          <Badge key={gi} variant="outline" className="text-[10px] h-5 px-1.5">
-                                            {String(g)}
-                                          </Badge>
-                                        ))}
-                                      </div>
-                                    )}
-                                  </div>
-                                </div>
-                              </CardContent>
-                            </Card>
-                          ))}
+          <TabsContent value="repos" className="mt-4">
+            <Card>
+              <CardHeader className="pb-3">
+                <CardTitle className="text-base">Global Repos</CardTitle>
+                <CardDescription className="text-xs">One user adds a repo, everyone sees it</CardDescription>
+              </CardHeader>
+              <CardContent>
+                {repos.length === 0 ? (
+                  <p className="text-sm text-muted-foreground py-8 text-center">No repos added yet. Users add repos via SSH.</p>
+                ) : (
+                  <div className="space-y-2">
+                    {repos.map(r => (
+                      <div key={r.id} className="flex items-start gap-3 p-3 rounded-lg bg-muted/30 hover:bg-muted/50 transition-colors">
+                        <FolderGit2 className="h-4 w-4 mt-0.5 text-muted-foreground shrink-0" />
+                        <div className="flex-1 min-w-0">
+                          <p className="text-sm font-mono truncate text-foreground/80">{r.url}</p>
+                          <div className="flex items-center gap-2 mt-1">
+                            <Badge variant="outline" className={`text-xs ${TYPE_COLORS[r.type] || ''}`}>{TYPE_LABELS[r.type] || r.type}</Badge>
+                            <span className="text-xs text-muted-foreground">{r.ext_count} extensions</span>
+                            {r.added_by_name && <span className="text-xs text-muted-foreground">by {r.added_by_name}</span>}
+                          </div>
                         </div>
-                      </ScrollArea>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </CardContent>
+            </Card>
+          </TabsContent>
+
+          <TabsContent value="extensions" className="mt-4">
+            <Card>
+              <CardHeader className="pb-3">
+                <CardTitle className="text-base">Available Extensions</CardTitle>
+                <CardDescription className="text-xs">One file per extension, no duplicates</CardDescription>
+              </CardHeader>
+              <CardContent>
+                {extensions.length === 0 ? (
+                  <p className="text-sm text-muted-foreground py-8 text-center">No extensions available. Add a repo first.</p>
+                ) : (
+                  <ScrollArea className="max-h-96">
+                    <div className="space-y-1.5">
+                      {extensions.map(ext => (
+                        <div key={ext.id} className="flex items-center gap-3 p-2.5 rounded-lg hover:bg-muted/30 transition-colors">
+                          {ext.icon_url ? (
+                            <img src={ext.icon_url} alt="" className="h-6 w-6 rounded" onError={e => (e.currentTarget.style.display = 'none')} />
+                          ) : (
+                            <div className="h-6 w-6 rounded bg-muted flex items-center justify-center text-xs">📦</div>
+                          )}
+                          <div className="flex-1 min-w-0">
+                            <p className="text-sm truncate">{ext.name}</p>
+                            <div className="flex items-center gap-2">
+                              <Badge variant="outline" className={`text-[10px] ${TYPE_COLORS[ext.type] || ''}`}>{TYPE_LABELS[ext.type] || ext.type}</Badge>
+                              {ext.lang && <span className="text-[10px] text-muted-foreground">{ext.lang}</span>}
+                              {ext.version && <span className="text-[10px] text-muted-foreground">v{ext.version}</span>}
+                            </div>
+                          </div>
+                          <Badge variant="secondary" className="text-xs shrink-0">{ext.install_count} user{ext.install_count !== 1 ? 's' : ''}</Badge>
+                        </div>
+                      ))}
                     </div>
-                  )}
-                </CardContent>
-              </Card>
-            </section>
-          </>
+                  </ScrollArea>
+                )}
+              </CardContent>
+            </Card>
+          </TabsContent>
+
+          <TabsContent value="installs" className="mt-4">
+            <Card>
+              <CardHeader className="pb-3">
+                <CardTitle className="text-base">Install Records</CardTitle>
+                <CardDescription className="text-xs">Per-user extension tracking</CardDescription>
+              </CardHeader>
+              <CardContent>
+                {installs.length === 0 ? (
+                  <p className="text-sm text-muted-foreground py-8 text-center">No installs yet</p>
+                ) : (
+                  <ScrollArea className="max-h-96">
+                    <div className="space-y-1.5">
+                      {installs.map(inst => (
+                        <div key={`${inst.user_id}-${inst.ext_id}`} className="flex items-center gap-3 p-2.5 rounded-lg hover:bg-muted/30 transition-colors">
+                          <div className="h-6 w-6 rounded-full bg-primary/10 flex items-center justify-center text-primary text-[10px] font-medium">
+                            {inst.username[0].toUpperCase()}
+                          </div>
+                          <div className="flex-1 min-w-0">
+                            <p className="text-sm truncate">{inst.ext_name}</p>
+                          </div>
+                          <Badge variant="outline" className={`text-[10px] shrink-0 ${TYPE_COLORS[inst.type] || ''}`}>{TYPE_LABELS[inst.type] || inst.type}</Badge>
+                          <span className="text-xs text-muted-foreground shrink-0">{inst.username}</span>
+                        </div>
+                      ))}
+                    </div>
+                  </ScrollArea>
+                )}
+              </CardContent>
+            </Card>
+          </TabsContent>
+        </Tabs>
+
+        {/* Server Info */}
+        {health && (
+          <Card>
+            <CardHeader className="pb-3">
+              <CardTitle className="text-base flex items-center gap-2">
+                <Terminal className="h-4 w-4" /> Server Info
+              </CardTitle>
+            </CardHeader>
+            <CardContent>
+              <div className="grid grid-cols-2 md:grid-cols-4 gap-4 text-sm">
+                <div>
+                  <p className="text-xs text-muted-foreground">SSH Port</p>
+                  <p className="font-mono">{health.ssh}</p>
+                </div>
+                <div>
+                  <p className="text-xs text-muted-foreground">HTTP Port</p>
+                  <p className="font-mono">{health.http}</p>
+                </div>
+                <div>
+                  <p className="text-xs text-muted-foreground">Runtime JAR</p>
+                  <Badge variant={health.jar ? 'default' : 'destructive'} className="text-xs mt-1">
+                    {health.jar ? 'Present' : 'Not Found'}
+                  </Badge>
+                </div>
+                <div>
+                  <p className="text-xs text-muted-foreground">JAR Ready</p>
+                  <Badge variant={health.jarReady ? 'default' : 'destructive'} className="text-xs mt-1">
+                    {health.jarReady ? 'Ready' : 'Not Running'}
+                  </Badge>
+                </div>
+              </div>
+            </CardContent>
+          </Card>
         )}
       </main>
+
+      {/* Footer */}
+      <footer className="border-t border-border/50 mt-auto">
+        <div className="max-w-6xl mx-auto px-4 py-3 flex items-center justify-between text-xs text-muted-foreground">
+          <span>AnymeX Bridge Server v2</span>
+          <span>SSH + anymex_desktop_runtime.jar</span>
+        </div>
+      </footer>
     </div>
+  )
+}
+
+// ── Sub-components ─────────────────────────────────────
+
+function StatCard({ icon, label, value }: { icon: React.ReactNode; label: string; value: string | number }) {
+  return (
+    <Card>
+      <CardContent className="p-4 flex items-center gap-3">
+        <div className="text-muted-foreground">{icon}</div>
+        <div>
+          <p className="text-xl font-bold">{value}</p>
+          <p className="text-xs text-muted-foreground">{label}</p>
+        </div>
+      </CardContent>
+    </Card>
+  )
+}
+
+function RegisterUserForm({ onRegistered }: { onRegistered: () => void }) {
+  const [username, setUsername] = useState('')
+  const [password, setPassword] = useState('')
+  const [loading, setLoading] = useState(false)
+  const [showPass, setShowPass] = useState(false)
+
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault()
+    if (!username || !password) return
+    setLoading(true)
+    try {
+      const res = await fetch('/api/bridge?path=/register', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ username, password }),
+      })
+      const data = await res.json()
+      if (data.ok) {
+        toast.success(`User "${username}" registered`)
+        setUsername('')
+        setPassword('')
+        onRegistered()
+      } else {
+        toast.error(data.error || 'Registration failed')
+      }
+    } catch (e: any) {
+      toast.error(e.message || 'Failed to connect to bridge')
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  return (
+    <form onSubmit={handleSubmit} className="flex items-center gap-2">
+      <Input
+        placeholder="username"
+        value={username}
+        onChange={e => setUsername(e.target.value)}
+        className="h-8 w-28 text-xs"
+        minLength={3}
+      />
+      <div className="relative">
+        <Input
+          type={showPass ? 'text' : 'password'}
+          placeholder="password"
+          value={password}
+          onChange={e => setPassword(e.target.value)}
+          className="h-8 w-28 text-xs pr-7"
+          minLength={4}
+        />
+        <button
+          type="button"
+          onClick={() => setShowPass(!showPass)}
+          className="absolute right-1.5 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
+        >
+          {showPass ? '🙈' : '👁️'}
+        </button>
+      </div>
+      <Button type="submit" size="sm" className="h-8 text-xs gap-1" disabled={loading}>
+        <UserPlus className="h-3 w-3" />
+        {loading ? '...' : 'Add'}
+      </Button>
+    </form>
   )
 }

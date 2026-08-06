@@ -1,0 +1,12 @@
+{
+  "name": "anymex-bridge",
+  "version": "2.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "bun --hot index.ts",
+    "start": "bun index.ts"
+  },
+  "dependencies": {
+    "ssh2": "^1.16.0"
+  }
+}

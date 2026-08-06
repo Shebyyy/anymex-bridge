@@ -1,0 +1,1123 @@
+     1→'use client'
+     2→
+     3→import { useEffect, useCallback, useState } from 'react'
+     4→import { toast } from 'sonner'
+     5→import {
+     6→  Server, Wifi, WifiOff, Search, Download, Trash2, Activity,
+     7→  Clock, Cpu, BookOpen, Tv, Package, Loader2, RefreshCw, Globe
+     8→} from 'lucide-react'
+     9→
+    10→import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
+    11→import { Button } from '@/components/ui/button'
+    12→import { Input } from '@/components/ui/input'
+    13→import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
+    14→import { Badge } from '@/components/ui/badge'
+    15→import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar'
+    16→import {
+    17→  Select,
+    18→  SelectContent,
+    19→  SelectItem,
+    20→  SelectTrigger,
+    21→  SelectValue,
+    22→} from '@/components/ui/select'
+    23→import { Skeleton } from '@/components/ui/skeleton'
+    24→import { ScrollArea } from '@/components/ui/scroll-area'
+    25→
+    26→import { useBridgeStore, type AniyomiExtension, type CloudStreamProvider, type KotatsuExtension } from '@/stores/bridge-store'
+    27→
+    28→// ─── Helper: format uptime ─────────────────────────────
+    29→function formatUptime(seconds: number): string {
+    30→  const d = Math.floor(seconds / 86400)
+    31→  const h = Math.floor((seconds % 86400) / 3600)
+    32→  const m = Math.floor((seconds % 3600) / 60)
+    33→  if (d > 0) return `${d}d ${h}h ${m}m`
+    34→  if (h > 0) return `${h}h ${m}m`
+    35→  return `${m}m`
+    36→}
+    37→
+    38→// ─── Skeleton Loaders ───────────────────────────────────
+    39→function StatCardSkeleton() {
+    40→  return (
+    41→    <Card className="border-border/50">
+    42→      <CardContent className="p-4">
+    43→        <div className="flex items-center gap-3">
+    44→          <Skeleton className="h-10 w-10 rounded-lg" />
+    45→          <div className="space-y-2 flex-1">
+    46→            <Skeleton className="h-3 w-20" />
+    47→            <Skeleton className="h-5 w-28" />
+    48→          </div>
+    49→        </div>
+    50→      </CardContent>
+    51→    </Card>
+    52→  )
+    53→}
+    54→
+    55→function ExtensionCardSkeleton() {
+    56→  return (
+    57→    <Card className="border-border/50">
+    58→      <CardContent className="p-4">
+    59→        <div className="flex items-start gap-3">
+    60→          <Skeleton className="h-10 w-10 rounded-full shrink-0" />
+    61→          <div className="flex-1 space-y-2 min-w-0">
+    62→            <Skeleton className="h-4 w-3/4" />
+    63→            <Skeleton className="h-3 w-1/2" />
+    64→            <Skeleton className="h-3 w-full" />
+    65→            <div className="flex gap-2 pt-1">
+    66→              <Skeleton className="h-5 w-14 rounded-full" />
+    67→              <Skeleton className="h-5 w-16 rounded-full" />
+    68→            </div>
+    69→          </div>
+    70→        </div>
+    71→      </CardContent>
+    72→    </Card>
+    73→  )
+    74→}
+    75→
+    76→// ─── Stat Card ───────────────────────────────────────────
+    77→function StatCard({ icon: Icon, label, value, color }: {
+    78→  icon: React.ElementType
+    79→  label: string
+    80→  value: string
+    81→  color: string
+    82→}) {
+    83→  return (
+    84→    <Card className="border-border/50 transition-shadow hover:shadow-md">
+    85→      <CardContent className="p-4">
+    86→        <div className="flex items-center gap-3">
+    87→          <div className={`p-2.5 rounded-lg ${color}`}>
+    88→            <Icon className="h-5 w-5" />
+    89→          </div>
+    90→          <div className="min-w-0">
+    91→            <p className="text-xs text-muted-foreground font-medium truncate">{label}</p>
+    92→            <p className="text-sm font-semibold truncate">{value}</p>
+    93→          </div>
+    94→        </div>
+    95→      </CardContent>
+    96→    </Card>
+    97→  )
+    98→}
+    99→
+   100→// ─── Extension Card ──────────────────────────────────────
+   101→function AniyomiExtCard({ ext }: { ext: AniyomiExtension }) {
+   102→  const [uninstalling, setUninstalling] = useState(false)
+   103→  const [installing, setInstalling] = useState(false)
+   104→
+   105→  const handleUninstall = async (e: React.MouseEvent) => {
+   106→    e.stopPropagation()
+   107→    if (!ext.pkgName) return
+   108→    setUninstalling(true)
+   109→    try {
+   110→      const res = await fetch('/api/bridge/api/aniyomi/uninstall', {
+   111→        method: 'POST',
+   112→        headers: { 'Content-Type': 'application/json' },
+   113→        body: JSON.stringify({ pkgName: ext.pkgName })
+   114→      })
+   115→      const data = await res.json()
+   116→      if (data.success) {
+   117→        toast.success(`Uninstalled ${ext.name}`)
+   118→        window.location.reload()
+   119→      } else {
+   120→        toast.error(data.error || 'Uninstall failed')
+   121→      }
+   122→    } catch {
+   123→      toast.error('Failed to uninstall extension')
+   124→    } finally {
+   125→      setUninstalling(false)
+   126→    }
+   127→  }
+   128→
+   129→  const handleInstall = async (e: React.MouseEvent) => {
+   130→    e.stopPropagation()
+   131→    if (!ext.downloadUrl) {
+   132→      toast.error('No download URL available')
+   133→      return
+   134→    }
+   135→    setInstalling(true)
+   136→    try {
+   137→      const res = await fetch('/api/bridge/api/aniyomi/install', {
+   138→        method: 'POST',
+   139→        headers: { 'Content-Type': 'application/json' },
+   140→        body: JSON.stringify({ downloadUrl: ext.downloadUrl, pkgName: ext.pkgName })
+   141→      })
+   142→      const data = await res.json()
+   143→      if (data.success) {
+   144→        toast.success(`Installed ${ext.name}`)
+   145→        window.location.reload()
+   146→      } else {
+   147→        toast.error(data.error || 'Install failed')
+   148→      }
+   149→    } catch {
+   150→      toast.error('Failed to install extension')
+   151→    } finally {
+   152→      setInstalling(false)
+   153→    }
+   154→  }
+   155→
+   156→  return (
+   157→    <Card className="border-border/50 transition-all hover:shadow-md group">
+   158→      <CardContent className="p-4">
+   159→        <div className="flex items-start gap-3">
+   160→          <Avatar className="h-10 w-10 shrink-0">
+   161→            {ext.iconUrl && <AvatarImage src={ext.iconUrl} alt={ext.name} />}
+   162→            <AvatarFallback className="bg-emerald-100 text-emerald-700 text-sm font-semibold">
+   163→              {ext.name?.charAt(0)?.toUpperCase() || '?'}
+   164→            </AvatarFallback>
+   165→          </Avatar>
+   166→          <div className="flex-1 min-w-0">
+   167→            <div className="flex items-start justify-between gap-2">
+   168→              <h3 className="text-sm font-semibold truncate leading-tight">{ext.name}</h3>
+   169→              <div className="flex gap-1 shrink-0">
+   170→                {ext.downloadUrl && !ext.versionName && (
+   171→                  <Button
+   172→                    variant="ghost"
+   173→                    size="icon"
+   174→                    className="h-7 w-7 text-emerald-600 hover:text-emerald-700 hover:bg-emerald-50"
+   175→                    onClick={handleInstall}
+   176→                    disabled={installing}
+   177→                  >
+   178→                    {installing ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Download className="h-3.5 w-3.5" />}
+   179→                  </Button>
+   180→                )}
+   181→                {ext.versionName && (
+   182→                  <Button
+   183→                    variant="ghost"
+   184→                    size="icon"
+   185→                    className="h-7 w-7 text-rose-500 hover:text-rose-600 hover:bg-rose-50 opacity-0 group-hover:opacity-100 transition-opacity"
+   186→                    onClick={handleUninstall}
+   187→                    disabled={uninstalling}
+   188→                  >
+   189→                    {uninstalling ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Trash2 className="h-3.5 w-3.5" />}
+   190→                  </Button>
+   191→                )}
+   192→              </div>
+   193→            </div>
+   194→            <p className="text-xs text-muted-foreground mt-0.5 font-mono truncate">{ext.pkgName}</p>
+   195→            {ext.baseUrl && (
+   196→              <p className="text-xs text-muted-foreground mt-0.5 flex items-center gap-1 truncate">
+   197→                <Globe className="h-3 w-3 shrink-0" />
+   198→                {ext.baseUrl}
+   199→              </p>
+   200→            )}
+   201→            <div className="flex flex-wrap items-center gap-1.5 mt-2">
+   202→              {ext.lang && (
+   203→                <Badge variant="secondary" className="text-[10px] px-1.5 py-0 h-5 font-medium">
+   204→                  {ext.lang.toUpperCase()}
+   205→                </Badge>
+   206→              )}
+   207→              <Badge variant={ext.isAnime ? "default" : "outline"} className="text-[10px] px-1.5 py-0 h-5">
+   208→                {ext.isAnime ? (
+   209→                  <span className="flex items-center gap-0.5"><Tv className="h-2.5 w-2.5" />Anime</span>
+   210→                ) : (
+   211→                  <span className="flex items-center gap-0.5"><BookOpen className="h-2.5 w-2.5" />Manga</span>
+   212→                )}
+   213→              </Badge>
+   214→              {ext.isNsfw && (
+   215→                <Badge variant="destructive" className="text-[10px] px-1.5 py-0 h-5">18+</Badge>
+   216→              )}
+   217→              {ext.versionName && (
+   218→                <Badge variant="outline" className="text-[10px] px-1.5 py-0 h-5 text-emerald-600 border-emerald-200 bg-emerald-50">
+   219→                  v{ext.versionName}
+   220→                </Badge>
+   221→              )}
+   222→            </div>
+   223→          </div>
+   224→        </div>
+   225→      </CardContent>
+   226→    </Card>
+   227→  )
+   228→}
+   229→
+   230→function CloudStreamProviderCard({ provider }: { provider: CloudStreamProvider }) {
+   231→  const [uninstalling, setUninstalling] = useState(false)
+   232→  const [installing, setInstalling] = useState(false)
+   233→
+   234→  const handleUninstall = async (e: React.MouseEvent) => {
+   235→    e.stopPropagation()
+   236→    if (!provider.apiName) return
+   237→    setUninstalling(true)
+   238→    try {
+   239→      const res = await fetch('/api/bridge/api/cloudstream/uninstall', {
+   240→        method: 'POST',
+   241→        headers: { 'Content-Type': 'application/json' },
+   242→        body: JSON.stringify({ apiName: provider.apiName })
+   243→      })
+   244→      const data = await res.json()
+   245→      if (data.success) {
+   246→        toast.success(`Uninstalled ${provider.name}`)
+   247→        window.location.reload()
+   248→      } else {
+   249→        toast.error(data.error || 'Uninstall failed')
+   250→      }
+   251→    } catch {
+   252→      toast.error('Failed to uninstall provider')
+   253→    } finally {
+   254→      setUninstalling(false)
+   255→    }
+   256→  }
+   257→
+   258→  const handleInstall = async (e: React.MouseEvent) => {
+   259→    e.stopPropagation()
+   260→    if (!provider.downloadUrl) {
+   261→      toast.error('No download URL available')
+   262→      return
+   263→    }
+   264→    setInstalling(true)
+   265→    try {
+   266→      const res = await fetch('/api/bridge/api/cloudstream/install', {
+   267→        method: 'POST',
+   268→        headers: { 'Content-Type': 'application/json' },
+   269→        body: JSON.stringify({ downloadUrl: provider.downloadUrl, fileName: provider.name })
+   270→      })
+   271→      const data = await res.json()
+   272→      if (data.success) {
+   273→        toast.success(`Installed ${provider.name}`)
+   274→        window.location.reload()
+   275→      } else {
+   276→        toast.error(data.error || 'Install failed')
+   277→      }
+   278→    } catch {
+   279→      toast.error('Failed to install provider')
+   280→    } finally {
+   281→      setInstalling(false)
+   282→    }
+   283→  }
+   284→
+   285→  return (
+   286→    <Card className="border-border/50 transition-all hover:shadow-md group">
+   287→      <CardContent className="p-4">
+   288→        <div className="flex items-start gap-3">
+   289→          <Avatar className="h-10 w-10 shrink-0">
+   290→            {provider.iconUrl && <AvatarImage src={provider.iconUrl} alt={provider.name} />}
+   291→            <AvatarFallback className="bg-amber-100 text-amber-700 text-sm font-semibold">
+   292→              {provider.name?.charAt(0)?.toUpperCase() || '?'}
+   293→            </AvatarFallback>
+   294→          </Avatar>
+   295→          <div className="flex-1 min-w-0">
+   296→            <div className="flex items-start justify-between gap-2">
+   297→              <h3 className="text-sm font-semibold truncate leading-tight">{provider.name}</h3>
+   298→              <div className="flex gap-1 shrink-0">
+   299→                {provider.downloadUrl && !provider.version && (
+   300→                  <Button
+   301→                    variant="ghost"
+   302→                    size="icon"
+   303→                    className="h-7 w-7 text-emerald-600 hover:text-emerald-700 hover:bg-emerald-50"
+   304→                    onClick={handleInstall}
+   305→                    disabled={installing}
+   306→                  >
+   307→                    {installing ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Download className="h-3.5 w-3.5" />}
+   308→                  </Button>
+   309→                )}
+   310→                {provider.version && (
+   311→                  <Button
+   312→                    variant="ghost"
+   313→                    size="icon"
+   314→                    className="h-7 w-7 text-rose-500 hover:text-rose-600 hover:bg-rose-50 opacity-0 group-hover:opacity-100 transition-opacity"
+   315→                    onClick={handleUninstall}
+   316→                    disabled={uninstalling}
+   317→                  >
+   318→                    {uninstalling ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Trash2 className="h-3.5 w-3.5" />}
+   319→                  </Button>
+   320→                )}
+   321→              </div>
+   322→            </div>
+   323→            <p className="text-xs text-muted-foreground mt-0.5 font-mono truncate">{provider.apiName}</p>
+   324→            {provider.mainUrl && (
+   325→              <p className="text-xs text-muted-foreground mt-0.5 flex items-center gap-1 truncate">
+   326→                <Globe className="h-3 w-3 shrink-0" />
+   327→                {provider.mainUrl}
+   328→              </p>
+   329→            )}
+   330→            <div className="flex flex-wrap items-center gap-1.5 mt-2">
+   331→              {provider.lang && (
+   332→                <Badge variant="secondary" className="text-[10px] px-1.5 py-0 h-5 font-medium">
+   333→                  {provider.lang.toUpperCase()}
+   334→                </Badge>
+   335→              )}
+   336→              <Badge variant="outline" className="text-[10px] px-1.5 py-0 h-5">
+   337→                <span className="flex items-center gap-0.5"><Tv className="h-2.5 w-2.5" />Stream</span>
+   338→              </Badge>
+   339→              {provider.version && (
+   340→                <Badge variant="outline" className="text-[10px] px-1.5 py-0 h-5 text-emerald-600 border-emerald-200 bg-emerald-50">
+   341→                  v{provider.version}
+   342→                </Badge>
+   343→              )}
+   344→            </div>
+   345→          </div>
+   346→        </div>
+   347→      </CardContent>
+   348→    </Card>
+   349→  )
+   350→}
+   351→
+   352→function KotatsuExtCard({ ext }: { ext: KotatsuExtension }) {
+   353→  const [uninstalling, setUninstalling] = useState(false)
+   354→  const [installing, setInstalling] = useState(false)
+   355→
+   356→  const handleUninstall = async (e: React.MouseEvent) => {
+   357→    e.stopPropagation()
+   358→    if (!ext.sourceId) return
+   359→    setUninstalling(true)
+   360→    try {
+   361→      const res = await fetch('/api/bridge/api/kotatsu/uninstall', {
+   362→        method: 'POST',
+   363→        headers: { 'Content-Type': 'application/json' },
+   364→        body: JSON.stringify({ sourceId: ext.sourceId })
+   365→      })
+   366→      const data = await res.json()
+   367→      if (data.success) {
+   368→        toast.success(`Uninstalled ${ext.name}`)
+   369→        window.location.reload()
+   370→      } else {
+   371→        toast.error(data.error || 'Uninstall failed')
+   372→      }
+   373→    } catch {
+   374→      toast.error('Failed to uninstall extension')
+   375→    } finally {
+   376→      setUninstalling(false)
+   377→    }
+   378→  }
+   379→
+   380→  const handleInstall = async (e: React.MouseEvent) => {
+   381→    e.stopPropagation()
+   382→    if (!ext.downloadUrl) {
+   383→      toast.error('No download URL available')
+   384→      return
+   385→    }
+   386→    setInstalling(true)
+   387→    try {
+   388→      const res = await fetch('/api/bridge/api/kotatsu/install', {
+   389→        method: 'POST',
+   390→        headers: { 'Content-Type': 'application/json' },
+   391→        body: JSON.stringify({ downloadUrl: ext.downloadUrl, sourceId: ext.sourceId })
+   392→      })
+   393→      const data = await res.json()
+   394→      if (data.success) {
+   395→        toast.success(`Installed ${ext.name}`)
+   396→        window.location.reload()
+   397→      } else {
+   398→        toast.error(data.error || 'Install failed')
+   399→      }
+   400→    } catch {
+   401→      toast.error('Failed to install extension')
+   402→    } finally {
+   403→      setInstalling(false)
+   404→    }
+   405→  }
+   406→
+   407→  return (
+   408→    <Card className="border-border/50 transition-all hover:shadow-md group">
+   409→      <CardContent className="p-4">
+   410→        <div className="flex items-start gap-3">
+   411→          <Avatar className="h-10 w-10 shrink-0">
+   412→            {ext.iconUrl && <AvatarImage src={ext.iconUrl} alt={ext.name} />}
+   413→            <AvatarFallback className="bg-violet-100 text-violet-700 text-sm font-semibold">
+   414→              {ext.name?.charAt(0)?.toUpperCase() || '?'}
+   415→            </AvatarFallback>
+   416→          </Avatar>
+   417→          <div className="flex-1 min-w-0">
+   418→            <div className="flex items-start justify-between gap-2">
+   419→              <h3 className="text-sm font-semibold truncate leading-tight">{ext.name}</h3>
+   420→              <div className="flex gap-1 shrink-0">
+   421→                {ext.downloadUrl && !ext.version && (
+   422→                  <Button
+   423→                    variant="ghost"
+   424→                    size="icon"
+   425→                    className="h-7 w-7 text-emerald-600 hover:text-emerald-700 hover:bg-emerald-50"
+   426→                    onClick={handleInstall}
+   427→                    disabled={installing}
+   428→                  >
+   429→                    {installing ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Download className="h-3.5 w-3.5" />}
+   430→                  </Button>
+   431→                )}
+   432→                {ext.version && (
+   433→                  <Button
+   434→                    variant="ghost"
+   435→                    size="icon"
+   436→                    className="h-7 w-7 text-rose-500 hover:text-rose-600 hover:bg-rose-50 opacity-0 group-hover:opacity-100 transition-opacity"
+   437→                    onClick={handleUninstall}
+   438→                    disabled={uninstalling}
+   439→                  >
+   440→                    {uninstalling ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Trash2 className="h-3.5 w-3.5" />}
+   441→                  </Button>
+   442→                )}
+   443→              </div>
+   444→            </div>
+   445→            <p className="text-xs text-muted-foreground mt-0.5">Source #{ext.sourceId}</p>
+   446→            {ext.baseUrl && (
+   447→              <p className="text-xs text-muted-foreground mt-0.5 flex items-center gap-1 truncate">
+   448→                <Globe className="h-3 w-3 shrink-0" />
+   449→                {ext.baseUrl}
+   450→              </p>
+   451→            )}
+   452→            <div className="flex flex-wrap items-center gap-1.5 mt-2">
+   453→              {ext.lang && (
+   454→                <Badge variant="secondary" className="text-[10px] px-1.5 py-0 h-5 font-medium">
+   455→                  {ext.lang.toUpperCase()}
+   456→                </Badge>
+   457→              )}
+   458→              <Badge variant="outline" className="text-[10px] px-1.5 py-0 h-5">
+   459→                <span className="flex items-center gap-0.5"><BookOpen className="h-2.5 w-2.5" />Manga</span>
+   460→              </Badge>
+   461→              {ext.isNsfw && (
+   462→                <Badge variant="destructive" className="text-[10px] px-1.5 py-0 h-5">18+</Badge>
+   463→              )}
+   464→              {ext.version && (
+   465→                <Badge variant="outline" className="text-[10px] px-1.5 py-0 h-5 text-emerald-600 border-emerald-200 bg-emerald-50">
+   466→                  v{ext.version}
+   467→                </Badge>
+   468→              )}
+   469→            </div>
+   470→          </div>
+   471→        </div>
+   472→      </CardContent>
+   473→    </Card>
+   474→  )
+   475→}
+   476→
+   477→// ─── Empty State ─────────────────────────────────────────
+   478→function EmptyState({ message }: { message: string }) {
+   479→  return (
+   480→    <div className="flex flex-col items-center justify-center py-16 text-center">
+   481→      <Package className="h-12 w-12 text-muted-foreground/40 mb-4" />
+   482→      <p className="text-sm text-muted-foreground">{message}</p>
+   483→    </div>
+   484→  )
+   485→}
+   486→
+   487→// ─── Main Dashboard ──────────────────────────────────────
+   488→export default function Dashboard() {
+   489→  const store = useBridgeStore()
+   490→  const [urlInput, setUrlInput] = useState('')
+   491→  const [connecting, setConnecting] = useState(false)
+   492→
+   493→  // Search state
+   494→  const [searchType, setSearchType] = useState('aniyomi')
+   495→  const [searchSourceId, setSearchSourceId] = useState('')
+   496→  const [searchQuery, setSearchQuery] = useState('')
+   497→  const [searching, setSearching] = useState(false)
+   498→
+   499→  // Load saved config on mount
+   500→  const loadConfig = useCallback(async () => {
+   501→    try {
+   502→      const res = await fetch('/api/bridge-config')
+   503→      const data = await res.json()
+   504→      if (data.success && data.data) {
+   505→        if (data.data.serverUrl) {
+   506→          store.setServerUrl(data.data.serverUrl)
+   507→          setUrlInput(data.data.serverUrl)
+   508→          store.setIsConnected(true)
+   509→        }
+   510→      }
+   511→    } catch {
+   512→      // Config not available yet
+   513→    }
+   514→  }, [store])
+   515→
+   516→  // Fetch health data
+   517→  const fetchHealth = useCallback(async () => {
+   518→    if (!store.isConnected) return
+   519→    store.setHealthLoading(true)
+   520→    try {
+   521→      const res = await fetch('/api/bridge/api/health')
+   522→      const data = await res.json()
+   523→      if (data.success && data.data) {
+   524→        store.setHealth(data.data)
+   525→      } else {
+   526→        store.setHealth(null)
+   527→      }
+   528→    } catch {
+   529→      store.setHealth(null)
+   530→    } finally {
+   531→      store.setHealthLoading(false)
+   532→    }
+   533→  }, [store.isConnected, store])
+   534→
+   535→  // Fetch extensions
+   536→  const fetchExtensions = useCallback(async () => {
+   537→    if (!store.isConnected) return
+   538→    store.setExtensionsLoading(true)
+   539→    try {
+   540→      const [aniyomiRes, csRes, kotatsuRes] = await Promise.allSettled([
+   541→        fetch('/api/bridge/api/aniyomi/extensions').then(r => r.json()),
+   542→        fetch('/api/bridge/api/cloudstream/providers').then(r => r.json()),
+   543→        fetch('/api/bridge/api/kotatsu/extensions').then(r => r.json()),
+   544→      ])
+   545→
+   546→      if (aniyomiRes.status === 'fulfilled' && aniyomiRes.value.success) {
+   547→        store.setAniyomiExtensions(aniyomiRes.value.data || [])
+   548→      }
+   549→      if (csRes.status === 'fulfilled' && csRes.value.success) {
+   550→        store.setCsProviders(csRes.value.data || [])
+   551→      }
+   552→      if (kotatsuRes.status === 'fulfilled' && kotatsuRes.value.success) {
+   553→        store.setKotatsuExtensions(kotatsuRes.value.data || [])
+   554→      }
+   555→    } catch {
+   556→      // silently fail
+   557→    } finally {
+   558→      store.setExtensionsLoading(false)
+   559→    }
+   560→  }, [store.isConnected, store])
+   561→
+   562→  useEffect(() => {
+   563→    loadConfig()
+   564→  }, [loadConfig])
+   565→
+   566→  useEffect(() => {
+   567→    if (store.isConnected) {
+   568→      fetchHealth()
+   569→      fetchExtensions()
+   570→    } else {
+   571→      store.setHealth(null)
+   572→      store.setAniyomiExtensions([])
+   573→      store.setCsProviders([])
+   574→      store.setKotatsuExtensions([])
+   575→    }
+   576→  }, [store.isConnected])
+   577→
+   578→  // Connect handler
+   579→  const handleConnect = async () => {
+   580→    const url = urlInput.trim()
+   581→    if (!url) {
+   582→      toast.error('Please enter a server URL')
+   583→      return
+   584→    }
+   585→    if (!url.startsWith('http://') && !url.startsWith('https://')) {
+   586→      toast.error('URL must start with http:// or https://')
+   587→      return
+   588→    }
+   589→    setConnecting(true)
+   590→    try {
+   591→      // First save and activate
+   592→      const configRes = await fetch('/api/bridge-config', {
+   593→        method: 'POST',
+   594→        headers: { 'Content-Type': 'application/json' },
+   595→        body: JSON.stringify({ serverUrl: url, action: 'connect' })
+   596→      })
+   597→      const configData = await configRes.json()
+   598→      if (!configData.success) {
+   599→        toast.error(configData.error || 'Failed to save configuration')
+   600→        setConnecting(false)
+   601→        return
+   602→      }
+   603→
+   604→      // Test the connection
+   605→      const healthRes = await fetch('/api/bridge/api/health')
+   606→      const healthData = await healthRes.json()
+   607→      if (healthData.success) {
+   608→        store.setServerUrl(url)
+   609→        store.setIsConnected(true)
+   610→        store.setHealth(healthData.data)
+   611→        toast.success('Connected to bridge server!')
+   612→        // Fetch extensions after successful connection
+   613→        fetchExtensions()
+   614→      } else {
+   615→        toast.error(healthData.error || 'Server responded with an error')
+   616→        // Still activate but warn
+   617→        store.setServerUrl(url)
+   618→        store.setIsConnected(true)
+   619→      }
+   620→    } catch {
+   621→      toast.error('Failed to connect. Check the server URL and try again.')
+   622→    } finally {
+   623→      setConnecting(false)
+   624→    }
+   625→  }
+   626→
+   627→  // Disconnect handler
+   628→  const handleDisconnect = async () => {
+   629→    try {
+   630→      await fetch('/api/bridge-config', {
+   631→        method: 'POST',
+   632→        headers: { 'Content-Type': 'application/json' },
+   633→        body: JSON.stringify({ serverUrl: store.serverUrl, action: 'disconnect' })
+   634→      })
+   635→    } catch {
+   636→      // ignore
+   637→    }
+   638→    store.setIsConnected(false)
+   639→    store.setHealth(null)
+   640→    store.setAniyomiExtensions([])
+   641→    store.setCsProviders([])
+   642→    store.setKotatsuExtensions([])
+   643→    store.setSearchResults([])
+   644→    toast.info('Disconnected from bridge server')
+   645→  }
+   646→
+   647→  // Refresh handler
+   648→  const handleRefresh = () => {
+   649→    fetchHealth()
+   650→    fetchExtensions()
+   651→    toast.success('Refreshing data...')
+   652→  }
+   653→
+   654→  // Search handler
+   655→  const handleSearch = async () => {
+   656→    if (!searchQuery.trim()) {
+   657→      toast.error('Please enter a search query')
+   658→      return
+   659→    }
+   660→
+   661→    setSearching(true)
+   662→    store.setSearchResults([])
+   663→
+   664→    try {
+   665→      let endpoint = ''
+   666→      let body: Record<string, unknown> = { query: searchQuery.trim(), page: 1 }
+   667→
+   668→      if (searchType === 'aniyomi') {
+   669→        if (!searchSourceId) {
+   670→          toast.error('Please select an extension')
+   671→          setSearching(false)
+   672→          return
+   673→        }
+   674→        const ext = store.aniyomiExtensions.find(e => String(e.sourceId) === searchSourceId)
+   675→        endpoint = '/api/bridge/api/aniyomi/search'
+   676→        body.sourceId = Number(searchSourceId)
+   677→        body.isAnime = ext?.isAnime ?? true
+   678→      } else if (searchType === 'cloudstream') {
+   679→        if (!searchSourceId) {
+   680→          toast.error('Please select a provider')
+   681→          setSearching(false)
+   682→          return
+   683→        }
+   684→        endpoint = '/api/bridge/api/cloudstream/search'
+   685→        body.apiName = searchSourceId
+   686→      } else if (searchType === 'kotatsu') {
+   687→        if (!searchSourceId) {
+   688→          toast.error('Please select an extension')
+   689→          setSearching(false)
+   690→          return
+   691→        }
+   692→        endpoint = '/api/bridge/api/kotatsu/search'
+   693→        body.sourceId = Number(searchSourceId)
+   694→      }
+   695→
+   696→      const res = await fetch(endpoint, {
+   697→        method: 'POST',
+   698→        headers: { 'Content-Type': 'application/json' },
+   699→        body: JSON.stringify(body)
+   700→      })
+   701→      const data = await res.json()
+   702→
+   703→      if (data.success) {
+   704→        const results = data.data || []
+   705→        store.setSearchResults(Array.isArray(results) ? results : (results.list || []))
+   706→        if (Array.isArray(results) ? results.length === 0 : (results.list || []).length === 0) {
+   707→          toast.info('No results found')
+   708→        }
+   709→      } else {
+   710→        toast.error(data.error || 'Search failed')
+   711→      }
+   712→    } catch {
+   713→      toast.error('Search request failed')
+   714→    } finally {
+   715→      setSearching(false)
+   716→    }
+   717→  }
+   718→
+   719→  // Compute totals
+   720→  const totalExtensions =
+   721→    (store.health?.aniyomiExtensionCount || 0) +
+   722→    (store.health?.csProviderCount || 0) +
+   723→    (store.health?.kotatsuExtensionCount || 0)
+   724→
+   725→  const animeExts = store.aniyomiExtensions.filter(e => e.isAnime)
+   726→  const mangaExts = store.aniyomiExtensions.filter(e => !e.isAnime)
+   727→
+   728→  // Search source options
+   729→  const searchSourceOptions = searchType === 'aniyomi'
+   730→    ? store.aniyomiExtensions.map(e => ({ value: String(e.sourceId), label: e.name }))
+   731→    : searchType === 'cloudstream'
+   732→      ? store.csProviders.map(p => ({ value: p.apiName, label: p.name }))
+   733→      : store.kotatsuExtensions.map(e => ({ value: String(e.sourceId), label: e.name }))
+   734→
+   735→  return (
+   736→    <div className="min-h-screen bg-background">
+   737→      {/* ─── Header / Config Bar ──────────────────── */}
+   738→      <header className="sticky top-0 z-50 bg-background/80 backdrop-blur-md border-b border-border">
+   739→        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+   740→          <div className="flex flex-col sm:flex-row items-start sm:items-center gap-3 py-3 sm:py-4">
+   741→            {/* Title + Status */}
+   742→            <div className="flex items-center gap-2.5 shrink-0 w-full sm:w-auto">
+   743→              <div className="p-1.5 rounded-lg bg-primary text-primary-foreground">
+   744→                <Server className="h-4 w-4" />
+   745→              </div>
+   746→              <div className="min-w-0">
+   747→                <h1 className="text-sm sm:text-base font-bold tracking-tight truncate">
+   748→                  AnymeX Bridge Server
+   749→                </h1>
+   750→                <div className="flex items-center gap-1.5">
+   751→                  <span className={`h-2 w-2 rounded-full ${store.isConnected ? 'bg-emerald-500 shadow-[0_0_6px_rgba(16,185,129,0.5)]' : 'bg-rose-400'}`} />\n                  <span className="text-[11px] text-muted-foreground">
+   752→                    {store.isConnected ? 'Connected' : 'Disconnected'}
+   753→                  </span>
+   754→                </div>
+   755→              </div>
+   756→            </div>
+   757→
+   758→            {/* URL Input + Buttons */}
+   759→            <div className="flex items-center gap-2 flex-1 w-full sm:w-auto sm:max-w-md">
+   760→              <Input
+   761→                placeholder="http://your-server:8080"
+   762→                value={urlInput}
+   763→                onChange={(e) => setUrlInput(e.target.value)}
+   764→                onKeyDown={(e) => e.key === 'Enter' && !store.isConnected && handleConnect()}
+   765→                className="h-9 text-sm flex-1"
+   766→                disabled={connecting}
+   767→              />
+   768→              {store.isConnected ? (
+   769→                <Button
+   770→                  variant="outline"
+   771→                  size="sm"
+   772→                  className="h-9 gap-1.5 shrink-0 text-rose-600 border-rose-200 hover:bg-rose-50 hover:text-rose-700"
+   773→                  onClick={handleDisconnect}
+   774→                >
+   775→                  <WifiOff className="h-3.5 w-3.5" />
+   776→                  <span className="hidden sm:inline">Disconnect</span>
+   777→                </Button>
+   778→              ) : (
+   779→                <Button
+   780→                  size="sm"
+   781→                  className="h-9 gap-1.5 shrink-0"
+   782→                  onClick={handleConnect}
+   783→                  disabled={connecting}
+   784→                >
+   785→                  {connecting ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Wifi className="h-3.5 w-3.5" />}
+   786→                  <span className="hidden sm:inline">Connect</span>
+   787→                </Button>
+   788→              )}
+   789→              {store.isConnected && (
+   790→                <Button
+   791→                  variant="ghost"
+   792→                  size="icon"
+   793→                  className="h-9 w-9 shrink-0"
+   794→                  onClick={handleRefresh}
+   795→                >
+   796→                  <RefreshCw className="h-3.5 w-3.5" />
+   797→                </Button>
+   798→              )}
+   799→            </div>
+   800→          </div>
+   801→        </div>
+   802→      </header>
+   803→
+   804→      <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-6 space-y-6">
+   805→        {/* ─── Not Connected State ──────────────────── */}
+   806→        {!store.isConnected && (
+   807→          <div className="flex flex-col items-center justify-center py-24 text-center">
+   808→            <div className="p-4 rounded-2xl bg-muted/50 mb-6">
+   809→              <Server className="h-12 w-12 text-muted-foreground/50" />
+   810→            </div>
+   811→            <h2 className="text-xl font-semibold mb-2">No Bridge Server Connected</h2>
+   812→            <p className="text-sm text-muted-foreground max-w-md">
+   813→              Enter your AnymeX JVM Bridge Server URL above and click Connect to start managing your extensions.
+   814→            </p>
+   815→          </div>
+   816→        )}
+   817→
+   818→        {/* ─── Connected State ──────────────────── */}
+   819→        {store.isConnected && (
+   820→          <>
+   821→            {/* ─── Health Stats ──────────────── */}
+   822→            <section aria-label="Server Health Statistics">
+   823→              {store.healthLoading && !store.health ? (
+   824→                <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 sm:gap-4">
+   825→                  <StatCardSkeleton />
+   826→                  <StatCardSkeleton />
+   827→                  <StatCardSkeleton />
+   828→                  <StatCardSkeleton />
+   829→                </div>
+   830→              ) : store.health ? (
+   831→                <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 sm:gap-4">
+   832→                  <StatCard
+   833→                    icon={Cpu}
+   834→                    label="JVM Version"
+   835→                    value={store.health.jvmVersion || 'Unknown'}
+   836→                    color="bg-zinc-100 text-zinc-700"
+   837→                  />
+   838→                  <StatCard
+   839→                    icon={Clock}
+   840→                    label="Uptime"
+   841→                    value={formatUptime(store.health.uptime)}
+   842→                    color="bg-amber-100 text-amber-700"
+   843→                  />
+   844→                  <StatCard
+   845→                    icon={Package}
+   846→                    label="Total Extensions"
+   847→                    value={`${totalExtensions} installed`}
+   848→                    color="bg-emerald-100 text-emerald-700"
+   849→                  />
+   850→                  <StatCard
+   851→                    icon={Activity}
+   852→                    label="Server Status"
+   853→                    value={store.health.status || 'Running'}
+   854→                    color="bg-emerald-100 text-emerald-700"
+   855→                  />
+   856→                </div>
+   857→              ) : (
+   858→                <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 sm:gap-4">
+   859→                  <StatCard icon={Cpu} label="JVM Version" value="—" color="bg-zinc-100 text-zinc-400" />
+   860→                  <StatCard icon={Clock} label="Uptime" value="—" color="bg-zinc-100 text-zinc-400" />
+   861→                  <StatCard icon={Package} label="Total Extensions" value="—" color="bg-zinc-100 text-zinc-400" />
+   862→                  <StatCard icon={Activity} label="Server Status" value="Unreachable" color="bg-rose-100 text-rose-600" />
+   863→                </div>
+   864→              )}
+   865→
+   866→              {/* OS Info row */}
+   867→              {store.health && (
+   868→                <div className="mt-3 flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-muted-foreground">
+   869→                  <span className="flex items-center gap-1">
+   870→                    <Cpu className="h-3 w-3" /> {store.health.osName || 'Unknown OS'}
+   871→                  </span>
+   872→                  {store.health.javaVersion && (
+   873→                    <span className="font-mono">Java {store.health.javaVersion}</span>
+   874→                  )}
+   875→                </div>
+   876→              )}
+   877→            </section>
+   878→
+   879→            {/* ─── Extensions Tabs ──────────── */}
+   880→            <section aria-label="Extensions">
+   881→              <Tabs value={store.activeTab} onValueChange={store.setActiveTab}>
+   882→                <TabsList className="w-full sm:w-auto grid grid-cols-3 sm:inline-flex">
+   883→                  <TabsTrigger value="aniyomi" className="gap-1.5 text-xs sm:text-sm">
+   884→                    <Tv className="h-3.5 w-3.5" />
+   885→                    Aniyomi
+   886→                    {store.aniyomiExtensions.length > 0 && (
+   887→                      <Badge variant="secondary" className="ml-1 h-5 min-w-5 px-1.5 text-[10px]">
+   888→                        {store.aniyomiExtensions.length}
+   889→                      </Badge>
+   890→                    )}
+   891→                  </TabsTrigger>
+   892→                  <TabsTrigger value="cloudstream" className="gap-1.5 text-xs sm:text-sm">
+   893→                    <Activity className="h-3.5 w-3.5" />
+   894→                    CloudStream
+   895→                    {store.csProviders.length > 0 && (
+   896→                      <Badge variant="secondary" className="ml-1 h-5 min-w-5 px-1.5 text-[10px]">
+   897→                        {store.csProviders.length}
+   898→                      </Badge>
+   899→                    )}
+   900→                  </TabsTrigger>
+   901→                  <TabsTrigger value="kotatsu" className="gap-1.5 text-xs sm:text-sm">
+   902→                    <BookOpen className="h-3.5 w-3.5" />
+   903→                    Kotatsu
+   904→                    {store.kotatsuExtensions.length > 0 && (
+   905→                      <Badge variant="secondary" className="ml-1 h-5 min-w-5 px-1.5 text-[10px]">
+   906→                        {store.kotatsuExtensions.length}
+   907→                      </Badge>
+   908→                    )}
+   909→                  </TabsTrigger>
+   910→                </TabsList>
+   911→
+   912→                {/* Aniyomi Tab */}
+   913→                <TabsContent value="aniyomi" className="mt-4">
+   914→                  {store.extensionsLoading && store.aniyomiExtensions.length === 0 ? (
+   915→                    <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
+   916→                      {Array.from({ length: 6 }).map((_, i) => (
+   917→                        <ExtensionCardSkeleton key={i} />
+   918→                      ))}
+   919→                    </div>
+   920→                  ) : (
+   921→                    <>
+   922→                      {/* Anime section */}
+   923→                      {animeExts.length > 0 && (
+   924→                        <div className="mb-6">
+   925→                          <h3 className="text-xs font-semibold text-muted-foreground uppercase tracking-wider mb-3 flex items-center gap-1.5">
+   926→                            <Tv className="h-3.5 w-3.5" />
+   927→                            Anime Sources ({animeExts.length})
+   928→                          </h3>
+   929→                          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
+   930→                            {animeExts.map((ext) => (
+   931→                              <AniyomiExtCard key={ext.pkgName || ext.sourceId} ext={ext} />
+   932→                            ))}
+   933→                          </div>
+   934→                        </div>
+   935→                      )}
+   936→                      {/* Manga section */}
+   937→                      {mangaExts.length > 0 && (
+   938→                        <div>
+   939→                          <h3 className="text-xs font-semibold text-muted-foreground uppercase tracking-wider mb-3 flex items-center gap-1.5">
+   940→                            <BookOpen className="h-3.5 w-3.5" />
+   941→                            Manga Sources ({mangaExts.length})
+   942→                          </h3>
+   943→                          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
+   944→                            {mangaExts.map((ext) => (
+   945→                              <AniyomiExtCard key={ext.pkgName || ext.sourceId} ext={ext} />
+   946→                            ))}
+   947→                          </div>
+   948→                        </div>
+   949→                      )}
+   950→                      {store.aniyomiExtensions.length === 0 && (
+   951→                        <EmptyState message="No Aniyomi extensions found on the server." />
+   952→                      )}
+   953→                    </>
+   954→                  )}
+   955→                </TabsContent>
+   956→
+   957→                {/* CloudStream Tab */}
+   958→                <TabsContent value="cloudstream" className="mt-4">
+   959→                  {store.extensionsLoading && store.csProviders.length === 0 ? (
+   960→                    <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
+   961→                      {Array.from({ length: 6 }).map((_, i) => (
+   962→                        <ExtensionCardSkeleton key={i} />
+   963→                      ))}
+   964→                    </div>
+   965→                  ) : store.csProviders.length > 0 ? (
+   966→                    <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
+   967→                      {store.csProviders.map((provider) => (
+   968→                        <CloudStreamProviderCard key={provider.apiName} provider={provider} />
+   969→                      ))}
+   970→                    </div>
+   971→                  ) : (
+   972→                    <EmptyState message="No CloudStream providers found on the server." />
+   973→                  )}
+   974→                </TabsContent>
+   975→
+   976→                {/* Kotatsu Tab */}
+   977→                <TabsContent value="kotatsu" className="mt-4">
+   978→                  {store.extensionsLoading && store.kotatsuExtensions.length === 0 ? (
+   979→                    <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
+   980→                      {Array.from({ length: 6 }).map((_, i) => (
+   981→                        <ExtensionCardSkeleton key={i} />
+   982→                      ))}
+   983→                    </div>
+   984→                  ) : store.kotatsuExtensions.length > 0 ? (
+   985→                    <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
+   986→                      {store.kotatsuExtensions.map((ext) => (
+   987→                        <KotatsuExtCard key={ext.sourceId} ext={ext} />
+   988→                      ))}
+   989→                    </div>
+   990→                  ) : (
+   991→                    <EmptyState message="No Kotatsu extensions found on the server." />
+   992→                  )}
+   993→                </TabsContent>
+   994→              </Tabs>
+   995→            </section>
+   996→
+   997→            {/* ─── Quick Search / Test Panel ──── */}
+   998→            <section aria-label="Extension Search">
+   999→              <Card className="border-border/50">
+  1000→                <CardHeader className="pb-3">
+  1001→                  <CardTitle className="text-sm font-semibold flex items-center gap-2">
+  1002→                    <Search className="h-4 w-4" />
+  1003→                    Quick Search &amp; Test
+  1004→                  </CardTitle>
+  1005→                </CardHeader>
+  1006→                <CardContent className="space-y-3">
+  1007→                  <div className="grid grid-cols-1 sm:grid-cols-4 gap-3">
+  1008→                    {/* Extension Type */}
+  1009→                    <Select value={searchType} onValueChange={(v) => {
+  1010→                      setSearchType(v)
+  1011→                      setSearchSourceId('')
+  1012→                    }}>
+  1013→                      <SelectTrigger className="h-9 text-sm">
+  1014→                        <SelectValue placeholder="Extension Type" />
+  1015→                      </SelectTrigger>
+  1016→                      <SelectContent>
+  1017→                        <SelectItem value="aniyomi">Aniyomi</SelectItem>
+  1018→                        <SelectItem value="cloudstream">CloudStream</SelectItem>
+  1019→                        <SelectItem value="kotatsu">Kotatsu</SelectItem>
+  1020→                      </SelectContent>
+  1021→                    </Select>
+  1022→
+  1023→                    {/* Specific Extension */}
+  1024→                    <Select value={searchSourceId} onValueChange={setSearchSourceId}>
+  1025→                      <SelectTrigger className="h-9 text-sm">
+  1026→                        <SelectValue placeholder="Select extension..." />
+  1027→                      </SelectTrigger>
+  1028→                      <SelectContent>
+  1029→                        {searchSourceOptions.map((opt) => (
+  1030→                          <SelectItem key={opt.value} value={opt.value}>
+  1031→                            {opt.label}
+  1032→                          </SelectItem>
+  1033→                        ))}
+  1034→                        {searchSourceOptions.length === 0 && (
+  1035→                          <SelectItem value="_none" disabled>
+  1036→                            No extensions available
+  1037→                          </SelectItem>
+  1038→                        )}
+  1039→                      </SelectContent>
+  1040→                    </Select>
+  1041→
+  1042→                    {/* Search Input */}
+  1043→                    <Input
+  1044→                      placeholder="Search query..."
+  1045→                      value={searchQuery}
+  1046→                      onChange={(e) => setSearchQuery(e.target.value)}
+  1047→                      onKeyDown={(e) => e.key === 'Enter' && handleSearch()}
+  1048→                      className="h-9 text-sm sm:col-span-1"
+  1049→                    />
+  1050→
+  1051→                    {/* Search Button */}
+  1052→                    <Button
+  1053→                      onClick={handleSearch}
+  1054→                      disabled={searching || !searchSourceId || !searchQuery.trim()}
+  1055→                      className="h-9 gap-1.5"
+  1056→                    >
+  1057→                      {searching ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Search className="h-3.5 w-3.5" />}
+  1058→                      Search
+  1059→                    </Button>
+  1060→                  </div>
+  1061→
+  1062→                  {/* Search Results */}
+  1063→                  {store.searchResults.length > 0 && (
+  1064→                    <div className="mt-4">
+  1065→                      <h4 className="text-xs font-semibold text-muted-foreground uppercase tracking-wider mb-2">
+  1066→                        Results ({store.searchResults.length})
+  1067→                      </h4>
+  1068→                      <ScrollArea className="max-h-96">
+  1069→                        <div className="space-y-2 pr-4">
+  1070→                          {store.searchResults.map((result, idx) => (
+  1071→                            <Card key={idx} className="border-border/40">
+  1072→                              <CardContent className="p-3">
+  1073→                                <div className="flex items-start gap-3">
+  1074→                                  {result.imageUrl && (
+  1075→                                    <img
+  1076→                                      src={result.imageUrl}
+  1077→                                      alt=""
+  1078→                                      className="h-16 w-12 object-cover rounded shrink-0 bg-muted"
+  1079→                                    />
+  1080→                                  )}
+  1081→                                  <div className="flex-1 min-w-0">
+  1082→                                    <h5 className="text-sm font-medium truncate">{result.name || 'Untitled'}</h5>
+  1083→                                    {result.url && (
+  1084→                                      <p className="text-xs text-muted-foreground truncate mt-0.5 font-mono">
+  1085→                                        {result.url}
+  1086→                                      </p>
+  1087→                                    )}
+  1088→                                    {result.type && (
+  1089→                                      <Badge variant="secondary" className="text-[10px] mt-1.5 h-5">
+  1090→                                        {result.type}
+  1091→                                      </Badge>
+  1092→                                    )}
+  1093→                                    {result.author && (
+  1094→                                      <p className="text-xs text-muted-foreground mt-1">By {result.author}</p>
+  1095→                                    )}
+  1096→                                    {result.genre && result.genre.length > 0 && (
+  1097→                                      <div className="flex flex-wrap gap-1 mt-1.5">
+  1098→                                        {result.genre.slice(0, 5).map((g, gi) => (
+  1099→                                          <Badge key={gi} variant="outline" className="text-[10px] h-5 px-1.5">
+  1100→                                            {String(g)}
+  1101→                                          </Badge>
+  1102→                                        ))}
+  1103→                                      </div>
+  1104→                                    )}
+  1105→                                  </div>
+  1106→                                </div>
+  1107→                              </CardContent>
+  1108→                            </Card>
+  1109→                          ))}
+  1110→                        </div>
+  1111→                      </ScrollArea>
+  1112→                    </div>
+  1113→                  )}
+  1114→                </CardContent>
+  1115→              </Card>
+  1116→            </section>
+  1117→          </>
+  1118→        )}
+  1119→      </main>
+  1120→    </div>
+  1121→  )
+  1122→}
+  1123→

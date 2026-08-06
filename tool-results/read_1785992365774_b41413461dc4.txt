@@ -626,3 +626,48 @@
    626→└── webview/                      # WebView user data (Windows)
    627→```
    628→
+   629→---
+   630→Task ID: 3
+   631→Agent: main
+   632→Task: Create lightweight server plan based on research findings
+   633→
+   634→Work Log:
+   635→- Read worklog sections 1-6 from previous research agent
+   636→- Read RuntimeDownloader.dart — found official anymex_desktop_runtime.jar download URL from GitHub releases
+   637→- Read SidecarBridge.dart — documented stdin/stdout JSON protocol (request: {method, args, id}, response: {id, status, data})
+   638→- Read DesktopAniyomiSourceMethods.dart — documented all bridge methods (getPopular, search, getDetail, getVideoList, getPageList, getFilterList, aniyomiGetPreferences, aniyomiSavePreference, stopHttpServer)
+   639→- Read DesktopAniyomiExtensions.dart — documented repo parsing (protobuf or JSON), APK download, convertApk flow, loadExtensions, install/uninstall flow
+   640→- Read DesktopCloudStreamExtensions.dart — documented .cs3 handling, meta-repo support, csLoadExtensions, JAR conversion for CloudStream
+   641→- Read DesktopKotatsuExtensions.dart — documented single plugin.jar per repo, kotatsuLoadExtensions, active sources tracking
+   642→- Key discovery: anymex_desktop_runtime.jar handles ALL extension logic. Server just needs to be a thin HTTP proxy + repo/extension manager.
+   643→
+   644→Stage Summary:
+   645→- Server architecture redesigned: Bun + Hono + SQLite (lightweight) instead of Kotlin/Ktor (heavy)
+   646→- Server spawns official anymex_desktop_runtime.jar as subprocess, proxies HTTP↔stdin/stdout JSON
+   647→- Zero coupling risk — JAR auto-updates from GitHub releases
+   648→- Shared repos + shared extension files + per-user install tracking
+   649→- Auto-update extensions from repos on startup
+   650→- Plan documented and presented to user
+   651→
+   652→---
+   653→Task ID: 4
+   654→Agent: main
+   655→Task: Build lightweight SSH bridge server from scratch
+   656→
+   657→Work Log:
+   658→- Deleted old Kotlin jvm-bridge-server
+   659→- Created anymex-bridge/ with Bun + ssh2 (1 dependency)
+   660→- Built 5 files: index.ts, server.ts, db.ts, repos.ts, extensions.ts, jar-runner.ts
+   661→- DB: users (username+password), repos (global), extensions (global), user_installed (per-user)
+   662→- HTTP on :8080 for /register and /health
+   663→- SSH on :3022 with password auth
+   664→- Auto-downloads anymex_desktop_runtime.jar v2.2.0 from GitHub releases (43MB)
+   665→- Wire protocol: newline-delimited JSON over SSH exec channel
+   666→- Actions: hello, addRepo, removeRepo, listRepos, listAvailable, listInstalled, install, uninstall, invoke, invokeStream, cancel
+   667→- Tested: JAR auto-download, health endpoint, user registration, duplicate rejection, both ports listening
+   668→
+   669→Stage Summary:
+   670→- Server runs, JAR auto-downloads, user registration works
+   671→- SSH server with password auth operational on port 3022
+   672→- Next: Flutter client side (RemoteSidecarBridge with password auth)
+   673→
