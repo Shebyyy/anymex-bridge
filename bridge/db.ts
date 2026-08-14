@@ -170,7 +170,16 @@ export function getUserAvailableExtensions(userId: string, type?: string, query?
     WHERE ur.user_id = ?
   `
   const params: any[] = [userId]
-  if (type) { sql += ' AND e.type LIKE ?'; params.push(`%${type}%`) }
+  if (type === 'anime') {
+    sql += ' AND e.type IN (?, ?)'
+    params.push('aniyomi-anime', 'cloudstream')
+  } else if (type === 'manga') {
+    sql += ' AND e.type IN (?, ?)'
+    params.push('aniyomi-manga', 'kotatsu')
+  } else if (type) {
+    sql += ' AND e.type LIKE ?'
+    params.push(`%${type}%`)
+  }
   if (query) { sql += ' AND e.name LIKE ?'; params.push(`%${query}%`) }
   sql += ' ORDER BY e.name'
   return db.prepare(sql).all(...params) as any[]
