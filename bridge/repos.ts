@@ -38,7 +38,6 @@ function getAniyomiType(ext: AniyomiExt): string {
   if (pkg.includes('.manga.')) return 'aniyomi-manga'
   if (ext.name?.startsWith('Aniyomi: ')) return 'aniyomi-anime'
   if (ext.name?.startsWith('Tachiyomi: ')) return 'aniyomi-manga'
-  // Check sources for language grouping (runtime defaults to targetType if unknown)
   return 'aniyomi-anime'
 }
 
@@ -46,7 +45,6 @@ async function fetchAniyomiJson(url: string): Promise<AniyomiExt[]> {
   const res = await fetch(url)
   if (!res.ok) throw new Error(`Failed to fetch ${url}: ${res.status}`)
   const bytes = new Uint8Array(await res.arrayBuffer())
-  // Gzip decompress if needed (matches runtime)
   let data = bytes
   if (data.length >= 2 && data[0] === 0x1F && data[1] === 0x8B) {
     const decompressed = await decompressGzip(data)
@@ -85,7 +83,6 @@ async function fetchAniyomiPb(url: string): Promise<AniyomiExt[]> {
   if (!res.ok) throw new Error(`Failed to fetch ${url}: ${res.status}`)
   let bytes = new Uint8Array(await res.arrayBuffer())
 
-  // Gzip decompress if needed
   if (bytes.length >= 2 && bytes[0] === 0x1F && bytes[1] === 0x8B) {
     const decompressed = await decompressGzip(bytes)
     if (decompressed) bytes = decompressed
@@ -93,7 +90,6 @@ async function fetchAniyomiPb(url: string): Promise<AniyomiExt[]> {
 
   const isJson = bytes.length > 0 && (bytes[0] === 0x7B || bytes[0] === 0x5B)
   if (isJson) {
-    // It's actually JSON, not protobuf
     return JSON.parse(new TextDecoder().decode(bytes))
   }
 
@@ -123,21 +119,21 @@ function parseMessage(bytes: Uint8Array, start: number, end: number): Map<number
       const wireType = key & 0x7
       const fieldNum = key >> 3
 
-      if (wireType === 0) { // varint
+      if (wireType === 0) {
         const [val, len] = readVarint(bytes, pos)
         pos += len
         if (!map.has(fieldNum)) map.set(fieldNum, [])
         map.get(fieldNum)!.push(val)
-      } else if (wireType === 1) { // 64-bit
+      } else if (wireType === 1) {
         pos += 8
-      } else if (wireType === 2) { // length-delimited
+      } else if (wireType === 2) {
         const [len, lenLen] = readVarint(bytes, pos)
         pos += lenLen
         const val = bytes.slice(pos, pos + len)
         pos += len
         if (!map.has(fieldNum)) map.set(fieldNum, [])
         map.get(fieldNum)!.push(val)
-      } else if (wireType === 5) { // 32-bit
+      } else if (wireType === 5) {
         pos += 4
       } else {
         break
@@ -160,7 +156,6 @@ function getInt(list: any[] | undefined): number {
 function decodePbIndex(bytes: Uint8Array): AniyomiExt[] {
   const rootMap = parseMessage(bytes, 0, bytes.length)
 
-  // Field 101 contains a wrapped extension list (newer format)
   const extListBytes = rootMap.get(101)?.[0] as Uint8Array | undefined
   if (extListBytes) {
     const extListMap = parseMessage(extListBytes, 0, extListBytes.length)
@@ -168,11 +163,10 @@ function decodePbIndex(bytes: Uint8Array): AniyomiExt[] {
     return parsePbExtensions(extensions)
   }
 
-  // Fallback: field 1 directly contains extensions
   const extensions = rootMap.get(1)
   if (extensions && extensions.length > 0 && extensions[0] instanceof Uint8Array) {
     const firstExtMap = parseMessage(extensions[0] as Uint8Array, 0, (extensions[0] as Uint8Array).length)
-    if (firstExtMap.has(2)) { // has pkg field = real extension
+    if (firstExtMap.has(2)) {
       return parsePbExtensions(extensions)
     }
   }
@@ -189,7 +183,6 @@ function parsePbExtensions(extensionList: any[]): AniyomiExt[] {
     const name = getString(extMap.get(1))
     const pkg = getString(extMap.get(2))
 
-    // Field 3 = resource sub-message containing apk URL (field 1)
     const resBytes = extMap.get(3)?.[0] as Uint8Array | undefined
     let apkName = ''
     if (resBytes) {
@@ -202,7 +195,6 @@ function parsePbExtensions(extensionList: any[]): AniyomiExt[] {
     const versionName = getString(extMap.get(6))
     const contentWarning = getInt(extMap.get(7))
 
-    // Field 8 = sources (repeated sub-messages)
     const sourcesList: AniyomiExt['sources'] = []
     const sources = extMap.get(8) ?? []
     for (const srcObj of sources) {
@@ -217,14 +209,10 @@ function parsePbExtensions(extensionList: any[]): AniyomiExt[] {
     }
 
     results.push({
-      name,
-      pkg: pkg || undefined,
-      apk: apkName || undefined,
+      name, pkg: pkg || undefined, apk: apkName || undefined,
       lang: sourcesList.length > 0 ? sourcesList[0].lang : 'en',
-      code: versionCode || undefined,
-      version: versionName || undefined,
-      isNsfw: contentWarning >= 2,
-      sources: sourcesList,
+      code: versionCode || undefined, version: versionName || undefined,
+      isNsfw: contentWarning >= 2, sources: sourcesList,
     })
   }
   return results
@@ -245,17 +233,14 @@ async function fetchCloudStreamRepo(url: string): Promise<{ plugins: CSPlugin[];
   if (!res.ok) throw new Error(`Failed to fetch ${url}: ${res.status}`)
   const data = await res.json()
 
-  // Meta-repo: contains pluginLists of sub-repo URLs
   if (data.pluginLists && Array.isArray(data.pluginLists)) {
     return { plugins: [], subRepos: data.pluginLists }
   }
 
-  // Direct plugin list (JSON array)
   if (Array.isArray(data)) {
     return { plugins: data }
   }
 
-  // Single object with plugins array
   if (data.plugins && Array.isArray(data.plugins)) {
     return { plugins: data.plugins }
   }
@@ -263,16 +248,21 @@ async function fetchCloudStreamRepo(url: string): Promise<{ plugins: CSPlugin[];
   throw new Error('Unknown CloudStream repo format')
 }
 
-// ─── Main addRepo ──────────────────────────────────────────
+// ─── Fetch repo extensions (reusable for both add & refresh) ─
 
-export async function addRepo(userId: string, url: string, forceType?: string): Promise<{ ok: boolean; error?: string; repo?: any; extensions?: number; subRepos?: string[] }> {
-  let type: RepoType = (forceType as RepoType) || detectRepoType(url)
+interface RepoFetchResult {
+  ok: boolean
+  error?: string
+  extensions?: number
+  updated?: number[]  // ext IDs that had version changes
+  removed?: number[]  // ext IDs that no longer exist in repo
+  subRepos?: string[]
+}
 
-  const repoResult = addRepoForUser(userId, url, type)
-  if (!repoResult.ok) return repoResult
-
+async function fetchAndStoreRepo(url: string, type: RepoType): Promise<RepoFetchResult> {
+  const updated: number[] = []
   let count = 0
-  let subRepos: string[] | undefined
+  const seenPkgs = new Set<string>()
 
   try {
     if (type === 'aniyomi') {
@@ -289,74 +279,110 @@ export async function addRepo(userId: string, url: string, forceType?: string): 
 
       for (const ext of exts) {
         const extType = getAniyomiType(ext)
-        // Icon: {baseUrl}/icon/{pkg}.png (matches runtime exactly)
         const iconUrl = ext.pkg ? `${base}/icon/${ext.pkg}.png` : null
-        // APK download: {baseUrl}/apk/{apkName} (matches runtime exactly)
         const downloadUrl = ext.apk ? `${base}/apk/${ext.apk}` : null
+        const newVersion = ext.version || null
 
-        upsertExtension(
-          ext.name,
-          ext.pkg || null,
-          extType,
-          ext.version || null,
-          iconUrl,
-          ext.lang || null,
-          ext.isNsfw || false,
-          null, null,
+        // Check if version changed
+        const existing = ext.pkg
+          ? db.query('SELECT id, version, file_path FROM extensions WHERE pkg = ?').get(ext.pkg) as any
+          : null
+
+        const extId = upsertExtension(
+          ext.name, ext.pkg || null, extType, newVersion, iconUrl,
+          ext.lang || null, ext.isNsfw || false, null, null,
           { downloadUrl, sources: ext.sources }
         )
+
+        if (ext.pkg) seenPkgs.add(ext.pkg)
         count++
+
+        // Detect version change on already-downloaded extension
+        if (existing && existing.file_path && newVersion && existing.version !== newVersion) {
+          updated.push(extId)
+        }
       }
 
     } else if (type === 'cloudstream') {
       const result = await fetchCloudStreamRepo(url)
 
-      // Handle meta-repos (sub-repos)
       if (result.subRepos) {
-        subRepos = result.subRepos
-        console.log(`[repos] Meta-repo with ${subRepos.length} sub-repos`)
+        return { ok: true, subRepos: result.subRepos }
       }
 
       for (const plugin of result.plugins) {
-        // pluginUrl field priority: pluginUrl > plugin > url (matches runtime)
         const downloadUrl = plugin.pluginUrl || plugin.plugin || plugin.url || null
         const iconUrl = plugin.iconUrl || null
+        const newVersion = plugin.version || null
 
-        upsertExtension(
-          plugin.name,
-          plugin.internalName || null,
-          'cloudstream',
-          plugin.version || null,
-          iconUrl,
-          plugin.language || 'ALL',
-          plugin.isNsfw || false,
-          null, null,
+        const existing = plugin.internalName
+          ? db.query('SELECT id, version, file_path FROM extensions WHERE pkg = ?').get(plugin.internalName) as any
+          : null
+
+        const extId = upsertExtension(
+          plugin.name, plugin.internalName || null, 'cloudstream', newVersion,
+          iconUrl, plugin.language || 'ALL', plugin.isNsfw || false, null, null,
           { downloadUrl, jarUrl: plugin.jarUrl || plugin.jar || null }
         )
+
+        if (plugin.internalName) seenPkgs.add(plugin.internalName)
         count++
+
+        if (existing && existing.file_path && newVersion && existing.version !== newVersion) {
+          updated.push(extId)
+        }
       }
 
     } else if (type === 'kotatsu') {
-      // Kotatsu: repo URL IS the JAR file. Just store it.
-      console.log(`[repos] Kotatsu repo (single JAR): ${url}`)
-      // We store one "extension" entry representing the whole JAR
       const jarName = url.split('/').pop() || 'plugin.jar'
       upsertExtension(
-        `Kotatsu: ${jarName}`,
-        jarName,
-        'kotatsu',
-        null, null, null, false,
-        null, null,
-          { downloadUrl: url, isJar: true }
-        )
+        `Kotatsu: ${jarName}`, jarName, 'kotatsu',
+        null, null, null, false, null, null,
+        { downloadUrl: url, isJar: true }
+      )
       count = 1
     }
   } catch (e: any) {
-    console.error(`[repos] Error: ${e.message}`)
-    return { ok: true, repo: repoResult.repo, error: `Repo added but fetch failed: ${e.message}`, subRepos }
+    return { ok: false, error: e.message }
   }
 
-  if (repoResult.repo) markRepoFetched(repoResult.repo.id)
-  console.log(`[repos] Added ${url} (${count} extensions)`)
-  return { ok: true, repo: repoResult.repo, extensions: count, subRepos }
+  return { ok: true, extensions: count, updated }
+}
+
+// ─── Add Repo (first time) ──────────────────────────────────
+
+export async function addRepo(userId: string, url: string, forceType?: string): Promise<{ ok: boolean; error?: string; repo?: any; extensions?: number; subRepos?: string[] }> {
+  let type: RepoType = (forceType as RepoType) || detectRepoType(url)
+
+  const repoResult = addRepoForUser(userId, url, type)
+  if (!repoResult.ok) return repoResult
+
+  const result = await fetchAndStoreRepo(url, type)
+
+  if (result.ok) {
+    if (repoResult.repo) markRepoFetched(repoResult.repo.id)
+    console.log(`[repos] Added ${url} (${result.extensions} extensions)`)
+    return { ok: true, repo: repoResult.repo, extensions: result.extensions, subRepos: result.subRepos }
+  }
+
+  return { ok: true, repo: repoResult.repo, error: `Repo added but fetch failed: ${result.error}`, subRepos: result.subRepos }
+}
+
+// ─── Refresh Repo (re-fetch, detect changes) ───────────────
+
+export async function refreshRepo(repoUrl: string, repoType: string): Promise<{ ok: boolean; updated?: number[]; error?: string }> {
+  console.log(`[auto-update] Refreshing repo: ${repoUrl}`)
+  const result = await fetchAndStoreRepo(repoUrl, repoType as RepoType)
+  if (!result.ok) {
+    console.error(`[auto-update] Failed to refresh ${repoUrl}: ${result.error}`)
+    return { ok: false, error: result.error }
+  }
+  console.log(`[auto-update] ${repoUrl}: ${result.extensions} extensions, ${result.updated?.length || 0} need re-download`)
+  return { ok: true, updated: result.updated }
+}
+
+// ─── Get all unique repos from DB (for auto-update) ────────
+
+export function getAllRepos() {
+  return db.query('SELECT DISTINCT url, type FROM repos').all() as { url: string; type: string }[]
 }

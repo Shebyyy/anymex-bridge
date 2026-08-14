@@ -3,10 +3,11 @@ import { readFileSync, writeFileSync } from 'node:fs'
 import { generateKeyPairSync } from 'node:crypto'
 import { join } from 'node:path'
 import { Server as SshServer } from 'ssh2'
-import { authenticateUser, createUser, getUserExtensions, getAllUsers, db } from './db.js'
+import { authenticateUser, createUser, getUserExtensions, db } from './db.js'
 import { isJarReady, invokeJar, invokeJarOnce } from './jar.js'
 import { addRepo } from './repos.js'
 import { installExtension, downloadExtension } from './extensions.js'
+import { runUpdateNow } from './auto-update.js'
 
 const SSH_PORT = 3022
 const HTTP_PORT = 8081
@@ -169,6 +170,12 @@ async function handleMethod(userId: string, username: string, msg: any): Promise
       const { extId } = args || {}
       if (!extId) throw new Error('extId required')
       return downloadExtension(Number(extId))
+    }
+    case 'forceUpdate': {
+      // Manual trigger — re-fetch all repos & re-download changed plugins
+      console.log(`[ssh] User '${username}' triggered force update`)
+      await runUpdateNow()
+      return { ok: true, message: 'Update cycle complete' }
     }
     case 'getExtensions': {
       const { type, query } = args || {}

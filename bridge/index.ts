@@ -1,8 +1,10 @@
 import { initSchema } from './db.js'
 import { checkOrDownloadJar, isJarReady, startSidecar, stopSidecar } from './jar.js'
 import { startSshServer, startHttpServer } from './ssh.js'
+import { startAutoUpdate, stopAutoUpdate } from './auto-update.js'
 
-const AUTO_UPDATE_INTERVAL = 6 * 60 * 60 * 1000 // 6 hours
+const JAR_UPDATE_INTERVAL = 6 * 60 * 60 * 1000 // 6 hours
+const EXT_UPDATE_INTERVAL = 6 * 60 * 60 * 1000 // 6 hours
 
 // ── Crash protection ────────────────────────────────────────
 process.on('uncaughtException', (err) => {
@@ -19,7 +21,7 @@ process.on('SIGHUP', () => {})
 process.stdin.resume()
 
 async function main() {
-  console.log('=== AnymeX Bridge Server v2.0 ===')
+  console.log('=== AnymeX Bridge Server v2.1 ===')
   console.log('SSH: port 3022 | HTTP: port 8081')
 
   // Init DB
@@ -47,6 +49,9 @@ async function main() {
     console.warn('[jar] Management methods work. Extension methods require JAR.')
   }
 
+  // Auto-update extension plugins every 6h
+  startAutoUpdate(EXT_UPDATE_INTERVAL)
+
   // Auto-update JAR every 6h
   setInterval(async () => {
     try {
@@ -58,11 +63,11 @@ async function main() {
     } catch (e: any) {
       console.error('[jar] Auto-update error:', e.message)
     }
-  }, AUTO_UPDATE_INTERVAL)
+  }, JAR_UPDATE_INTERVAL)
 
   // Graceful shutdown
-  process.on('SIGINT', () => { console.log('[shutdown] SIGINT'); stopSidecar(); process.exit(0) })
-  process.on('SIGTERM', () => { console.log('[shutdown] SIGTERM'); stopSidecar(); process.exit(0) })
+  process.on('SIGINT', () => { console.log('[shutdown] SIGINT'); stopSidecar(); stopAutoUpdate(); process.exit(0) })
+  process.on('SIGTERM', () => { console.log('[shutdown] SIGTERM'); stopSidecar(); stopAutoUpdate(); process.exit(0) })
 
   console.log('=== Bridge running ===')
 }
