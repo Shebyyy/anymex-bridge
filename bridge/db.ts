@@ -17,6 +17,15 @@ export function initSchema() {
       password TEXT NOT NULL,
       created TEXT DEFAULT (datetime('now'))
     );
+    CREATE TABLE IF NOT EXISTS user_installed (
+      user_id TEXT NOT NULL,
+      pkg_name TEXT NOT NULL,
+      type TEXT NOT NULL DEFAULT 'aniyomi',
+      name TEXT,
+      icon_url TEXT,
+      version TEXT,
+      PRIMARY KEY (user_id, pkg_name)
+    );
     CREATE TABLE IF NOT EXISTS repos (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       url TEXT UNIQUE NOT NULL,
@@ -192,4 +201,29 @@ export function getStats() {
     (SELECT COUNT(*) FROM extensions) as extensions,
     (SELECT COUNT(*) FROM user_extensions) as installs
   `).get() as any
+}
+
+// ── New user_installed helpers (server bridge v2) ──
+
+export function addUserInstalled(userId: string, pkgName: string, type: string, name?: string, iconUrl?: string, version?: string) {
+  db.run(
+    'INSERT OR REPLACE INTO user_installed (user_id, pkg_name, type, name, icon_url, version) VALUES (?, ?, ?, ?, ?, ?)',
+    [userId, pkgName, type, name || pkgName, iconUrl || null, version || null]
+  )
+}
+
+export function removeUserInstalled(userId: string, pkgName: string) {
+  db.run('DELETE FROM user_installed WHERE user_id = ? AND pkg_name = ?', [userId, pkgName])
+}
+
+export function getUserInstalledPkgs(userId: string, type?: string): Set<string> {
+  let sql = 'SELECT pkg_name FROM user_installed WHERE user_id = ?'
+  const params: any[] = [userId]
+  if (type) { sql += ' AND type = ?'; params.push(type) }
+  return new Set((db.prepare(sql).all(...params) as any[]).map(r => r.pkg_name))
+}
+
+export function countOtherUsersWithPkg(userId: string, pkgName: string): number {
+  const row = db.query('SELECT COUNT(*) as c FROM user_installed WHERE pkg_name = ? AND user_id != ?').get(pkgName, userId) as any
+  return row?.c ?? 0
 }
