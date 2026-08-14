@@ -48,8 +48,10 @@ jobs:
 
             # Kill old process
             echo "[4/5] Restarting bridge..."
-            kill $(cat /root/anymex-bridge/data/bridge.pid 2>/dev/null) 2>/dev/null || true
-            pkill -f "bun.*index.ts" 2>/dev/null || true
+            if [ -f /root/anymex-bridge/data/bridge.pid ]; then
+              kill $(cat /root/anymex-bridge/data/bridge.pid) 2>/dev/null || true
+              rm -f /root/anymex-bridge/data/bridge.pid
+            fi
             sleep 2
 
             # Start
