@@ -15,36 +15,58 @@ jobs:
           host: ${{ secrets.SERVER_HOST }}
           username: ${{ secrets.SERVER_USER }}
           password: ${{ secrets.SERVER_PASSWORD }}
-          command_timeout: 60s
-          script_stop: true
+          command_timeout: 120s
+          script_stop: false
           script: |
+            set -e
             echo "=== Deploying anymex-bridge (beta) ==="
 
+            # Check prerequisites
+            echo "[1/6] Checking prerequisites..."
+            which git || { echo "ERROR: git not installed"; exit 1; }
+            which rsync || { echo "ERROR: rsync not installed"; exit 1; }
+            which java || { echo "ERROR: java not installed"; exit 1; }
+            echo "OK: git, rsync, java all available"
+
+            # Clone/pull repo
+            echo "[2/6] Fetching code..."
             if [ -d /tmp/anymex-bridge-deploy/.git ]; then
               cd /tmp/anymex-bridge-deploy
-              git pull origin beta
+              git fetch origin beta
+              git reset --hard origin/beta
             else
               rm -rf /tmp/anymex-bridge-deploy
               git clone -b beta https://github.com/Shebyyy/anymex-bridge.git /tmp/anymex-bridge-deploy
             fi
+            echo "OK: code fetched"
 
+            # Sync files
+            echo "[3/6] Syncing files..."
+            mkdir -p /root/anymex-bridge
             rsync -a --exclude='.git' --exclude='data' --exclude='jar-cache' --exclude='extensions' --exclude='.env' --exclude='node_modules' /tmp/anymex-bridge-deploy/ /root/anymex-bridge/
+            echo "OK: files synced"
 
+            # Install deps
+            echo "[4/6] Installing dependencies..."
             cd /root/anymex-bridge
-            /root/.bun/bin/bun install
+            bun install
+            echo "OK: deps installed"
 
-            # Kill old bridge by PID file
+            # Kill old process
+            echo "[5/6] Restarting bridge..."
             if [ -f /tmp/anymex-bridge.pid ]; then
               kill $(cat /tmp/anymex-bridge.pid) 2>/dev/null || true
               rm -f /tmp/anymex-bridge.pid
             fi
             sleep 2
 
-            # Start with setsid
+            # Start
             setsid /root/.bun/bin/bun run /root/anymex-bridge/index.ts > /tmp/bridge-deploy.log 2>&1 &
             echo $! > /tmp/anymex-bridge.pid
             sleep 5
 
+            # Health check
+            echo "[6/6] Health check..."
             if ss -tlnp | grep -q 3022; then
               echo "✅ Bridge is running on port 3022"
             else
