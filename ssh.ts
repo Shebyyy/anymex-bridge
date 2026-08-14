@@ -60,7 +60,8 @@ export function startHttpServer() {
             id: u.id, username: u.username,
             extensions: (db.query('SELECT COUNT(*) as c FROM user_installed WHERE user_id = ?').get(u.id) as any)?.c ?? 0
           }))
-          res.end(JSON.stringify({ users: userDetails, totalUsers: users.length }))
+          const totalInstalls = (db.query('SELECT COUNT(*) as c FROM user_installed').get() as any)?.c ?? 0
+          res.end(JSON.stringify({ users: userDetails, totalUsers: users.length, installs: totalInstalls, jarReady: isJarReady() }))
           return
         }
 
