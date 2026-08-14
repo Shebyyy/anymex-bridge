@@ -1,0 +1,740 @@
+   320→  @override
+   321→  Widget build(BuildContext context) {
+   322→    // On iOS: show server bridge login/register instead of plugin manager.
+   323→    if (Platform.isIOS) {
+   324→      return _buildIosServerBridgePage(context);
+   325→    }
+   326→
+   327→    final colors = context.colors;
+   328→    final bridge = AnymeXRuntimeBridge.controller;
+   329→
+   330→    return Glow(
+   331→      child: Scaffold(
+   332→        body: Column(
+   333→          children: [
+   334→            const NestedHeader(title: 'Extension Manager'),
+   335→            Expanded(
+   336→              child: SingleChildScrollView(
+   337→                child: Padding(
+   338→                  padding: getResponsiveValue(context,
+   339→                      mobileValue:
+   340→                          const EdgeInsets.fromLTRB(14.0, 20.0, 14.0, 30.0),
+   341→                      desktopValue:
+   342→                          const EdgeInsets.fromLTRB(25.0, 20.0, 25.0, 20.0)),
+   343→                  child: Column(
+   344→                    crossAxisAlignment: CrossAxisAlignment.start,
+   345→                    children: [
+   346→                      _buildPluginStatusCard(context),
+   347→                      ..._buildExtensionSettings(context),
+   348→                      const SizedBox(height: 25),
+   349→                      Padding(
+   350→                        padding: const EdgeInsets.only(left: 4.0, bottom: 10.0),
+   351→                        child: Text(
+   352→                          'PLUGIN INSTALLATION & SYNC',
+   353→                          style: TextStyle(
+   354→                            fontSize: 12,
+   355→                            fontWeight: FontWeight.bold,
+   356→                            color: colors.primary,
+   357→                            letterSpacing: 1.2,
+   358→                          ),
+   359→                        ),
+   360→                      ),
+   361→                      Obx(() {
+   362→                        final _ = bridge.isReady.value;
+   363→                        final isInstalled =
+   364→                            bridge.isReady.value || _isLoadedFromStorage.value;
+   365→                        return Container(
+   366→                          decoration: BoxDecoration(
+   367→                            color:
+   368→                                colors.surfaceContainer.withValues(alpha: 0.3),
+   369→                            borderRadius: BorderRadius.circular(18),
+   370→                            border: Border.all(
+   371→                                color: colors.outlineVariant
+   372→                                    .withValues(alpha: 0.4)),
+   373→                          ),
+   374→                          child: Column(
+   375→                            children: [
+   376→                              CustomTile(
+   377→                                icon: Icons.cloud_download_rounded,
+   378→                                title: isInstalled
+   379→                                    ? 'Update Plugin'
+   380→                                    : 'Download the Plugin',
+   381→                                description: isInstalled
+   382→                                    ? 'Check and install the latest plugin update from Github'
+   383→                                    : 'Automatically download and install the latest plugin version',
+   384→                                onTap: isInstalled
+   385→                                    ? (_isCheckingUpdate
+   386→                                        ? null
+   387→                                        : _checkForUpdates)
+   388→                                    : _showInstallPopup,
+   389→                                postFix: _isCheckingUpdate
+   390→                                    ? SizedBox(
+   391→                                        width: 18,
+   392→                                        height: 18,
+   393→                                        child: CircularProgressIndicator(
+   394→                                          strokeWidth: 2,
+   395→                                          color: colors.primary,
+   396→                                        ),
+   397→                                      )
+   398→                                    : null,
+   399→                              ),
+   400→                              if (Platform.isAndroid) ...[
+   401→                                Divider(
+   402→                                    height: 1,
+   403→                                    color: colors.outlineVariant
+   404→                                        .withValues(alpha: 0.3)),
+   405→                                CustomTile(
+   406→                                  icon: Icons.install_mobile_rounded,
+   407→                                  title: 'Load Plugin APK from Storage',
+   408→                                  description: Platform.isAndroid
+   409→                                      ? 'Select a runtime APK from local storage to manually install'
+   410→                                      : 'Select a runtime JAR from local storage to manually install',
+   411→                                  onTap:
+   412→                                      _isSyncingLocalApk ? null : _syncLocalApk,
+   413→                                  postFix: _isSyncingLocalApk
+   414→                                      ? SizedBox(
+   415→                                          width: 18,
+   416→                                          height: 18,
+   417→                                          child: CircularProgressIndicator(
+   418→                                            strokeWidth: 2,
+   419→                                            color: colors.primary,
+   420→                                          ),
+   421→                                        )
+   422→                                      : null,
+   423→                                ),
+   424→                              ],
+   425→                              if (isInstalled) ...[
+   426→                                Divider(
+   427→                                    height: 1,
+   428→                                    color: colors.outlineVariant
+   429→                                        .withValues(alpha: 0.3)),
+   430→                                CustomTile(
+   431→                                  icon: Icons.refresh_rounded,
+   432→                                  title: 'Force Re-download',
+   433→                                  description:
+   434→                                      'Re-download and reinstall the plugin from scratch',
+   435→                                  onTap: _forceReDownload,
+   436→                                ),
+   437→                                Divider(
+   438→                                    height: 1,
+   439→                                    color: colors.outlineVariant
+   440→                                        .withValues(alpha: 0.3)),
+   441→                                CustomTile(
+   442→                                  icon: Icons.history_rounded,
+   443→                                  title: 'Rollback Version',
+   444→                                  description:
+   445→                                      'Downgrade or switch to a specific plugin version',
+   446→                                  onTap: _showRollbackDialog,
+   447→                                ),
+   448→                              ],
+   449→                            ],
+   450→                          ),
+   451→                        );
+   452→                      }),
+   453→                      40.height()
+   454→                    ],
+   455→                  ),
+   456→                ),
+   457→              ),
+   458→            ),
+   459→          ],
+   460→        ),
+   461→      ),
+   462→    );
+   463→  }
+   464→
+   465→  Widget _buildIosServerBridgePage(BuildContext context) {
+   466→    final colors = context.colors;
+   467→    final pm = _pluginManager;
+   468→    final isConnected = pm.isServerBridgeConnected;
+   469→    final username = pm.serverUsername;
+   470→
+   471→    return Glow(
+   472→      child: Scaffold(
+   473→        body: Column(
+   474→          children: [
+   475→            const NestedHeader(title: 'Extension Manager'),
+   476→            Expanded(
+   477→              child: isConnected && username != null
+   478→                  ? _buildIosConnected(colors, username, pm)
+   479→                  : _buildIosNotConnected(colors, pm),
+   480→            ),
+   481→          ],
+   482→        ),
+   483→      ),
+   484→    );
+   485→  }
+   486→
+   487→  Widget _buildIosConnected(ColorScheme colors, String username, PluginManager pm) {
+   488→    return Center(
+   489→      child: Padding(
+   490→        padding: const EdgeInsets.symmetric(horizontal: 24),
+   491→        child: Column(
+   492→          mainAxisSize: MainAxisSize.min,
+   493→          children: [
+   494→            Container(
+   495→              width: 72,
+   496→              height: 72,
+   497→              decoration: BoxDecoration(
+   498→                color: colors.primaryContainer.withOpacity(0.3),
+   499→                borderRadius: BorderRadius.circular(20),
+   500→              ),
+   501→              child: Icon(
+   502→                Icons.cloud_done_rounded,
+   503→                size: 32,
+   504→                color: colors.primary,
+   505→              ),
+   506→            ),
+   507→            const SizedBox(height: 16),
+   508→            Text(
+   509→              'Connected to Server',
+   510→              style: TextStyle(
+   511→                fontSize: 16,
+   512→                fontWeight: FontWeight.bold,
+   513→                color: colors.onSurface,
+   514→              ),
+   515→            ),
+   516→            const SizedBox(height: 8),
+   517→            Text(
+   518→              'Logged in as $username',
+   519→              style: TextStyle(
+   520→                fontSize: 13,
+   521→                color: colors.onSurfaceVariant,
+   522→              ),
+   523→            ),
+   524→            const SizedBox(height: 20),
+   525→            OutlinedButton.icon(
+   526→              onPressed: () async {
+   527→                await pm.disconnectServerBridge();
+   528→                if (mounted) setState(() {});
+   529→              },
+   530→              icon: const Icon(Icons.logout_rounded, size: 18),
+   531→              label: const Text('Disconnect'),
+   532→              style: OutlinedButton.styleFrom(
+   533→                foregroundColor: colors.error,
+   534→                side: BorderSide(color: colors.error.withOpacity(0.5)),
+   535→                shape: RoundedRectangleBorder(
+   536→                  borderRadius: BorderRadius.circular(12),
+   537→                ),
+   538→              ),
+   539→            ),
+   540→          ],
+   541→        ),
+   542→      ),
+   543→    );
+   544→  }
+   545→
+   546→  Widget _buildIosNotConnected(ColorScheme colors, PluginManager pm) {
+   547→    return Center(
+   548→      child: Padding(
+   549→        padding: const EdgeInsets.symmetric(horizontal: 24),
+   550→        child: Column(
+   551→          mainAxisSize: MainAxisSize.min,
+   552→          children: [
+   553→            Container(
+   554→              width: 72,
+   555→              height: 72,
+   556→              decoration: BoxDecoration(
+   557→                color: colors.primaryContainer.withOpacity(0.2),
+   558→                borderRadius: BorderRadius.circular(20),
+   559→              ),
+   560→              child: Icon(
+   561→                Icons.cloud_outlined,
+   562→                size: 32,
+   563→                color: colors.primary,
+   564→              ),
+   565→            ),
+   566→            const SizedBox(height: 16),
+   567→            Text(
+   568→              'Connect to Server',
+   569→              style: TextStyle(
+   570→                fontSize: 16,
+   571→                fontWeight: FontWeight.bold,
+   572→                color: colors.onSurface,
+   573→              ),
+   574→            ),
+   575→            const SizedBox(height: 8),
+   576→            Text(
+   577→              'Sign in to use extensions via the cloud server.',
+   578→              textAlign: TextAlign.center,
+   579→              style: TextStyle(
+   580→                fontSize: 13,
+   581→                color: colors.onSurfaceVariant,
+   582→              ),
+   583→            ),
+   584→            const SizedBox(height: 24),
+   585→            Row(
+   586→              children: [
+   587→                Expanded(
+   588→                  child: FilledButton.icon(
+   589→                    onPressed: () => _showServerAuthDialog(pm, register: false),
+   590→                    icon: const Icon(Icons.login_rounded, size: 18),
+   591→                    label: const Text('Login'),
+   592→                    style: FilledButton.styleFrom(
+   593→                      backgroundColor: colors.primary,
+   594→                      foregroundColor: colors.onPrimary,
+   595→                      padding: const EdgeInsets.symmetric(vertical: 12),
+   596→                      shape: RoundedRectangleBorder(
+   597→                        borderRadius: BorderRadius.circular(12),
+   598→                      ),
+   599→                    ),
+   600→                  ),
+   601→                ),
+   602→                const SizedBox(width: 12),
+   603→                Expanded(
+   604→                  child: OutlinedButton.icon(
+   605→                    onPressed: () => _showServerAuthDialog(pm, register: true),
+   606→                    icon: const Icon(Icons.person_add_rounded, size: 18),
+   607→                    label: const Text('Register'),
+   608→                    style: OutlinedButton.styleFrom(
+   609→                      padding: const EdgeInsets.symmetric(vertical: 12),
+   610→                      shape: RoundedRectangleBorder(
+   611→                        borderRadius: BorderRadius.circular(12),
+   612→                      ),
+   613→                    ),
+   614→                  ),
+   615→                ),
+   616→              ],
+   617→            ),
+   618→          ],
+   619→        ),
+   620→      ),
+   621→    );
+   622→  }
+   623→
+   624→  void _showServerAuthDialog(PluginManager pm, {required bool register}) {
+   625→    final colors = context.colors;
+   626→    final usernameController = TextEditingController();
+   627→    final passwordController = TextEditingController();
+   628→    bool loading = false;
+   629→
+   630→    showDialog(
+   631→      context: context,
+   632→      barrierColor: Colors.black.withOpacity(0.5),
+   633→      builder: (dialogContext) => StatefulBuilder(
+   634→        builder: (context, setDialogState) => AlertDialog(
+   635→          backgroundColor: colors.surfaceContainerHigh,
+   636→          shape: RoundedRectangleBorder(
+   637→            borderRadius: BorderRadius.circular(20),
+   638→          ),
+   639→          title: Text(
+   640→            register ? 'Create Account' : 'Sign In',
+   641→            style: TextStyle(
+   642→              fontWeight: FontWeight.bold,
+   643→              color: colors.onSurface,
+   644→            ),
+   645→          ),
+   646→          content: Column(
+   647→            mainAxisSize: MainAxisSize.min,
+   648→            children: [
+   649→              TextField(
+   650→                controller: usernameController,
+   651→                decoration: InputDecoration(
+   652→                  labelText: 'Username',
+   653→                  hintText: 'min 3 characters',
+   654→                  border: OutlineInputBorder(
+   655→                    borderRadius: BorderRadius.circular(12),
+   656→                  ),
+   657→                ),
+   658→              ),
+   659→              const SizedBox(height: 12),
+   660→              TextField(
+   661→                controller: passwordController,
+   662→                obscureText: true,
+   663→                decoration: InputDecoration(
+   664→                  labelText: 'Password',
+   665→                  hintText: 'min 4 characters',
+   666→                  border: OutlineInputBorder(
+   667→                    borderRadius: BorderRadius.circular(12),
+   668→                  ),
+   669→                ),
+   670→              ),
+   671→            ],
+   672→          ),
+   673→          actions: [
+   674→            TextButton(
+   675→              onPressed: () => Navigator.of(dialogContext).pop(),
+   676→              child: const Text('Cancel'),
+   677→            ),
+   678→            FilledButton(
+   679→              onPressed: loading
+   680→                  ? null
+   681→                  : () async {
+   682→                      final username = usernameController.text.trim();
+   683→                      final password = passwordController.text.trim();
+   684→                      if (username.length < 3 || password.length < 4) {
+   685→                        snackBar('Username min 3 chars, password min 4 chars');
+   686→                        return;
+   687→                      }
+   688→                      setDialogState(() => loading = true);
+   689→                      final ok = register
+   690→                          ? await pm.registerAndConnect(username, password)
+   691→                          : await pm.loginAndConnect(username, password);
+   692→                      if (dialogContext.mounted) Navigator.of(dialogContext).pop();
+   693→                      if (ok && mounted) setState(() {});
+   694→                    },
+   695→              child: loading
+   696→                  ? const SizedBox(
+   697→                      width: 16,
+   698→                      height: 16,
+   699→                      child: CircularProgressIndicator(strokeWidth: 2),
+   700→                    )
+   701→                  : Text(register ? 'Register' : 'Login'),
+   702→            ),
+   703→          ],
+   704→        ),
+   705→      ),
+   706→    );
+   707→  }
+   708→
+   709→  Widget _buildPluginStatusCard(BuildContext context) {
+   710→    final colors = context.colors;
+   711→    final bridge = AnymeXRuntimeBridge.controller;
+   712→    return Obx(() {
+   713→      final isDownloading = bridge.isDownloading.value;
+   714→      final progress = bridge.downloadProgress.value;
+   715→      final status = bridge.status.value;
+   716→      final isReady = bridge.isReady.value;
+   717→      final sizeInfo = bridge.sizeInfo.value;
+   718→      final hasError = bridge.error.value.isNotEmpty;
+   719→      final isBusy = isDownloading ||
+   720→          (status != "Idle" &&
+   721→              !isReady &&
+   722→              (status.contains("Extracting") || status.contains("Finalizing")));
+   723→      final isActive =
+   724→          isReady || _isPluginInstalled || _isLoadedFromStorage.value;
+   725→
+   726→      return Container(
+   727→        width: double.infinity,
+   728→        padding: const EdgeInsets.all(18),
+   729→        decoration: BoxDecoration(
+   730→          color: colors.surfaceContainer.withValues(alpha: 0.4),
+   731→          borderRadius: BorderRadius.circular(18),
+   732→          border:
+   733→              Border.all(color: colors.outlineVariant.withValues(alpha: 0.5)),
+   734→        ),
+   735→        child: Column(
+   736→          crossAxisAlignment: CrossAxisAlignment.start,
+   737→          children: [
+   738→            Row(
+   739→              children: [
+   740→                Container(
+   741→                  width: 42,
+   742→                  height: 42,
+   743→                  decoration: BoxDecoration(
+   744→                    color: isBusy
+   745→                        ? colors.tertiaryContainer
+   746→                        : isActive
+   747→                            ? colors.primaryContainer
+   748→                            : colors.errorContainer,
+   749→                    borderRadius: BorderRadius.circular(12),
+   750→                  ),
+   751→                  child: isBusy
+   752→                      ? Padding(
+   753→                          padding: const EdgeInsets.all(10),
+   754→                          child: CircularProgressIndicator(
+   755→                            strokeWidth: 2.5,
+   756→                            color: colors.onTertiaryContainer,
+   757→                          ),
+   758→                        )
+   759→                      : Icon(
+   760→                          isActive
+   761→                              ? Icons.check_circle_rounded
+   762→                              : Icons.warning_amber_rounded,
+   763→                          size: 22,
+   764→                          color: isActive
+   765→                              ? colors.onPrimaryContainer
+   766→                              : colors.onErrorContainer,
+   767→                        ),
+   768→                ),
+   769→                const SizedBox(width: 14),
+   770→                Expanded(
+   771→                  child: Column(
+   772→                    crossAxisAlignment: CrossAxisAlignment.start,
+   773→                    children: [
+   774→                      Text(
+   775→                        isBusy
+   776→                            ? 'Downloading Plugin...'
+   777→                            : isActive
+   778→                                ? (_isLoadedFromStorage.value
+   779→                                    ? 'Loaded from Storage'
+   780→                                    : 'Plugin Installed')
+   781→                                : 'Plugin Not Installed',
+   782→                        style: TextStyle(
+   783→                          fontSize: 16,
+   784→                          fontWeight: FontWeight.w700,
+   785→                          color: colors.onSurface,
+   786→                        ),
+   787→                      ),
+   788→                      const SizedBox(height: 3),
+   789→                      Text(
+   790→                        isBusy
+   791→                            ? status
+   792→                            : isActive
+   793→                                ? (_isLoadedFromStorage.value
+   794→                                    ? 'Using local storage APK'
+   795→                                    : 'Aniyomi & Cloudstream ready')
+   796→                                : 'Install runtime plugin to unlock Aniyomi & Cloudstream',
+   797→                        style: TextStyle(
+   798→                          fontSize: 13,
+   799→                          color: colors.onSurfaceVariant,
+   800→                        ),
+   801→                      ),
+   802→                    ],
+   803→                  ),
+   804→                ),
+   805→              ],
+   806→            ),
+   807→            if (isBusy) ...[
+   808→              const SizedBox(height: 16),
+   809→              Row(
+   810→                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+   811→                children: [
+   812→                  Expanded(
+   813→                    child: ClipRRect(
+   814→                      borderRadius: BorderRadius.circular(999),
+   815→                      child: LinearProgressIndicator(
+   816→                        minHeight: 7,
+   817→                        value: progress > 0 ? progress : null,
+   818→                        backgroundColor: colors.surfaceContainerHighest,
+   819→                        valueColor:
+   820→                            AlwaysStoppedAnimation<Color>(colors.primary),
+   821→                      ),
+   822→                    ),
+   823→                  ),
+   824→                  if (sizeInfo.isNotEmpty) ...[
+   825→                    const SizedBox(width: 12),
+   826→                    Text(
+   827→                      sizeInfo,
+   828→                      style: TextStyle(
+   829→                        fontSize: 12,
+   830→                        fontWeight: FontWeight.w600,
+   831→                        color: colors.primary,
+   832→                      ),
+   833→                    ),
+   834→                  ],
+   835→                ],
+   836→              ),
+   837→            ],
+   838→            if (hasError) ...[
+   839→              const SizedBox(height: 12),
+   840→              Text(
+   841→                bridge.error.value,
+   842→                style: TextStyle(
+   843→                  fontSize: 12,
+   844→                  color: colors.error,
+   845→                ),
+   846→              ),
+   847→            ],
+   848→            if (isActive && !isBusy) ...[
+   849→              if (!_isLoadedFromStorage.value) ...[
+   850→                const SizedBox(height: 16),
+   851→                const Divider(height: 1),
+   852→                const SizedBox(height: 14),
+   853→                _buildMetaRow(colors, 'Version', _installedVersion),
+   854→                const SizedBox(height: 8),
+   855→                _buildMetaRow(
+   856→                    colors,
+   857→                    'Release',
+   858→                    _installedReleaseTitle.isNotEmpty
+   859→                        ? _installedReleaseTitle
+   860→                        : 'Unknown'),
+   861→                const SizedBox(height: 8),
+   862→              ],
+   863→              if (!Platform.isAndroid) ...[
+   864→                const SizedBox(height: 16),
+   865→                const Divider(height: 1),
+   866→                const SizedBox(height: 14),
+   867→                _buildMetaRow(
+   868→                  colors,
+   869→                  'Bridge Mode',
+   870→                  PluginKeys.bridgeMode.get<String>('sidecar'),
+   871→                ),
+   872→              ],
+   873→            ],
+   874→            if (isActive && !isBusy && _needsRestart) ...[
+   875→              const SizedBox(height: 14),
+   876→              Container(
+   877→                width: double.infinity,
+   878→                padding:
+   879→                    const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+   880→                decoration: BoxDecoration(
+   881→                  color: colors.tertiaryContainer.withValues(alpha: 0.5),
+   882→                  borderRadius: BorderRadius.circular(12),
+   883→                ),
+   884→                child: Row(
+   885→                  children: [
+   886→                    Icon(Icons.restart_alt_rounded,
+   887→                        size: 16, color: colors.onTertiaryContainer),
+   888→                    const SizedBox(width: 8),
+   889→                    Expanded(
+   890→                      child: Text(
+   891→                        'Please restart the app to apply changes.',
+   892→                        style: TextStyle(
+   893→                          fontSize: 12,
+   894→                          fontWeight: FontWeight.w600,
+   895→                          color: colors.onTertiaryContainer,
+   896→                        ),
+   897→                      ),
+   898→                    ),
+   899→                  ],
+   900→                ),
+   901→              ),
+   902→            ],
+   903→          ],
+   904→        ),
+   905→      );
+   906→    });
+   907→  }
+   908→
+   909→  Widget _buildMetaRow(ColorScheme colors, String label, String value) {
+   910→    return Row(
+   911→      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+   912→      children: [
+   913→        Text(
+   914→          label,
+   915→          style: TextStyle(
+   916→            fontSize: 13,
+   917→            color: colors.onSurfaceVariant,
+   918→          ),
+   919→        ),
+   920→        Container(
+   921→          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+   922→          decoration: BoxDecoration(
+   923→            color: colors.surfaceContainerHighest.withValues(alpha: 0.6),
+   924→            borderRadius: BorderRadius.circular(8),
+   925→          ),
+   926→          child: Text(
+   927→            value,
+   928→            style: TextStyle(
+   929→              fontSize: 12,
+   930→              fontWeight: FontWeight.w600,
+   931→              color: colors.onSurface,
+   932→              fontFamily: 'monospace',
+   933→            ),
+   934→          ),
+   935→        ),
+   936→      ],
+   937→    );
+   938→  }
+   939→
+   940→  List<Widget> _buildExtensionSettings(BuildContext context) {
+   941→    final colors = Theme.of(context).colorScheme;
+   942→    final em = Get.find<ExtensionManager>();
+   943→    final settingsList = <Widget>[];
+   944→
+   945→    for (final manager in em.managers) {
+   946→      final managerSettings = manager.settings;
+   947→      if (managerSettings == null || managerSettings.isEmpty) continue;
+   948→
+   949→      settingsList.add(const SizedBox(height: 25));
+   950→      settingsList.add(
+   951→        Padding(
+   952→          padding: const EdgeInsets.only(left: 4.0, bottom: 10.0),
+   953→          child: Text(
+   954→            '${manager.name.toUpperCase()} SETTINGS',
+   955→            style: TextStyle(
+   956→              fontSize: 12,
+   957→              fontWeight: FontWeight.bold,
+   958→              color: colors.primary,
+   959→              letterSpacing: 1.2,
+   960→            ),
+   961→          ),
+   962→        ),
+   963→      );
+   964→
+   965→      final children = <Widget>[];
+   966→      for (final entry in managerSettings.entries) {
+   967→        final setting = entry.value;
+   968→
+   969→        if (setting.type == 'bool') {
+   970→          children.add(
+   971→            CustomSwitchTile(
+   972→              icon: Icons.settings_input_component_rounded,
+   973→              title: setting.label,
+   974→              description: setting.description,
+   975→              switchValue: setting.value as bool,
+   976→              onChanged: (val) {
+   977→                setting.onChanged(val);
+   978→                setState(() {});
+   979→              },
+   980→            ),
+   981→          );
+   982→        } else if (setting.type == 'string') {
+   983→          children.add(
+   984→            CustomTile(
+   985→              icon: Icons.folder_open_rounded,
+   986→              title: setting.label,
+   987→              description: (setting.value as String).isNotEmpty
+   988→                  ? setting.value as String
+   989→                  : setting.description,
+   990→              onTap: () => _showTextInputDialog(
+   991→                context,
+   992→                title: setting.label,
+   993→                initialValue: setting.value as String,
+   994→                onSave: (val) {
+   995→                  setting.onChanged(val);
+   996→                  setState(() {});
+   997→                },
+   998→              ),
+   999→            ),
+  1000→          );
+  1001→        }
+  1002→      }
+  1003→
+  1004→      if (children.isNotEmpty) {
+  1005→        settingsList.add(
+  1006→          Container(
+  1007→            decoration: BoxDecoration(
+  1008→              color: colors.surfaceContainer.withValues(alpha: 0.3),
+  1009→              borderRadius: BorderRadius.circular(18),
+  1010→              border: Border.all(
+  1011→                  color: colors.outlineVariant.withValues(alpha: 0.4)),
+  1012→            ),
+  1013→            child: Column(children: children),
+  1014→          ),
+  1015→        );
+  1016→      }
+  1017→    }
+  1018→
+  1019→    return settingsList;
+  1020→  }
+  1021→
+  1022→  void _showTextInputDialog(
+  1023→    BuildContext context, {
+  1024→    required String title,
+  1025→    required String initialValue,
+  1026→    required ValueChanged<String> onSave,
+  1027→  }) {
+  1028→    final controller = TextEditingController(text: initialValue);
+  1029→    showDialog(
+  1030→      context: context,
+  1031→      builder: (context) {
+  1032→        return AlertDialog(
+  1033→          title: Text(title),
+  1034→          content: TextField(
+  1035→            controller: controller,
+  1036→            decoration: const InputDecoration(
+  1037→              border: OutlineInputBorder(),
+  1038→              labelText: 'Enter value',
+  1039→            ),
+  1040→          ),
+  1041→          actions: [
+  1042→            TextButton(
+  1043→              onPressed: () => Navigator.of(context).pop(),
+  1044→              child: const Text('Cancel'),
+  1045→            ),
+  1046→            TextButton(
+  1047→              onPressed: () {
+  1048→                onSave(controller.text);
+  1049→                Navigator.of(context).pop();
+  1050→              },
+  1051→              child: const Text('Save'),
+  1052→            ),
+  1053→          ],
+  1054→        );
+  1055→      },
+  1056→    );
+  1057→  }
+  1058→}
+  1059→

@@ -1,0 +1,852 @@
+     1→import 'dart:convert';
+     2→import 'dart:io';
+     3→
+     4→import 'package:anymex/database/data_keys/keys.dart';
+     5→import 'package:anymex/utils/logger.dart';
+     6→import 'package:anymex/utils/theme_extensions.dart';
+     7→import 'package:anymex/widgets/non_widgets/snackbar.dart';
+     8→import 'package:anymex_extension_runtime_bridge/anymex_extension_runtime_bridge.dart';
+     9→import 'package:anymex_extension_runtime_bridge/ExtensionManager.dart';
+    10→import 'package:anymex_extension_runtime_bridge/Runtime/Bridge/ServerBridge.dart';
+    11→import 'package:anymex/widgets/custom_widgets/anymex_bottomsheet.dart';
+    12→import 'package:flutter/material.dart';
+    13→import 'package:flutter_markdown/flutter_markdown.dart';
+    14→import 'package:get/get.dart';
+    15→import 'package:http/http.dart' as http;
+    16→
+    17→class PluginManager {
+    18→  static const String _latestReleaseUrl =
+    19→      'https://api.github.com/repos/RyanYuuki/AnymeXExtensionRuntimeBridge/releases/latest';
+    20→
+    21→  String get installedVersion => AnymeXRuntimeBridge.installedVersion;
+    22→  String get installedReleaseTitle => AnymeXRuntimeBridge.installedReleaseTitle;
+    23→
+    24→  bool get isServerBridgeConnected => ServerBridge().isInitialized;
+    25→
+    26→  String? get serverUsername => ServerBridgeKeys.username.get<String>();
+    27→
+    28→  /// On iOS: connect to server bridge instead of downloading plugin.
+    29→  Future<void> ensurePluginLoaded(BuildContext context) async {
+    30→    if (Platform.isIOS) {
+    31→      final username = ServerBridgeKeys.username.get<String>();
+    32→      final password = ServerBridgeKeys.password.get<String>();
+    33→      if (username != null && password != null) {
+    34→        await _connectServerBridge(username, password);
+    35→      }
+    36→      return;
+    37→    }
+    38→
+    39→    final isLoaded = await AnymeXRuntimeBridge.isLoaded();
+    40→    if (isLoaded) return;
+    41→
+    42→    final release = await fetchLatestRelease();
+    43→    if (release == null) {
+    44→      errorSnackBar('Failed to fetch plugin release details.');
+    45→      return;
+    46→    }
+    47→
+    48→    if (!context.mounted) return;
+    49→    await showInstallSheet(context, release: release);
+    50→  }
+    51→
+    52→  /// Register a new account and connect.
+    53→  Future<bool> registerAndConnect(String username, String password) async {
+    54→    try {
+    55→      final result = await ServerAuth.register(
+    56→        username: username,
+    57→        password: password,
+    58→      );
+    59→      if (result['ok'] != true) {
+    60→        errorSnackBar(result['error'] ?? 'Registration failed');
+    61→        return false;
+    62→      }
+    63→      return await _connectServerBridge(username, password);
+    64→    } catch (e) {
+    65→      errorSnackBar('Registration failed: $e');
+    66→      return false;
+    67→    }
+    68→  }
+    69→
+    70→  /// Login with existing credentials and connect.
+    71→  Future<bool> loginAndConnect(String username, String password) async {
+    72→    try {
+    73→      return await _connectServerBridge(username, password);
+    74→    } catch (e) {
+    75→      errorSnackBar('Login failed: $e');
+    76→      return false;
+    77→    }
+    78→  }
+    79→
+    80→  /// Disconnect from server bridge and clear credentials.
+    81→  Future<void> disconnectServerBridge() async {
+    82→    try {
+    83→      await Get.find<ExtensionManager>().disconnectServerBridge();
+    84→    } catch (_) {}
+    85→    ServerBridgeKeys.username.delete();
+    86→    ServerBridgeKeys.password.delete();
+    87→    successSnackBar('Disconnected from server');
+    88→  }
+    89→
+    90→  Future<bool> _connectServerBridge(String username, String password) async {
+    91→    try {
+    92→      await Get.find<ExtensionManager>().initServerBridge(
+    93→        username: username,
+    94→        password: password,
+    95→      );
+    96→      // Store credentials for auto-reconnect.
+    97→      ServerBridgeKeys.username.set(username);
+    98→      ServerBridgeKeys.password.set(password);
+    99→      successSnackBar('Connected to server');
+   100→      return true;
+   101→    } catch (e) {
+   102→      errorSnackBar('Connection failed: $e');
+   103→      return false;
+   104→    }
+   105→  }
+   106→
+   107→  Future<void> checkForUpdates(
+   108→    BuildContext context, {
+   109→    bool showIfUpToDate = false,
+   110→  }) async {
+   111→    final release = await fetchLatestRelease();
+   112→    if (release == null) {
+   113→      errorSnackBar('Failed to check plugin updates.');
+   114→      return;
+   115→    }
+   116→
+   117→    final currentVersion = installedVersion;
+   118→    if (currentVersion.isEmpty) {
+   119→      if (!context.mounted) return;
+   120→      await showInstallSheet(context, release: release);
+   121→      return;
+   122→    }
+   123→
+   124→    if (isNewerVersion(currentVersion, release.tagName)) {
+   125→      if (!context.mounted) return;
+   126→      await showUpdateSheet(
+   127→        context,
+   128→        release: release,
+   129→        installedVersion: currentVersion,
+   130→      );
+   131→      successSnackBar("Restart the App to apply the update.");
+   132→      return;
+   133→    }
+   134→
+   135→    if (showIfUpToDate) {
+   136→      print('Plugin is already up to date.');
+   137→    }
+   138→  }
+   139→
+   140→  Future<void> showInstallSheet(
+   141→    BuildContext context, {
+   142→    PluginRelease? release,
+   143→  }) async {
+   144→    if (!context.mounted) return;
+   145→
+   146→    await AnymexSheet.custom(
+   147→      _PluginReleaseSheet(
+   148→        manager: this,
+   149→        release: release,
+   150→        installedVersion: installedVersion,
+   151→        mode: _PluginSheetMode.install,
+   152→      ),
+   153→      context,
+   154→      showDragHandle: true,
+   155→    );
+   156→  }
+   157→
+   158→  Future<void> showUpdateSheet(
+   159→    BuildContext context, {
+   160→    required PluginRelease release,
+   161→    required String installedVersion,
+   162→  }) async {
+   163→    if (!context.mounted) return;
+   164→
+   165→    await AnymexSheet.custom(
+   166→      _PluginReleaseSheet(
+   167→        manager: this,
+   168→        release: release,
+   169→        installedVersion: installedVersion,
+   170→        mode: _PluginSheetMode.update,
+   171→      ),
+   172→      context,
+   173→      showDragHandle: true,
+   174→    );
+   175→  }
+   176→
+   177→  Future<PluginRelease?> fetchLatestRelease() async {
+   178→    try {
+   179→      final response = await http.get(
+   180→        Uri.parse(_latestReleaseUrl),
+   181→        headers: const {'Accept': 'application/vnd.github+json'},
+   182→      );
+   183→
+   184→      if (response.statusCode != 200) {
+   185→        Logger.e(
+   186→          'Failed to fetch runtime host release: ${response.statusCode}',
+   187→        );
+   188→        return null;
+   189→      }
+   190→
+   191→      final Map<String, dynamic> json =
+   192→          jsonDecode(response.body) as Map<String, dynamic>;
+   193→      final assets = (json['assets'] as List<dynamic>? ?? [])
+   194→          .whereType<Map<String, dynamic>>()
+   195→          .toList();
+   196→
+   197→      final extension = Platform.isAndroid ? '.apk' : '.jar';
+   198→      final assetJson = assets.firstWhereOrNull(
+   199→        (asset) =>
+   200→            (asset['name'] as String? ?? '').toLowerCase().endsWith(extension),
+   201→      );
+   202→
+   203→      if (assetJson == null) {
+   204→        Logger.e('Runtime host release has no compatible asset.');
+   205→        return null;
+   206→      }
+   207→
+   208→      return PluginRelease(
+   209→        tagName: (json['tag_name'] as String? ?? '').trim(),
+   210→        title: ((json['name'] as String?)?.trim().isNotEmpty ?? false)
+   211→            ? (json['name'] as String).trim()
+   212→            : (json['tag_name'] as String? ?? 'Latest Plugin Release').trim(),
+   213→        body: (json['body'] as String? ?? '').trim(),
+   214→        publishedAt: DateTime.tryParse(json['published_at'] as String? ?? ''),
+   215→        asset: PluginAsset(
+   216→          name: (assetJson['name'] as String? ?? 'anymex_bridge').trim(),
+   217→          downloadUrl:
+   218→              (assetJson['browser_download_url'] as String? ?? '').trim(),
+   219→          sizeBytes: (assetJson['size'] as num?)?.toInt() ?? 0,
+   220→        ),
+   221→      );
+   222→    } catch (error, stackTrace) {
+   223→      Logger.e(
+   224→        'Error fetching runtime host release',
+   225→        error: error,
+   226→        stackTrace: stackTrace,
+   227→      );
+   228→      return null;
+   229→    }
+   230→  }
+   231→
+   232→  Future<List<PluginRelease>> fetchReleases() async {
+   233→    try {
+   234→      final response = await http.get(
+   235→        Uri.parse('https://api.github.com/repos/RyanYuuki/AnymeXExtensionRuntimeBridge/releases'),
+   236→        headers: const {'Accept': 'application/vnd.github+json'},
+   237→      );
+   238→      if (response.statusCode != 200) return [];
+   239→      final List<dynamic> jsonList = jsonDecode(response.body) as List<dynamic>;
+   240→      final List<PluginRelease> releases = [];
+   241→      for (final json in jsonList) {
+   242→        final assets = (json['assets'] as List<dynamic>? ?? [])
+   243→            .whereType<Map<String, dynamic>>()
+   244→            .toList();
+   245→        final extension = Platform.isAndroid ? '.apk' : '.jar';
+   246→        final assetJson = assets.firstWhereOrNull(
+   247→          (asset) => (asset['name'] as String? ?? '').toLowerCase().endsWith(extension),
+   248→        );
+   249→        if (assetJson != null) {
+   250→          releases.add(PluginRelease(
+   251→            tagName: (json['tag_name'] as String? ?? '').trim(),
+   252→            title: ((json['name'] as String?)?.trim().isNotEmpty ?? false)
+   253→                ? (json['name'] as String).trim()
+   254→                : (json['tag_name'] as String? ?? 'Plugin Release').trim(),
+   255→            body: (json['body'] as String? ?? '').trim(),
+   256→            publishedAt: DateTime.tryParse(json['published_at'] as String? ?? ''),
+   257→            asset: PluginAsset(
+   258→              name: (assetJson['name'] as String? ?? 'anymex_bridge').trim(),
+   259→              downloadUrl: (assetJson['browser_download_url'] as String? ?? '').trim(),
+   260→              sizeBytes: (assetJson['size'] as num?)?.toInt() ?? 0,
+   261→            ),
+   262→          ));
+   263→        }
+   264→      }
+   265→      return releases;
+   266→    } catch (_) {
+   267→      return [];
+   268→    }
+   269→  }
+   270→
+   271→  bool isNewerVersion(String installed, String latest) {
+   272→    final installedParts = _normalizeVersion(installed);
+   273→    final latestParts = _normalizeVersion(latest);
+   274→    final maxLength = installedParts.length > latestParts.length
+   275→        ? installedParts.length
+   276→        : latestParts.length;
+   277→
+   278→    for (var index = 0; index < maxLength; index++) {
+   279→      final installedPart =
+   280→          index < installedParts.length ? installedParts[index] : 0;
+   281→      final latestPart = index < latestParts.length ? latestParts[index] : 0;
+   282→
+   283→      if (latestPart > installedPart) return true;
+   284→      if (latestPart < installedPart) return false;
+   285→    }
+   286→
+   287→    return false;
+   288→  }
+   289→
+   290→  List<int> _normalizeVersion(String version) {
+   291→    final cleaned = version.toLowerCase().replaceFirst(RegExp(r'^v'), '');
+   292→    final stablePart = cleaned.split('-').first;
+   293→    return stablePart
+   294→        .split('.')
+   295→        .map((part) => int.tryParse(part) ?? 0)
+   296→        .toList();
+   297→  }
+   298→
+   299→  void persistInstalledRelease(PluginRelease release) {
+   300→    AnymeXRuntimeBridge.setInstalledRelease(release.tagName, release.title);
+   301→  }
+   302→
+   303→  Future<bool> syncLocalApk(String apkPath) async {
+   304→    final isJar = apkPath.toLowerCase().endsWith('.jar');
+   305→    final isApk = apkPath.toLowerCase().endsWith('.apk');
+   306→
+   307→    if (Platform.isAndroid && !isApk) {
+   308→      errorSnackBar('Please select a valid APK file.');
+   309→      return false;
+   310→    }
+   311→    if (!Platform.isAndroid && !isJar) {
+   312→      errorSnackBar('Please select a valid JAR file.');
+   313→      return false;
+   314→    }
+   315→
+   316→    if (!await File(apkPath).exists()) {
+   317→      errorSnackBar('Local file not found at: $apkPath');
+   318→      return false;
+   319→    }
+   320→
+   321→    try {
+   322→      if (Platform.isAndroid) {
+   323→        await AnymeXRuntimeBridge.useLocalApk(apkPath);
+   324→      } else {
+   325→        final paths = RuntimePaths();
+   326→        final destPath = await paths.bridgePath;
+   327→        final destFile = File(destPath);
+   328→        if (await destFile.exists()) {
+   329→          await destFile.delete();
+   330→        }
+   331→        await File(apkPath).copy(destPath);
+   332→        
+   333→        final toolsDir = await paths.toolsDir;
+   334→        final metadataFile = File('${toolsDir.path}/metadata.json');
+   335→        await metadataFile.writeAsString(jsonEncode({
+   336→          'version': 'Local-${DateTime.now().millisecondsSinceEpoch}',
+   337→          'title': 'Local Synced Jar',
+   338→        }));
+   339→        await AnymeXRuntimeBridge.loadMetadata();
+   340→      }
+   341→
+   342→      final bridge = AnymeXRuntimeBridge.controller;
+   343→      if (Platform.isAndroid && bridge.isReady.value) {
+   344→        await Get.find<ExtensionManager>()
+   345→            .onRuntimeBridgeInitialization(force: true);
+   346→        successSnackBar('Plugin synced from local APK.');
+   347→        return true;
+   348→      } else if (!Platform.isAndroid) {
+   349→        successSnackBar('Plugin jar copied. Please restart the app.');
+   350→        return true;
+   351→      }
+   352→
+   353→      errorSnackBar('Sync completed, but the plugin is not ready yet.');
+   354→      return false;
+   355→    } catch (e) {
+   356→      errorSnackBar('Sync failed: $e');
+   357→      return false;
+   358→    }
+   359→  }
+   360→
+   361→  Future<bool> forceSyncLocalApk() async {
+   362→    const localPath = '/storage/emulated/0/AnymeX/anymex_runtime_host.apk';
+   363→    if (!await File(localPath).exists()) {
+   364→      errorSnackBar('Local APK not found at: $localPath');
+   365→      return false;
+   366→    }
+   367→
+   368→    return syncLocalApk(localPath);
+   369→  }
+   370→}
+   371→
+   372→enum _PluginSheetMode { install, update }
+   373→
+   374→class _PluginReleaseSheet extends StatefulWidget {
+   375→  const _PluginReleaseSheet({
+   376→    required this.manager,
+   377→    required this.release,
+   378→    required this.installedVersion,
+   379→    required this.mode,
+   380→  });
+   381→
+   382→  final PluginManager manager;
+   383→  final PluginRelease? release;
+   384→  final String installedVersion;
+   385→  final _PluginSheetMode mode;
+   386→
+   387→  @override
+   388→  State<_PluginReleaseSheet> createState() => _PluginReleaseSheetState();
+   389→}
+   390→
+   391→class _PluginReleaseSheetState extends State<_PluginReleaseSheet>
+   392→    with TickerProviderStateMixin {
+   393→  late final AnimationController _pulseController;
+   394→  late final Animation<double> _pulseAnimation;
+   395→  bool _installFinished = false;
+   396→
+   397→  PluginRelease? _release;
+   398→  bool _isLoadingRelease = false;
+   399→
+   400→  @override
+   401→  void initState() {
+   402→    super.initState();
+   403→    _release = widget.release;
+   404→
+   405→    _pulseController = AnimationController(
+   406→      vsync: this,
+   407→      duration: const Duration(milliseconds: 1400),
+   408→    )..repeat(reverse: true);
+   409→
+   410→    _pulseAnimation = Tween<double>(begin: 0.94, end: 1.02).animate(
+   411→      CurvedAnimation(
+   412→        parent: _pulseController,
+   413→        curve: Curves.easeInOut,
+   414→      ),
+   415→    );
+   416→
+   417→    if (_release == null) {
+   418→      _fetchReleaseDetails();
+   419→    } else {
+   420→      _checkBridgeReady();
+   421→    }
+   422→  }
+   423→
+   424→  void _checkBridgeReady() {
+   425→    final bridge = AnymeXRuntimeBridge.controller;
+   426→    if (bridge.isReady.value && !AnymeXRuntimeBridge.isPluginInstalled) {
+   427→      if (_release != null) {
+   428→        widget.manager.persistInstalledRelease(_release!);
+   429→      }
+   430→      _installFinished = true;
+   431→      WidgetsBinding.instance.addPostFrameCallback((_) {
+   432→        Get.find<ExtensionManager>().onRuntimeBridgeInitialization(force: true);
+   433→      });
+   434→    }
+   435→  }
+   436→
+   437→  Future<void> _fetchReleaseDetails() async {
+   438→    setState(() {
+   439→      _isLoadingRelease = true;
+   440→    });
+   441→    try {
+   442→      final fetched = await widget.manager.fetchLatestRelease();
+   443→      if (mounted) {
+   444→        setState(() {
+   445→          _release = fetched;
+   446→          _isLoadingRelease = false;
+   447→        });
+   448→        if (fetched != null) {
+   449→          _checkBridgeReady();
+   450→        } else {
+   451→          errorSnackBar('Failed to fetch release details.');
+   452→          Navigator.of(context).pop();
+   453→        }
+   454→      }
+   455→    } catch (e) {
+   456→      if (mounted) {
+   457→        setState(() {
+   458→          _isLoadingRelease = false;
+   459→        });
+   460→        errorSnackBar('Error: $e');
+   461→        Navigator.of(context).pop();
+   462→      }
+   463→    }
+   464→  }
+   465→
+   466→  @override
+   467→  void dispose() {
+   468→    _pulseController.dispose();
+   469→    super.dispose();
+   470→  }
+   471→
+   472→  Future<void> _downloadAndInstall() async {
+   473→    if (_release == null) return;
+   474→    final bridge = AnymeXRuntimeBridge.controller;
+   475→    if (bridge.isDownloading.value) return;
+   476→
+   477→    try {
+   478→      await AnymeXRuntimeBridge.setupRuntime(
+   479→        force: widget.mode == _PluginSheetMode.update,
+   480→      );
+   481→
+   482→      if (bridge.isReady.value) {
+   483→        await Get.find<ExtensionManager>()
+   484→            .onRuntimeBridgeInitialization(force: true);
+   485→        widget.manager.persistInstalledRelease(_release!);
+   486→        if (mounted) {
+   487→          setState(() {
+   488→            _installFinished = true;
+   489→          });
+   490→          successSnackBar(
+   491→            widget.mode == _PluginSheetMode.install
+   492→                ? 'Plugin installed successfully.'
+   493→                : 'Plugin updated successfully.',
+   494→          );
+   495→        }
+   496→      }
+   497→    } catch (error) {
+   498→      if (mounted) errorSnackBar('Plugin installation failed: $error');
+   499→    }
+   500→  }
+   501→
+   502→  String _formatBytes(int bytes) {
+   503→    if (bytes <= 0) return 'Unknown';
+   504→    const kb = 1024;
+   505→    const mb = kb * 1024;
+   506→    if (bytes < kb) return '$bytes B';
+   507→    if (bytes < mb) return '${(bytes / kb).toStringAsFixed(1)} KB';
+   508→    return '${(bytes / mb).toStringAsFixed(2)} MB';
+   509→  }
+   510→
+   511→  @override
+   512→  Widget build(BuildContext context) {
+   513→    final colors = context.colors;
+   514→    final theme = Theme.of(context);
+   515→    final bridge = AnymeXRuntimeBridge.controller;
+   516→
+   517→    if (_isLoadingRelease || _release == null) {
+   518→      return Container(
+   519→        height: 180,
+   520→        alignment: Alignment.center,
+   521→        child: Column(
+   522→          mainAxisAlignment: MainAxisAlignment.center,
+   523→          children: [
+   524→            CircularProgressIndicator(
+   525→              color: colors.primary,
+   526→              strokeWidth: 3,
+   527→            ),
+   528→            const SizedBox(height: 16),
+   529→            Text(
+   530→              'Fetching latest release details...',
+   531→              style: theme.textTheme.bodyMedium?.copyWith(
+   532→                color: colors.onSurfaceVariant,
+   533→                fontWeight: FontWeight.w500,
+   534→              ),
+   535→            ),
+   536→          ],
+   537→        ),
+   538→      );
+   539→    }
+   540→
+   541→    return Obx(() {
+   542→      final bool isBusy = bridge.isDownloading.value ||
+   543→          (bridge.status.value != "Idle" &&
+   544→              !bridge.isReady.value &&
+   545→              (bridge.status.value.contains("Extracting") ||
+   546→                  bridge.status.value.contains("Finalizing")));
+   547→      final bool isComplete = _installFinished ||
+   548→          (widget.mode == _PluginSheetMode.install &&
+   549→              bridge.isReady.value &&
+   550→              AnymeXRuntimeBridge.isPluginInstalled);
+   551→
+   552→      return SizedBox(
+   553→        height: context.mediaQuerySize.height * 0.6,
+   554→        child: Column(
+   555→          crossAxisAlignment: CrossAxisAlignment.start,
+   556→          children: [
+   557→            _buildHeader(colors, theme),
+   558→            const SizedBox(height: 14),
+   559→            _buildVersionCard(colors, bridge, isBusy, isComplete),
+   560→            const SizedBox(height: 14),
+   561→            Text(
+   562→              'CHANGELOG',
+   563→              style: TextStyle(
+   564→                fontSize: 11,
+   565→                fontWeight: FontWeight.bold,
+   566→                color: colors.primary,
+   567→                letterSpacing: 1.1,
+   568→              ),
+   569→            ),
+   570→            const SizedBox(height: 6),
+   571→            Expanded(
+   572→              child: Container(
+   573→                width: double.infinity,
+   574→                padding: const EdgeInsets.all(12),
+   575→                decoration: BoxDecoration(
+   576→                  color: colors.surfaceContainerHigh.withOpacity(0.5),
+   577→                  borderRadius: BorderRadius.circular(16),
+   578→                  border: Border.all(
+   579→                    color: colors.outlineVariant.withOpacity(0.3),
+   580→                  ),
+   581→                ),
+   582→                child: SingleChildScrollView(
+   583→                  child: MarkdownBody(
+   584→                    data: _release!.body.isEmpty
+   585→                        ? 'No changelog provided for this release.'
+   586→                        : _release!.body,
+   587→                    selectable: true,
+   588→                  ),
+   589→                ),
+   590→              ),
+   591→            ),
+   592→            const SizedBox(height: 16),
+   593→            _buildFooter(colors, theme, isBusy, isComplete),
+   594→            if (bridge.error.value.isNotEmpty) ...[
+   595→              const SizedBox(height: 10),
+   596→              Text(
+   597→                bridge.error.value,
+   598→                style: theme.textTheme.bodySmall?.copyWith(
+   599→                  color: colors.error,
+   600→                ),
+   601→              ),
+   602→            ],
+   603→          ],
+   604→        ),
+   605→      );
+   606→    });
+   607→  }
+   608→
+   609→  Widget _buildHeader(ColorScheme colors, ThemeData theme) {
+   610→    return Row(
+   611→      crossAxisAlignment: CrossAxisAlignment.center,
+   612→      children: [
+   613→        ScaleTransition(
+   614→          scale: _pulseAnimation,
+   615→          child: Container(
+   616→            width: 48,
+   617→            height: 48,
+   618→            decoration: BoxDecoration(
+   619→              color: colors.primaryContainer.withOpacity(0.6),
+   620→              borderRadius: BorderRadius.circular(14),
+   621→            ),
+   622→            child: widget.installedVersion.isNotEmpty
+   623→                ? IconButton(
+   624→                    onPressed: widget.manager.forceSyncLocalApk,
+   625→                    icon: Icon(Icons.sync_rounded, color: colors.primary),
+   626→                    tooltip: 'Force Sync from SD Card',
+   627→                  )
+   628→                : Icon(
+   629→                    widget.mode == _PluginSheetMode.install
+   630→                        ? Icons.extension_rounded
+   631→                        : Icons.system_update_alt_rounded,
+   632→                    color: colors.primary,
+   633→                  ),
+   634→          ),
+   635→        ),
+   636→        const SizedBox(width: 14),
+   637→        Expanded(
+   638→          child: Column(
+   639→            crossAxisAlignment: CrossAxisAlignment.start,
+   640→            children: [
+   641→              Text(
+   642→                widget.mode == _PluginSheetMode.install
+   643→                    ? 'Plugin Setup'
+   644→                    : 'Plugin Update Available',
+   645→                style: theme.textTheme.titleMedium?.copyWith(
+   646→                  fontWeight: FontWeight.bold,
+   647→                  fontSize: 18,
+   648→                ),
+   649→              ),
+   650→              const SizedBox(height: 2),
+   651→              Text(
+   652→                _release!.title,
+   653→                style: theme.textTheme.bodyMedium?.copyWith(
+   654→                  color: colors.primary,
+   655→                  fontWeight: FontWeight.w600,
+   656→                ),
+   657→              ),
+   658→            ],
+   659→          ),
+   660→        ),
+   661→        const SizedBox(width: 8),
+   662→        _buildChip(colors, _release!.tagName),
+   663→      ],
+   664→    );
+   665→  }
+   666→
+   667→  Widget _buildVersionCard(
+   668→      ColorScheme colors, dynamic bridge, bool isBusy, bool isComplete) {
+   669→    return Container(
+   670→      width: double.infinity,
+   671→      padding: const EdgeInsets.all(14),
+   672→      decoration: BoxDecoration(
+   673→        color: colors.surfaceContainer.withOpacity(0.3),
+   674→        borderRadius: BorderRadius.circular(16),
+   675→        border: Border.all(
+   676→          color: colors.outlineVariant.withOpacity(0.3),
+   677→        ),
+   678→      ),
+   679→      child: Column(
+   680→        crossAxisAlignment: CrossAxisAlignment.start,
+   681→        children: [
+   682→          _buildMetaRow(
+   683→            colors,
+   684→            'Installed version',
+   685→            widget.installedVersion.isEmpty
+   686→                ? 'Not installed'
+   687→                : widget.installedVersion,
+   688→          ),
+   689→          const SizedBox(height: 8),
+   690→          _buildMetaRow(
+   691→            colors,
+   692→            'Latest version',
+   693→            _release!.tagName,
+   694→          ),
+   695→          const SizedBox(height: 8),
+   696→          _buildMetaRow(
+   697→            colors,
+   698→            'File size',
+   699→            Platform.isAndroid
+   700→                ? _formatBytes(_release!.asset.sizeBytes)
+   701→                : (widget.mode == _PluginSheetMode.install
+   702→                    ? '${_formatBytes(_release!.asset.sizeBytes)} + ~60 MB JRE'
+   703→                    : _formatBytes(_release!.asset.sizeBytes)),
+   704→          ),
+   705→          if (isBusy) ...[
+   706→            const SizedBox(height: 10),
+   707→            ClipRRect(
+   708→              borderRadius: BorderRadius.circular(999),
+   709→              child: LinearProgressIndicator(
+   710→                minHeight: 5,
+   711→                value: bridge.downloadProgress.value > 0
+   712→                    ? bridge.downloadProgress.value
+   713→                    : null,
+   714→                backgroundColor: colors.surfaceContainerHighest,
+   715→                valueColor: AlwaysStoppedAnimation<Color>(colors.primary),
+   716→              ),
+   717→            ),
+   718→          ],
+   719→        ],
+   720→      ),
+   721→    );
+   722→  }
+   723→
+   724→  Widget _buildFooter(
+   725→      ColorScheme colors, ThemeData theme, bool isBusy, bool isComplete) {
+   726→    return Row(
+   727→      children: [
+   728→        Expanded(
+   729→          child: OutlinedButton(
+   730→            onPressed: isBusy ? null : () => Navigator.of(context).pop(),
+   731→            style: OutlinedButton.styleFrom(
+   732→              padding: const EdgeInsets.symmetric(vertical: 12),
+   733→              shape: RoundedRectangleBorder(
+   734→                borderRadius: BorderRadius.circular(12),
+   735→              ),
+   736→            ),
+   737→            child: Text(
+   738→              isComplete ? 'Close' : 'Later',
+   739→              style: const TextStyle(fontWeight: FontWeight.w600),
+   740→            ),
+   741→          ),
+   742→        ),
+   743→        const SizedBox(width: 12),
+   744→        Expanded(
+   745→          flex: 2,
+   746→          child: FilledButton.icon(
+   747→            onPressed: isComplete
+   748→                ? () => Navigator.of(context).pop()
+   749→                : (isBusy ? null : _downloadAndInstall),
+   750→            style: FilledButton.styleFrom(
+   751→              padding: const EdgeInsets.symmetric(vertical: 12),
+   752→              shape: RoundedRectangleBorder(
+   753→                borderRadius: BorderRadius.circular(12),
+   754→              ),
+   755→            ),
+   756→            icon: Icon(
+   757→              isComplete ? Icons.check_rounded : Icons.download_rounded,
+   758→              size: 20,
+   759→            ),
+   760→            label: Text(
+   761→              isComplete
+   762→                  ? 'Done'
+   763→                  : (widget.mode == _PluginSheetMode.install
+   764→                      ? 'Download & Install'
+   765→                      : 'Update Plugin'),
+   766→              style: theme.textTheme.labelLarge?.copyWith(
+   767→                color: colors.onPrimary,
+   768→                fontWeight: FontWeight.w600,
+   769→              ),
+   770→            ),
+   771→          ),
+   772→        ),
+   773→      ],
+   774→    );
+   775→  }
+   776→
+   777→  Widget _buildMetaRow(ColorScheme colors, String label, String value) {
+   778→    return Row(
+   779→      crossAxisAlignment: CrossAxisAlignment.start,
+   780→      children: [
+   781→        Expanded(
+   782→          child: Text(
+   783→            label,
+   784→            style: TextStyle(
+   785→              color: colors.onSurfaceVariant,
+   786→              fontSize: 13,
+   787→            ),
+   788→          ),
+   789→        ),
+   790→        const SizedBox(width: 12),
+   791→        Flexible(
+   792→          child: Text(
+   793→            value,
+   794→            textAlign: TextAlign.end,
+   795→            style: TextStyle(
+   796→              color: colors.onSurface,
+   797→              fontWeight: FontWeight.w600,
+   798→            ),
+   799→          ),
+   800→        ),
+   801→      ],
+   802→    );
+   803→  }
+   804→
+   805→  Widget _buildChip(ColorScheme colors, String label) {
+   806→    return Container(
+   807→      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+   808→      decoration: BoxDecoration(
+   809→        color: colors.surfaceContainerHighest.withOpacity(0.7),
+   810→        borderRadius: BorderRadius.circular(999),
+   811→      ),
+   812→      child: Text(
+   813→        label,
+   814→        style: TextStyle(
+   815→          color: colors.onSurfaceVariant,
+   816→          fontSize: 12,
+   817→          fontWeight: FontWeight.w600,
+   818→        ),
+   819→      ),
+   820→    );
+   821→  }
+   822→
+   823→}
+   824→
+   825→class PluginRelease {
+   826→  const PluginRelease({
+   827→    required this.tagName,
+   828→    required this.title,
+   829→    required this.body,
+   830→    required this.asset,
+   831→    this.publishedAt,
+   832→  });
+   833→
+   834→  final String tagName;
+   835→  final String title;
+   836→  final String body;
+   837→  final DateTime? publishedAt;
+   838→  final PluginAsset asset;
+   839→}
+   840→
+   841→class PluginAsset {
+   842→  const PluginAsset({
+   843→    required this.name,
+   844→    required this.downloadUrl,
+   845→    required this.sizeBytes,
+   846→  });
+   847→
+   848→  final String name;
+   849→  final String downloadUrl;
+   850→  final int sizeBytes;
+   851→}
+   852→
