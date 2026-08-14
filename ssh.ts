@@ -1,22 +1,19 @@
 import { createServer as createHttpServer } from 'node:http'
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
-import { authenticateUser, createUser, getUserExtensions, getUserAvailableExtensions, uninstallExtensionForUser, removeRepoForUser, getRepoByUrl, db, getAllUsers, getStats, getUserRepos, addRepoForUser, getExtension, addUserInstalled, removeUserInstalled, getUserInstalledPkgs, countOtherUsersWithPkg } from './db.js'
+import { authenticateUser, createUser, getAllUsers, db, getUserInstalled, addUserInstalled, removeUserInstalled, getUserInstalledPkgs, countOtherUsersWithPkg } from './db.js'
 import { isJarReady, invokeJar, invokeJarOnce, getJarPath, startSidecar } from './jar.js'
-import { addRepo, refreshRepo, getAllRepos } from './repos.js'
-import { installExtension, downloadExtension, convertAllApks, listExtensionFiles } from './extensions.js'
 import { runUpdateNow } from './auto-update.js'
-import { existsSync, mkdirSync, unlinkSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, writeFileSync, unlinkSync } from 'node:fs'
 
 const ADMIN_KEY = process.env.ADMIN_KEY || 'anymex-admin-2024'
 let adminTokens = new Set<string>()
-let _loadedSources: any[] = []
 const EXT_DIR = join(import.meta.dir, 'extensions')
 
 const SSH_PORT = 3022
 const HTTP_PORT = 8082
 
-// ─── HTTP Server (registration + data endpoints) ──────────
+// ─── HTTP Server (registration + admin) ──────────────────
 
 function checkAdmin(req: any): boolean {
   const auth = req.headers['authorization'] || ''
@@ -58,14 +55,12 @@ export function startHttpServer() {
         if (!checkAdmin(req)) { res.writeHead(401); res.end(JSON.stringify({ error: 'unauthorized' })); return }
 
         if (url.pathname === '/admin/stats' && req.method === 'GET') {
-          const stats = getStats()
           const users = getAllUsers()
           const userDetails = users.map(u => ({
             id: u.id, username: u.username,
-            repos: (db.query('SELECT COUNT(*) as c FROM user_repos WHERE user_id = ?').get(u.id) as any)?.c ?? 0,
-            extensions: (db.query('SELECT COUNT(*) as c FROM user_extensions WHERE user_id = ?').get(u.id) as any)?.c ?? 0
+            extensions: (db.query('SELECT COUNT(*) as c FROM user_installed WHERE user_id = ?').get(u.id) as any)?.c ?? 0
           }))
-          res.end(JSON.stringify({ ...stats, userDetails }))
+          res.end(JSON.stringify({ users: userDetails, totalUsers: users.length }))
           return
         }
 
@@ -74,221 +69,40 @@ export function startHttpServer() {
           return
         }
 
-        if (url.pathname === '/admin/repos' && req.method === 'GET') {
-          const repos = db.query(`
-            SELECT r.*, (SELECT COUNT(*) FROM user_repos ur WHERE ur.repo_id = r.id) as userCount,
-            (SELECT COUNT(*) FROM extensions e WHERE e.repo_id = r.id) as extCount
-            FROM repos r ORDER BY r.added DESC
-          `).all() as any[]
-          res.end(JSON.stringify(repos))
-          return
-        }
-
-        if (url.pathname === '/admin/extensions' && req.method === 'GET') {
-          const exts = db.query(`
-            SELECT e.*, (SELECT COUNT(*) FROM user_extensions ue WHERE ue.ext_id = e.id) as installCount
-            FROM extensions e ORDER BY e.name
-          `).all() as any[]
-          res.end(JSON.stringify(exts))
-          return
-        }
-
-        // ── POST: create user ──
         if (url.pathname === '/admin/createUser' && req.method === 'POST') {
           const body = await readBody(req)
           const { username, password } = JSON.parse(body)
-          const result = createUser(username, password)
-          res.end(JSON.stringify(result))
+          res.end(JSON.stringify(createUser(username, password)))
           return
         }
 
-        // ── POST: add repo for user ──
-        if (url.pathname === '/admin/addRepo' && req.method === 'POST') {
-          const body = await readBody(req)
-          const { userId, url: repoUrl, type } = JSON.parse(body)
-          if (!userId || !repoUrl) { res.writeHead(400); res.end(JSON.stringify({ ok: false, error: 'userId and url required' })); return }
-          const result = await addRepo(userId, repoUrl, type)
-          res.end(JSON.stringify(result))
-          return
-        }
-
-        // ── POST: install extension for user ──
-        if (url.pathname === '/admin/installExtension' && req.method === 'POST') {
-          const body = await readBody(req)
-          const { userId, extId } = JSON.parse(body)
-          if (!userId || !extId) { res.writeHead(400); res.end(JSON.stringify({ ok: false, error: 'userId and extId required' })); return }
-          const result = await installExtension(userId, Number(extId))
-          res.end(JSON.stringify(result))
-          return
-        }
-
-        // ── POST: uninstall extension for user ──
-        if (url.pathname === '/admin/uninstallExtension' && req.method === 'POST') {
-          const body = await readBody(req)
-          const { userId, extId } = JSON.parse(body)
-          if (!userId || !extId) { res.writeHead(400); res.end(JSON.stringify({ ok: false, error: 'userId and extId required' })); return }
-          const ok = uninstallExtensionForUser(userId, Number(extId))
-          res.end(JSON.stringify({ ok }))
-          return
-        }
-
-        // ── POST: force update ──
-        if (url.pathname === '/admin/forceUpdate' && req.method === 'POST') {
-          const t0 = Date.now()
-          await runUpdateNow()
-          res.end(JSON.stringify({ ok: true, elapsed: Date.now() - t0 }))
-          return
-        }
-
-        // ── POST: load extensions into JAR and get source list ──
-        if (url.pathname === '/admin/loadExtensions' && req.method === 'POST') {
-          try {
-            // Ensure sidecar is running
-            if (!isJarReady()) {
-              const started = await startSidecar()
-              if (!started.ok) {
-                res.end(JSON.stringify({ ok: false, error: started.error }))
-                return
-              }
-            }
-            const result = await invokeJar('loadExtensions', { folderPath: EXT_DIR }, 120000)
-            if (Array.isArray(result)) {
-              _loadedSources = result.map((s: any) => ({
-                id: s.id,
-                name: s.name,
-                type: s.type || (s.pkg?.includes('manga') ? 'aniyomi-manga' : 'aniyomi-anime'),
-                lang: s.lang || '',
-                pkg: s.pkg || '',
-              }))
-              console.log(`[admin] Loaded ${_loadedSources.length} sources`)
-            } else {
-              _loadedSources = []
-              console.log('[admin] loadExtensions returned non-array:', typeof result)
-            }
-            res.end(JSON.stringify({ ok: true, sources: _loadedSources, total: _loadedSources.length }))
-          } catch (e: any) {
-            res.end(JSON.stringify({ ok: false, error: e.message }))
-          }
-          return
-        }
-
-        // ── GET: cached sources ──
-        if (url.pathname === '/admin/sources' && req.method === 'GET') {
-          res.end(JSON.stringify({ sources: _loadedSources, total: _loadedSources.length }))
-          return
-        }
-
-        // ── GET: downloaded extensions (have file_path) ──
-        if (url.pathname === '/admin/downloadedExtensions' && req.method === 'GET') {
-          const exts = db.query(`SELECT id, name, type, version, pkg, file_path FROM extensions WHERE file_path IS NOT NULL AND file_path != '' ORDER BY name`).all() as any[]
-          res.end(JSON.stringify(exts))
-          return
-        }
-
-        // ── GET: list actual files in extensions directory ──
-        if (url.pathname === '/admin/extFiles' && req.method === 'GET') {
-          res.end(JSON.stringify(listExtensionFiles()))
-          return
-        }
-
-        // ── POST: convert all APKs in extensions dir to JAR ──
-        if (url.pathname === '/admin/convertAllApks' && req.method === 'POST') {
-          const t0 = Date.now()
-          const result = await convertAllApks()
-          res.end(JSON.stringify({ ok: true, ...result, elapsed: Date.now() - t0 }))
-          return
-        }
-
-        // ── POST: download all extensions that don't have files yet ──
-        if (url.pathname === '/admin/downloadAll' && req.method === 'POST') {
-          const t0 = Date.now()
-          const exts = db.query(`SELECT id, name FROM extensions WHERE file_path IS NULL OR file_path = ''`).all() as any[]
-          let downloaded = 0, failed = 0
-          const errors: string[] = []
-          for (const ext of exts) {
-            const r = await downloadExtension(ext.id)
-            if (r.ok) downloaded++
-            else { failed++; errors.push(`${ext.name}: ${r.error}`) }
-          }
-          res.end(JSON.stringify({ ok: true, total: exts.length, downloaded, failed, errors, elapsed: Date.now() - t0 }))
-          return
-        }
-
-        // ── POST: invoke JAR method (test) ──
-        if (url.pathname === '/admin/invoke' && req.method === 'POST') {
-          const body = await readBody(req)
-          const { method, args, timeout } = JSON.parse(body)
-          if (!method) { res.writeHead(400); res.end(JSON.stringify({ error: 'method required' })); return }
-          try {
-            const t0 = Date.now()
-            let result: any
-            if (isJarReady()) {
-              result = await invokeJar(method, args || {}, timeout || 30000)
-            } else {
-              result = await invokeJarOnce(method, args || {}, timeout || 30000)
-            }
-            res.end(JSON.stringify({ ok: true, data: result, elapsed: Date.now() - t0 }))
-          } catch (e: any) {
-            res.end(JSON.stringify({ ok: false, error: e.message }))
-          }
-          return
-        }
-
-        // ── GET: user detail (repos + extensions) ──
+        // ── GET: user detail ──
         const userDetail = url.pathname.match(/^\/admin\/user\/([\w-]+)$/)
         if (userDetail && req.method === 'GET') {
           const uid = userDetail[1]
           const user = db.query('SELECT id, username, created FROM users WHERE id = ?').get(uid) as any
           if (!user) { res.writeHead(404); res.end(JSON.stringify({ error: 'user not found' })); return }
-          const repos = getUserRepos(uid)
-          const extensions = getUserExtensions(uid)
-          const available = getUserAvailableExtensions(uid)
-          res.end(JSON.stringify({ ...user, repos, installedExtensions: extensions, availableExtensions: available }))
+          const installed = getUserInstalled(uid)
+          res.end(JSON.stringify({ ...user, installedExtensions: installed }))
           return
         }
 
-        // ── GET: user repos ──
-        const userRepos = url.pathname.match(/^\/admin\/user\/([\w-]+)\/repos$/)
-        if (userRepos && req.method === 'GET') {
-          res.end(JSON.stringify(getUserRepos(userRepos[1])))
+        // ── DELETE user ──
+        const delUser = url.pathname.match(/^\/admin\/user\/([\w-]+)$/)
+        if (delUser && req.method === 'DELETE') {
+          const uid = delUser[1]
+          db.run('DELETE FROM user_installed WHERE user_id = ?', [uid])
+          db.run('DELETE FROM users WHERE id = ?', [uid])
+          console.log(`[admin] Deleted user ${uid}`)
+          res.end(JSON.stringify({ ok: true }))
           return
         }
 
-        // ── GET: user extensions ──
-        const userExts = url.pathname.match(/^\/admin\/user\/([\w-]+)\/extensions$/)
-        if (userExts && req.method === 'GET') {
-          res.end(JSON.stringify(getUserExtensions(userExts[1])))
-          return
-        }
-
-        // ── GET: user available extensions ──
-        const userAvail = url.pathname.match(/^\/admin\/user\/([\w-]+)\/available$/)
-        if (userAvail && req.method === 'GET') {
-          const type = url.searchParams.get('type') || undefined
-          const query = url.searchParams.get('query') || undefined
-          res.end(JSON.stringify(getUserAvailableExtensions(userAvail[1], type, query)))
-          return
-        }
-
-        // ── POST: download/refresh a single extension ──
-        if (url.pathname === '/admin/downloadExtension' && req.method === 'POST') {
-          const body = await readBody(req)
-          const { extId, force } = JSON.parse(body)
-          if (!extId) { res.writeHead(400); res.end(JSON.stringify({ ok: false, error: 'extId required' })); return }
-          const result = await downloadExtension(Number(extId), force)
-          res.end(JSON.stringify(result))
-          return
-        }
-
-        // ── POST: refresh single repo ──
-        if (url.pathname === '/admin/refreshRepo' && req.method === 'POST') {
-          const body = await readBody(req)
-          const { repoId } = JSON.parse(body)
-          if (!repoId) { res.writeHead(400); res.end(JSON.stringify({ ok: false, error: 'repoId required' })); return }
-          const repo = db.query('SELECT id, url, type FROM repos WHERE id = ?').get(Number(repoId)) as any
-          if (!repo) { res.writeHead(404); res.end(JSON.stringify({ ok: false, error: 'repo not found' })); return }
-          const result = await refreshRepo(repo.url, repo.type, repo.id)
-          res.end(JSON.stringify(result))
+        // ── POST: force JAR update ──
+        if (url.pathname === '/admin/forceUpdate' && req.method === 'POST') {
+          const t0 = Date.now()
+          await runUpdateNow()
+          res.end(JSON.stringify({ ok: true, elapsed: Date.now() - t0 }))
           return
         }
 
@@ -306,43 +120,21 @@ export function startHttpServer() {
           return
         }
 
-        // ── DELETE user ──
-        const delUser = url.pathname.match(/^\/admin\/user\/([\w-]+)$/)
-        if (delUser && req.method === 'DELETE') {
-          const uid = delUser[1]
-          db.run('DELETE FROM user_extensions WHERE user_id = ?', [uid])
-          db.run('DELETE FROM user_repos WHERE user_id = ?', [uid])
-          db.run('DELETE FROM users WHERE id = ?', [uid])
-          console.log(`[admin] Deleted user ${uid}`)
-          res.end(JSON.stringify({ ok: true }))
-          return
-        }
-
-        // ── DELETE repo ──
-        const delRepo = url.pathname.match(/^\/admin\/repo\/(\d+)$/)
-        if (delRepo && req.method === 'DELETE') {
-          const rid = Number(delRepo[1])
-          db.run('DELETE FROM extensions WHERE repo_id = ?', [rid])
-          db.run('DELETE FROM user_repos WHERE repo_id = ?', [rid])
-          db.run('DELETE FROM repos WHERE id = ?', [rid])
-          console.log(`[admin] Deleted repo ${rid}`)
-          res.end(JSON.stringify({ ok: true }))
-          return
-        }
-
-        // ── DELETE extension ──
-        const delExt = url.pathname.match(/^\/admin\/extension\/(\d+)$/)
-        if (delExt && req.method === 'DELETE') {
-          const eid = Number(delExt[1])
-          db.run('DELETE FROM user_extensions WHERE ext_id = ?', [eid])
-          db.run('DELETE FROM extensions WHERE id = ?', [eid])
-          console.log(`[admin] Deleted extension ${eid}`)
-          res.end(JSON.stringify({ ok: true }))
-          return
-        }
-
         res.writeHead(404)
         res.end(JSON.stringify({ error: 'not found' }))
+        return
+      }
+
+      // ── Public: register ──
+      if (url.pathname === '/register' && req.method === 'POST') {
+        const body = await readBody(req)
+        const { username, password } = JSON.parse(body)
+        if (!username || !password || username.length < 3 || password.length < 4) {
+          res.writeHead(400)
+          res.end(JSON.stringify({ ok: false, error: 'username min 3 chars, password min 4 chars' }))
+          return
+        }
+        res.end(JSON.stringify(createUser(username, password)))
         return
       }
 
@@ -376,40 +168,8 @@ export function startHttpServer() {
 
       // ── Public: health ──
       if (url.pathname === '/health') {
-        const stats = db.query(`SELECT (SELECT COUNT(*) FROM users) as users, (SELECT COUNT(*) FROM extensions) as extensions, (SELECT COUNT(*) FROM user_extensions) as installs`).get() as any
+        const stats = db.query(`SELECT (SELECT COUNT(*) FROM users) as users, (SELECT COUNT(*) FROM user_installed) as installs`).get() as any
         res.end(JSON.stringify({ ...stats, jarReady: isJarReady() }))
-        return
-      }
-
-      if (url.pathname === '/register' && req.method === 'POST') {
-        const body = await readBody(req)
-        const { username, password } = JSON.parse(body)
-        if (!username || !password || username.length < 3 || password.length < 4) {
-          res.writeHead(400)
-          res.end(JSON.stringify({ ok: false, error: 'username min 3 chars, password min 4 chars' }))
-          return
-        }
-        res.end(JSON.stringify(createUser(username, password)))
-        return
-      }
-
-      if (url.pathname === '/addRepo' && req.method === 'POST') {
-        const body = await readBody(req)
-        const { username, password, url: repoUrl, type } = JSON.parse(body)
-        const user = authenticateUser(username, password)
-        if (!user) { res.writeHead(401); res.end(JSON.stringify({ ok: false, error: 'invalid credentials' })); return }
-        if (!repoUrl) { res.writeHead(400); res.end(JSON.stringify({ ok: false, error: 'url required' })); return }
-        res.end(JSON.stringify(await addRepo(user.id, repoUrl, type)))
-        return
-      }
-
-      if (url.pathname === '/installExtension' && req.method === 'POST') {
-        const body = await readBody(req)
-        const { username, password, extId } = JSON.parse(body)
-        const user = authenticateUser(username, password)
-        if (!user) { res.writeHead(401); res.end(JSON.stringify({ ok: false, error: 'invalid credentials' })); return }
-        if (!extId) { res.writeHead(400); res.end(JSON.stringify({ ok: false, error: 'extId required' })); return }
-        res.end(JSON.stringify(await installExtension(user.id, Number(extId))))
         return
       }
 
@@ -433,14 +193,10 @@ function readBody(req: any): Promise<string> {
   })
 }
 
-// ─── SSH Server (direct, runs in Bun) ──────────────────
-// ssh2 v1.17.0 changed exec event from (accept, info) to (accept, reject, info).
-// The old 2-arg signature made `info` point to the `reject` function instead of
-// the actual info object — causing info.command to always be undefined/empty.
+// ─── SSH Server ──────────────────────────────────────────────
 
 import { Server } from 'ssh2'
 import { generateKeyPairSync } from 'node:crypto'
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 
 const DATA_DIR = join(import.meta.dir, 'data')
 const HOST_KEY_PATH = join(DATA_DIR, 'host_key')
@@ -469,7 +225,6 @@ export function startSshServer() {
     sshServer.on('connection', (client) => {
       let sshUser: string | null = null
       let sshUserId: string | null = null
-      let sshPass: string | null = null
 
       client.on('authentication', (ctx) => {
         if (ctx.method === 'password') {
@@ -477,8 +232,7 @@ export function startSshServer() {
           if (user) {
             sshUser = user.username
             sshUserId = user.id
-            sshPass = ctx.password
-            console.log(`[ssh] User '${sshUser}' authenticated`)
+            client.on('ready', () => console.log(`[ssh] User '${sshUser}' connected`))
             ctx.accept()
           } else {
             ctx.reject()
@@ -489,16 +243,12 @@ export function startSshServer() {
       })
 
       client.on('ready', () => {
-        console.log(`[ssh] User '${sshUser}' connected`)
-
         client.on('session', (accept) => {
           const session = accept()
 
           // ssh2 v1.17.0: (acceptExec, rejectExec, info)
-          // ssh2 <1.17:  (acceptExec, info)
           session.on('exec', (...args: any[]) => {
             const acceptExec = args[0]
-            // In v1.17+, info is args[2]. In older versions, info is args[1].
             const execInfo = args.length === 3 ? args[2] : args[1]
             const raw = execInfo?.command?.trim() || ''
 
@@ -534,19 +284,14 @@ export function startSshServer() {
       client.on('close', () => console.log(`[ssh] User '${sshUser}' disconnected`))
     })
 
-    sshServer.listen(SSH_PORT, '0.0.0.0', () => {
-      console.log(`[ssh] Listening on port ${SSH_PORT}`)
-    })
+    sshServer.listen(SSH_PORT, '0.0.0.0', () => console.log(`[ssh] Listening on port ${SSH_PORT}`))
   } catch (e: any) {
     console.error(`[ssh] Failed to start: ${e.message}`)
   }
 }
 
 export function stopSshServer() {
-  if (sshServer) {
-    sshServer.close()
-    sshServer = null
-  }
+  if (sshServer) { sshServer.close(); sshServer = null }
 }
 
 // ─── Method Router ─────────────────────────────────────────
@@ -555,8 +300,6 @@ async function handleMethod(userId: string, username: string, msg: any): Promise
   const { method, args } = msg
 
   switch (method) {
-    // ── v2: Client-side repo management, server handles install/load only ──
-
     case 'installExtension': {
       const { url, pkgName, type, name, iconUrl, version } = args || {}
       if (!url || !pkgName) throw new Error('url and pkgName required')
@@ -569,7 +312,6 @@ async function handleMethod(userId: string, username: string, msg: any): Promise
       return uninstallForUser(userId, pkgName, type)
     }
 
-    // Intercept load* to filter to user's installed extensions only
     case 'loadExtensions': {
       const folderPath = join(EXT_DIR, 'Aniyomi')
       const all = await invokeJar('loadExtensions', { folderPath }, 30000)
@@ -583,12 +325,10 @@ async function handleMethod(userId: string, username: string, msg: any): Promise
     }
 
     case 'kotatsuLoadExtensions': {
-      // Kotatsu: don't filter — install/uninstall is client-side toggle
       const folderPath = join(EXT_DIR, 'Kotatsu')
       return invokeJar('kotatsuLoadExtensions', { folderPath }, 30000)
     }
 
-    // Ensure Kotatsu plugin.jar exists on server
     case 'ensureKotatsuJar': {
       const { url } = args || {}
       if (!url) throw new Error('url required')
@@ -607,37 +347,10 @@ async function handleMethod(userId: string, username: string, msg: any): Promise
     case 'health':
       return { status: 'ok', user: username, jarReady: isJarReady() }
 
-    // ── Legacy admin methods (kept for admin panel) ──
-    case 'addRepo': {
-      const { url, type } = args || {}
-      if (!url) throw new Error('url required')
-      return addRepo(userId, url, type)
-    }
-    case 'listExtensions':
-      return getUserExtensions(userId)
-    case 'getExtensions': {
-      const { type, query } = args || {}
-      return getUserAvailableExtensions(userId, type, query)
-    }
-    case 'getRepos':
-      return db.query(`SELECT r.id, r.url, r.type, r.name, r.last_fetched FROM repos r JOIN user_repos ur ON r.id = ur.repo_id WHERE ur.user_id = ?`).all(userId)
-    case 'removeRepo': {
-      const { url } = args || {}
-      if (!url) throw new Error('url required')
-      const repo = getRepoByUrl(url)
-      if (!repo) throw new Error('repo not found')
-      const ok = removeRepoForUser(userId, repo.id)
-      return { ok }
-    }
-    case 'downloadExtension': {
-      const { extId } = args || {}
-      if (!extId) throw new Error('extId required')
-      return downloadExtension(Number(extId))
-    }
     case 'forceUpdate': {
-      console.log(`[ssh] User '${username}' triggered force update`)
+      console.log(`[ssh] User '${username}' triggered JAR update`)
       await runUpdateNow()
-      return { ok: true, message: 'Update cycle complete' }
+      return { ok: true }
     }
 
     // ── Default: forward to JAR sidecar (source methods) ──

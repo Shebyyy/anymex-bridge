@@ -1,78 +1,95 @@
-import { getAllRepos, refreshRepo } from './repos.js'
-import { updateExtensions } from './extensions.js'
+import { checkOrDownloadJar, isJarReady, stopSidecar, startSidecar } from './jar.js'
+import { existsSync, unlinkSync, statSync } from 'node:fs'
+import { join } from 'node:path'
 
 // Configurable interval (default: 6 hours)
 const DEFAULT_INTERVAL_MS = 6 * 60 * 60 * 1000
 let _timer: ReturnType<typeof setInterval> | null = null
 let _running = false
 
+const JAR_PATH = join(import.meta.dir, 'jar-cache', 'anymex_desktop_runtime.jar')
+const JAR_URL = 'https://github.com/RyanYuuki/AnymeXExtensionRuntimeBridge/releases/latest/download/anymex_desktop_runtime.jar'
+
 export function startAutoUpdate(intervalMs = DEFAULT_INTERVAL_MS) {
-  if (_timer) return // already running
+  if (_timer) return
 
-  console.log(`[auto-update] Enabled — checking every ${intervalMs / 3600000}h`)
+  console.log(`[auto-update] JAR auto-update enabled — checking every ${intervalMs / 3600000}h`)
 
-  // First run after 30s (let server stabilize)
-  setTimeout(() => runUpdateCycle(), 30_000)
+  // First run after 2 min (let server stabilize)
+  setTimeout(() => updateJar(), 120_000)
 
-  // Then on interval
-  _timer = setInterval(() => runUpdateCycle(), intervalMs)
+  _timer = setInterval(() => updateJar(), intervalMs)
 }
 
 export function stopAutoUpdate() {
   if (_timer) { clearInterval(_timer); _timer = null }
 }
 
-async function runUpdateCycle() {
+async function updateJar() {
   if (_running) {
     console.log('[auto-update] Already running, skipping')
     return
   }
   _running = true
 
-  const startTime = Date.now()
-  let totalUpdated = 0
-  let totalFailed = 0
-  const allChangedIds: number[] = []
-
   try {
-    const repos = getAllRepos()
-    console.log(`[auto-update] Cycle start — ${repos.length} repos to check`)
+    console.log('[auto-update] Checking for JAR update...')
 
-    for (const repo of repos) {
-      try {
-        const result = await refreshRepo(repo.url, repo.type, repo.id)
-        if (result.ok && result.updated?.length) {
-          allChangedIds.push(...result.updated)
-        }
-      } catch (e: any) {
-        console.error(`[auto-update] Repo error ${repo.url}: ${e.message}`)
+    // Check current file size
+    const currentSize = existsSync(JAR_PATH) ? statSync(JAR_PATH).size : 0
+
+    // Fetch latest release info (just headers to get size without downloading)
+    try {
+      const headRes = await fetch(JAR_URL, { method: 'HEAD', redirect: 'follow' })
+      if (!headRes.ok) {
+        console.log(`[auto-update] Failed to check: HTTP ${headRes.status}`)
+        return
       }
 
-      // Small delay between repos to not hammer them
-      await sleep(1000)
+      const contentLength = parseInt(headRes.headers.get('content-length') || '0', 10)
+      if (contentLength > 0 && contentLength === currentSize) {
+        console.log(`[auto-update] JAR already up to date (${(currentSize / 1024 / 1024).toFixed(1)}MB)`)
+        return
+      }
+
+      console.log(`[auto-update] New JAR available (${contentLength} bytes vs current ${currentSize})`)
+    } catch (e: any) {
+      console.log(`[auto-update] Size check failed, downloading anyway: ${e.message}`)
     }
 
-    // Batch re-download all changed extensions
-    if (allChangedIds.length > 0) {
-      console.log(`[auto-update] ${allChangedIds.length} extensions have new versions, re-downloading...`)
-      const result = await updateExtensions(allChangedIds)
-      totalUpdated = result.updated
-      totalFailed = result.failed
+    // Stop sidecar, download new JAR, restart
+    const wasReady = isJarReady()
+    if (wasReady) {
+      console.log('[auto-update] Stopping sidecar for update...')
+      stopSidecar()
+      // Wait for process to fully stop
+      await new Promise(r => setTimeout(r, 3000))
     }
 
-    const elapsed = ((Date.now() - startTime) / 1000).toFixed(1)
-    console.log(`[auto-update] Cycle done in ${elapsed}s — ${repos.length} repos checked, ${totalUpdated} extensions updated, ${totalFailed} failed`)
+    const result = await checkOrDownloadJar()
+    if (!result.ok) {
+      console.log(`[auto-update] Download failed: ${result.error}`)
+      return
+    }
 
+    console.log(`[auto-update] JAR updated successfully`)
+
+    // Restart sidecar if it was running before
+    if (wasReady) {
+      console.log('[auto-update] Restarting sidecar...')
+      const started = await startSidecar()
+      if (started.ok) {
+        console.log('[auto-update] Sidecar restarted with new JAR')
+      } else {
+        console.error(`[auto-update] Failed to restart sidecar: ${started.error}`)
+      }
+    }
   } catch (e: any) {
-    console.error(`[auto-update] Cycle error: ${e.message}`)
+    console.error(`[auto-update] Error: ${e.message}`)
   }
 
   _running = false
 }
 
-function sleep(ms: number) {
-  return new Promise(r => setTimeout(r, ms))
-}
-
-// Export for manual trigger (e.g. via SSH method)
-export { runUpdateCycle as runUpdateNow }
+// Export for manual trigger
+export { updateJar as runUpdateNow }
