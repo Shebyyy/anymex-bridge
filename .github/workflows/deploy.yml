@@ -53,6 +53,7 @@ jobs:
             sleep 2
 
             # Start
+            mkdir -p /root/anymex-bridge/data
             setsid /root/.bun/bin/bun run /root/anymex-bridge/index.ts > /root/anymex-bridge/data/bridge.log 2>&1 &
             echo $! > /root/anymex-bridge/data/bridge.pid
             sleep 5
