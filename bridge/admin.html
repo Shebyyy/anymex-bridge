@@ -6,14 +6,15 @@
 <title>Bridge Admin</title>
 <style>
 * { margin: 0; padding: 0; box-sizing: border-box; }
-body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: #0a0a0a; color: #e4e4e7; min-height: 100vh; }
+body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: #09090b; color: #e4e4e7; min-height: 100vh; }
 
 /* Login */
 #loginScreen { display: flex; align-items: center; justify-content: center; min-height: 100vh; }
 .login-box { background: #18181b; border: 1px solid #27272a; border-radius: 12px; padding: 40px; width: 340px; }
 .login-box h1 { font-size: 20px; margin-bottom: 8px; }
+.login-box h1 span { color: #f97316; }
 .login-box p { color: #71717a; font-size: 13px; margin-bottom: 24px; }
-.login-box input { width: 100%; padding: 10px 12px; background: #0a0a0a; border: 1px solid #27272a; border-radius: 8px; color: #e4e4e7; font-size: 14px; outline: none; margin-bottom: 12px; }
+.login-box input { width: 100%; padding: 10px 12px; background: #09090b; border: 1px solid #27272a; border-radius: 8px; color: #e4e4e7; font-size: 14px; outline: none; margin-bottom: 12px; }
 .login-box input:focus { border-color: #f97316; }
 .login-box button { width: 100%; padding: 10px; background: #f97316; color: #fff; border: none; border-radius: 8px; font-size: 14px; font-weight: 600; cursor: pointer; }
 .login-box button:hover { background: #ea580c; }
@@ -25,34 +26,36 @@ header { background: #18181b; border-bottom: 1px solid #27272a; padding: 0 24px;
 header h1 { font-size: 16px; font-weight: 600; }
 header h1 span { color: #f97316; }
 .header-right { display: flex; align-items: center; gap: 12px; }
-.header-right span { color: #71717a; font-size: 13px; }
+.header-right .status { font-size: 12px; padding: 3px 8px; border-radius: 4px; }
+.header-right .status.ok { background: #22c55e20; color: #22c55e; }
+.header-right .status.off { background: #ef444420; color: #ef4444; }
 .btn-logout { padding: 6px 12px; background: transparent; border: 1px solid #27272a; border-radius: 6px; color: #a1a1aa; font-size: 12px; cursor: pointer; }
 .btn-logout:hover { border-color: #ef4444; color: #ef4444; }
 
 /* Tabs */
-nav { padding: 16px 24px 0; display: flex; gap: 4px; }
-.tab { padding: 8px 16px; border: none; background: transparent; color: #71717a; font-size: 13px; cursor: pointer; border-bottom: 2px solid transparent; font-weight: 500; }
+nav { padding: 16px 24px 0; display: flex; gap: 2px; overflow-x: auto; }
+.tab { padding: 8px 16px; border: none; background: transparent; color: #71717a; font-size: 13px; cursor: pointer; border-bottom: 2px solid transparent; font-weight: 500; white-space: nowrap; }
 .tab:hover { color: #a1a1aa; }
 .tab.active { color: #f97316; border-bottom-color: #f97316; }
 
 /* Stats */
-.stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 12px; padding: 20px 24px; }
-.stat-card { background: #18181b; border: 1px solid #27272a; border-radius: 10px; padding: 20px; }
-.stat-card .label { font-size: 12px; color: #71717a; text-transform: uppercase; letter-spacing: 0.5px; }
-.stat-card .value { font-size: 28px; font-weight: 700; margin-top: 4px; }
-.stat-card .value.orange { color: #f97316; }
+.stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 12px; padding: 20px 24px; }
+.stat-card { background: #18181b; border: 1px solid #27272a; border-radius: 10px; padding: 16px 20px; }
+.stat-card .label { font-size: 11px; color: #71717a; text-transform: uppercase; letter-spacing: 0.5px; }
+.stat-card .value { font-size: 26px; font-weight: 700; margin-top: 2px; color: #f97316; }
 
 /* Table */
 .content { padding: 0 24px 24px; }
 .table-wrap { background: #18181b; border: 1px solid #27272a; border-radius: 10px; overflow: hidden; }
-.search-bar { padding: 12px 16px; border-bottom: 1px solid #27272a; }
-.search-bar input { width: 100%; max-width: 320px; padding: 7px 12px; background: #0a0a0a; border: 1px solid #27272a; border-radius: 6px; color: #e4e4e7; font-size: 13px; outline: none; }
-.search-bar input:focus { border-color: #f97316; }
+.toolbar { padding: 12px 16px; border-bottom: 1px solid #27272a; display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.toolbar input, .toolbar select { padding: 7px 12px; background: #09090b; border: 1px solid #27272a; border-radius: 6px; color: #e4e4e7; font-size: 13px; outline: none; }
+.toolbar input { flex: 1; min-width: 140px; max-width: 280px; }
+.toolbar input:focus, .toolbar select:focus { border-color: #f97316; }
 table { width: 100%; border-collapse: collapse; font-size: 13px; }
-thead th { text-align: left; padding: 10px 16px; color: #71717a; font-weight: 500; font-size: 11px; text-transform: uppercase; letter-spacing: 0.5px; border-bottom: 1px solid #27272a; }
+thead th { text-align: left; padding: 10px 14px; color: #71717a; font-weight: 500; font-size: 11px; text-transform: uppercase; letter-spacing: 0.5px; border-bottom: 1px solid #27272a; }
 tbody tr { border-bottom: 1px solid #1c1c1f; transition: background 0.15s; }
 tbody tr:hover { background: #1c1c1f; }
-tbody td { padding: 10px 16px; color: #a1a1aa; }
+tbody td { padding: 9px 14px; color: #a1a1aa; vertical-align: middle; }
 tbody td:first-child { color: #e4e4e7; font-weight: 500; }
 .badge { display: inline-block; padding: 2px 8px; border-radius: 4px; font-size: 11px; font-weight: 500; }
 .badge.anime { background: #f9731620; color: #f97316; }
@@ -60,30 +63,75 @@ tbody td:first-child { color: #e4e4e7; font-weight: 500; }
 .badge.cloudstream { background: #a855f720; color: #a855f7; }
 .badge.kotatsu { background: #06b6d420; color: #06b6d4; }
 .badge.nsfw { background: #ef444420; color: #ef4444; margin-left: 4px; }
-.btn-sm { padding: 4px 10px; border-radius: 6px; font-size: 11px; font-weight: 500; cursor: pointer; border: none; }
+.btn-sm { padding: 4px 10px; border-radius: 6px; font-size: 11px; font-weight: 500; cursor: pointer; border: none; transition: background 0.15s; }
+.btn-primary { background: #f9731620; color: #f97316; }
+.btn-primary:hover { background: #f9731630; }
+.btn-success { background: #22c55e20; color: #22c55e; }
+.btn-success:hover { background: #22c55e30; }
 .btn-danger { background: #ef444420; color: #ef4444; }
 .btn-danger:hover { background: #ef444440; }
 .btn-ghost { background: #27272a; color: #a1a1aa; }
-.btn-ghost:hover { background: #3f3f46; }
+.btn-ghost:hover { background: #3f3f46; color: #e4e4e7; }
+.btn-warning { background: #eab30820; color: #eab308; }
+.btn-warning:hover { background: #eab30830; }
 
 /* Tab panels */
 .panel { display: none; }
 .panel.active { display: block; }
-
-/* Empty state */
 .empty { text-align: center; padding: 48px; color: #52525b; }
 
+/* Modal */
+.modal-overlay { display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.6); z-index: 50; align-items: center; justify-content: center; }
+.modal-overlay.open { display: flex; }
+.modal { background: #18181b; border: 1px solid #27272a; border-radius: 12px; padding: 24px; width: 90%; max-width: 440px; }
+.modal h2 { font-size: 16px; margin-bottom: 16px; }
+.modal label { display: block; font-size: 12px; color: #71717a; margin-bottom: 4px; margin-top: 12px; }
+.modal label:first-of-type { margin-top: 0; }
+.modal input, .modal select, .modal textarea { width: 100%; padding: 8px 12px; background: #09090b; border: 1px solid #27272a; border-radius: 6px; color: #e4e4e7; font-size: 13px; outline: none; }
+.modal input:focus, .modal textarea:focus { border-color: #f97316; }
+.modal textarea { font-family: monospace; min-height: 100px; resize: vertical; }
+.modal-actions { display: flex; gap: 8px; margin-top: 20px; justify-content: flex-end; }
+.modal-actions button { padding: 8px 16px; border-radius: 6px; font-size: 13px; cursor: pointer; border: none; font-weight: 500; }
+.modal-actions .btn-cancel { background: #27272a; color: #a1a1aa; }
+.modal-actions .btn-ok { background: #f97316; color: #fff; }
+
+/* Terminal / JAR executor */
+.terminal { background: #09090b; border: 1px solid #27272a; border-radius: 10px; overflow: hidden; }
+.terminal-header { padding: 10px 16px; border-bottom: 1px solid #27272a; display: flex; gap: 8px; align-items: center; }
+.terminal-header input { flex: 1; padding: 7px 12px; background: #18181b; border: 1px solid #27272a; border-radius: 6px; color: #e4e4e7; font-family: monospace; font-size: 13px; outline: none; }
+.terminal-header input:focus { border-color: #f97316; }
+.terminal-header select { padding: 7px 10px; background: #18181b; border: 1px solid #27272a; border-radius: 6px; color: #e4e4e7; font-size: 13px; outline: none; }
+.terminal-header label { font-size: 12px; color: #71717a; }
+.terminal-output { padding: 16px; font-family: 'SF Mono', 'Fira Code', monospace; font-size: 12px; line-height: 1.6; max-height: 500px; overflow-y: auto; min-height: 60px; }
+.terminal-output .line { white-space: pre-wrap; word-break: break-all; }
+.terminal-output .line.ok { color: #22c55e; }
+.terminal-output .line.err { color: #ef4444; }
+.terminal-output .line.info { color: #71717a; }
+.terminal-output .line.result { color: #e4e4e7; }
+
+/* User detail */
+.detail-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-bottom: 16px; }
+.detail-section { background: #18181b; border: 1px solid #27272a; border-radius: 10px; overflow: hidden; }
+.detail-section h3 { padding: 12px 16px; font-size: 13px; color: #71717a; border-bottom: 1px solid #27272a; }
+
 /* Toast */
-.toast { position: fixed; bottom: 24px; right: 24px; background: #18181b; border: 1px solid #27272a; border-radius: 8px; padding: 12px 20px; font-size: 13px; color: #e4e4e7; transform: translateY(80px); opacity: 0; transition: all 0.3s; z-index: 99; }
+.toast { position: fixed; bottom: 24px; right: 24px; background: #18181b; border: 1px solid #27272a; border-radius: 8px; padding: 12px 20px; font-size: 13px; color: #e4e4e7; transform: translateY(80px); opacity: 0; transition: all 0.3s; z-index: 99; max-width: 400px; }
 .toast.show { transform: translateY(0); opacity: 1; }
 .toast.error { border-color: #ef4444; color: #ef4444; }
 .toast.success { border-color: #22c55e; color: #22c55e; }
 
+/* Loading */
+.loading { display: inline-block; width: 14px; height: 14px; border: 2px solid #27272a; border-top-color: #f97316; border-radius: 50%; animation: spin 0.6s linear infinite; }
+@keyframes spin { to { transform: rotate(360deg); } }
+
 /* Responsive */
-@media (max-width: 640px) {
+@media (max-width: 768px) {
   .stats { grid-template-columns: 1fr 1fr; }
   .table-wrap { overflow-x: auto; }
   table { min-width: 600px; }
+  .detail-grid { grid-template-columns: 1fr; }
+  .toolbar { flex-direction: column; align-items: stretch; }
+  .toolbar input { max-width: 100%; }
 }
 </style>
 </head>
@@ -92,7 +140,7 @@ tbody td:first-child { color: #e4e4e7; font-weight: 500; }
 <!-- Login -->
 <div id="loginScreen">
   <div class="login-box">
-    <h1>Bridge Admin</h1>
+    <h1><span>Bridge</span> Admin</h1>
     <p>Enter admin key to continue</p>
     <div class="login-error" id="loginError">Invalid key</div>
     <input type="password" id="keyInput" placeholder="Admin key" autofocus>
@@ -105,16 +153,18 @@ tbody td:first-child { color: #e4e4e7; font-weight: 500; }
   <header>
     <h1><span>Bridge</span> Admin</h1>
     <div class="header-right">
-      <span id="headerStats"></span>
+      <span class="status" id="jarStatusBadge">—</span>
+      <span style="color:#71717a;font-size:12px" id="headerStats"></span>
       <button class="btn-logout" onclick="logout()">Logout</button>
     </div>
   </header>
 
   <nav>
-    <button class="tab active" onclick="switchTab('dashboard', this)">Dashboard</button>
-    <button class="tab" onclick="switchTab('users', this)">Users</button>
-    <button class="tab" onclick="switchTab('repos', this)">Repos</button>
-    <button class="tab" onclick="switchTab('extensions', this)">Extensions</button>
+    <button class="tab active" onclick="switchTab('dashboard',this)">Dashboard</button>
+    <button class="tab" onclick="switchTab('users',this)">Users</button>
+    <button class="tab" onclick="switchTab('repos',this)">Repos</button>
+    <button class="tab" onclick="switchTab('extensions',this)">Extensions</button>
+    <button class="tab" onclick="switchTab('executor',this)">JAR Executor</button>
   </nav>
 
   <!-- Dashboard -->
@@ -122,8 +172,11 @@ tbody td:first-child { color: #e4e4e7; font-weight: 500; }
     <div class="stats" id="statsGrid"></div>
     <div class="content">
       <div class="table-wrap">
-        <div class="search-bar"><input placeholder="Search users..." oninput="filterTable('usersBody', this.value)"></div>
-        <table><thead><tr><th>User</th><th>Joined</th><th>Repos</th><th>Extensions</th><th>Actions</th></tr></thead><tbody id="usersBody"></tbody></table>
+        <div class="toolbar">
+          <input placeholder="Search users..." oninput="filterTable('dashUsers',this.value)">
+          <button class="btn-sm btn-primary" onclick="openModal('createUser')">+ Create User</button>
+        </div>
+        <table><thead><tr><th>User</th><th>Joined</th><th>Repos</th><th>Extensions</th><th>Actions</th></tr></thead><tbody id="dashUsers"></tbody></table>
       </div>
     </div>
   </div>
@@ -132,9 +185,20 @@ tbody td:first-child { color: #e4e4e7; font-weight: 500; }
   <div class="panel" id="panel-users">
     <div class="content">
       <div class="table-wrap">
-        <div class="search-bar"><input placeholder="Search users..." oninput="filterTable('usersBody2', this.value)"></div>
-        <table><thead><tr><th>User</th><th>ID</th><th>Joined</th><th>Repos</th><th>Extensions</th><th>Actions</th></tr></thead><tbody id="usersBody2"></tbody></table>
+        <div class="toolbar">
+          <input placeholder="Search users..." oninput="filterTable('usersBody',this.value)">
+          <button class="btn-sm btn-primary" onclick="openModal('createUser')">+ Create User</button>
+        </div>
+        <table><thead><tr><th>User</th><th>ID</th><th>Joined</th><th>Repos</th><th>Extensions</th><th>Actions</th></tr></thead><tbody id="usersBody"></tbody></table>
       </div>
+    </div>
+  </div>
+
+  <!-- User Detail -->
+  <div class="panel" id="panel-userDetail">
+    <div class="content">
+      <button class="btn-sm btn-ghost" onclick="switchTab('users',document.querySelectorAll('.tab')[1])" style="margin-bottom:12px">← Back to Users</button>
+      <div id="userDetailContent"></div>
     </div>
   </div>
 
@@ -142,8 +206,12 @@ tbody td:first-child { color: #e4e4e7; font-weight: 500; }
   <div class="panel" id="panel-repos">
     <div class="content">
       <div class="table-wrap">
-        <div class="search-bar"><input placeholder="Search repos..." oninput="filterTable('reposBody', this.value)"></div>
-        <table><thead><tr><th>Repo</th><th>Type</th><th>Added</th><th>Last Fetched</th><th>Users</th><th>Extensions</th><th>Actions</th></tr></thead><tbody id="reposBody"></tbody></table>
+        <div class="toolbar">
+          <input placeholder="Search repos..." oninput="filterTable('reposBody',this.value)">
+          <button class="btn-sm btn-primary" onclick="openModal('addRepo')">+ Add Repo</button>
+          <button class="btn-sm btn-warning" onclick="forceUpdateAll()" id="btnForceUpdate">⟳ Force Update All</button>
+        </div>
+        <table><thead><tr><th>Repo</th><th>Type</th><th>Added</th><th>Last Fetched</th><th>Users</th><th>Exts</th><th>Actions</th></tr></thead><tbody id="reposBody"></tbody></table>
       </div>
     </div>
   </div>
@@ -152,11 +220,60 @@ tbody td:first-child { color: #e4e4e7; font-weight: 500; }
   <div class="panel" id="panel-extensions">
     <div class="content">
       <div class="table-wrap">
-        <div class="search-bar"><input placeholder="Search extensions..." oninput="filterTable('extsBody', this.value)"></div>
-        <table><thead><tr><th>Extension</th><th>Type</th><th>Version</th><th>Lang</th><th>Installs</th><th>Actions</th></tr></thead><tbody id="extsBody"></tbody></table>
+        <div class="toolbar">
+          <input placeholder="Search extensions..." oninput="filterTable('extsBody',this.value)">
+          <select id="extTypeFilter" onchange="filterExtsByType()">
+            <option value="">All types</option>
+            <option value="aniyomi-anime">Anime</option>
+            <option value="aniyomi-manga">Manga</option>
+            <option value="cloudstream">CloudStream</option>
+            <option value="kotatsu">Kotatsu</option>
+          </select>
+        </div>
+        <table><thead><tr><th>ID</th><th>Extension</th><th>Type</th><th>Version</th><th>Lang</th><th>Installs</th><th>Actions</th></tr></thead><tbody id="extsBody"></tbody></table>
       </div>
     </div>
   </div>
+
+  <!-- JAR Executor -->
+  <div class="panel" id="panel-executor">
+    <div class="content">
+      <div class="terminal">
+        <div class="terminal-header">
+          <input id="jarMethod" placeholder="Method name (e.g. getPopular, search, getVideoList)" value="health">
+          <label>Timeout</label>
+          <select id="jarTimeout">
+            <option value="10000">10s</option>
+            <option value="30000" selected>30s</option>
+            <option value="60000">60s</option>
+            <option value="120000">120s</option>
+          </select>
+          <button class="btn-sm btn-primary" onclick="executeJar()">Execute</button>
+          <button class="btn-sm btn-ghost" onclick="clearTerminal()">Clear</button>
+        </div>
+        <div class="terminal-output" id="terminalOutput">
+          <div class="line info">// Enter method name and args JSON below, then click Execute</div>
+        </div>
+        <div style="padding:12px 16px;border-top:1px solid #27272a">
+          <textarea id="jarArgs" placeholder='Arguments as JSON, e.g:
+{
+  "name": "gogoanime",
+  "pkg": "com.example",
+  "type": "Aniyomi",
+  "lang": "en",
+  "baseUrl": "https://...",
+  "extra": {}
+}
+' style="width:100%;min-height:120px;background:#09090b;border:1px solid #27272a;border-radius:6px;color:#e4e4e7;font-family:monospace;font-size:12px;padding:10px;resize:vertical;outline:none"></textarea>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Modal -->
+<div class="modal-overlay" id="modalOverlay" onclick="if(event.target===this)closeModal()">
+  <div class="modal" id="modalContent"></div>
 </div>
 
 <div class="toast" id="toast"></div>
@@ -164,8 +281,12 @@ tbody td:first-child { color: #e4e4e7; font-weight: 500; }
 <script>
 const API = '';
 let token = localStorage.getItem('bridge_admin_token') || '';
+let allUsers = [], allRepos = [], allExtensions = [], cachedStats = null;
+
 const keyInput = document.getElementById('keyInput');
 keyInput.addEventListener('keydown', e => { if (e.key === 'Enter') login(); });
+
+// ── Helpers ──
 
 async function api(path, opts = {}) {
   const res = await fetch(API + path, {
@@ -176,159 +297,358 @@ async function api(path, opts = {}) {
   return res.json();
 }
 
+function esc(s) { const d = document.createElement('div'); d.textContent = s == null ? '' : String(s); return d.innerHTML; }
+function fmtDate(d) { return d ? new Date(d + 'Z').toLocaleString('en-US', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }) : '-'; }
+function fmtSize(b) { if (!b) return '0 B'; if (b < 1024) return b + ' B'; if (b < 1048576) return (b/1024).toFixed(1) + ' KB'; return (b/1048576).toFixed(1) + ' MB'; }
+function toast(msg, type = '') { const el = document.getElementById('toast'); el.textContent = msg; el.className = 'toast show ' + type; clearTimeout(el._t); el._t = setTimeout(() => el.className = 'toast', 3000); }
+function filterTable(id, q) { q = q.toLowerCase(); document.getElementById(id).querySelectorAll('tr').forEach(r => { r.style.display = r.textContent.toLowerCase().includes(q) ? '' : 'none'; }); }
+function typeBadge(type) { const t = (type||'').replace('aniyomi-',''); return `<span class="badge ${t}">${t}</span>`; }
+function loading() { return '<span class="loading"></span>'; }
+
+// ── Auth ──
+
 async function login() {
   const key = keyInput.value.trim();
   if (!key) return;
   try {
     const r = await fetch(API + '/admin/login', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ key }) });
     const d = await r.json();
-    if (d.ok) {
-      token = d.token;
-      localStorage.setItem('bridge_admin_token', token);
-      showApp();
-    } else {
-      const el = document.getElementById('loginError');
-      el.style.display = 'block';
-      setTimeout(() => el.style.display = 'none', 2000);
-    }
+    if (d.ok) { token = d.token; localStorage.setItem('bridge_admin_token', token); showApp(); }
+    else { const el = document.getElementById('loginError'); el.style.display = 'block'; setTimeout(() => el.style.display = 'none', 2500); }
   } catch(e) { toast('Connection failed', 'error'); }
 }
 
-function logout() {
-  token = '';
-  localStorage.removeItem('bridge_admin_token');
-  document.getElementById('app').style.display = 'none';
-  document.getElementById('loginScreen').style.display = 'flex';
-  keyInput.value = '';
-}
+function logout() { token = ''; localStorage.removeItem('bridge_admin_token'); document.getElementById('app').style.display = 'none'; document.getElementById('loginScreen').style.display = 'flex'; keyInput.value = ''; }
 
-function showApp() {
-  document.getElementById('loginScreen').style.display = 'none';
-  document.getElementById('app').style.display = 'block';
-  loadAll();
-}
+function showApp() { document.getElementById('loginScreen').style.display = 'none'; document.getElementById('app').style.display = 'block'; loadAll(); }
+
+// ── Tabs ──
 
 function switchTab(name, btn) {
   document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
   document.querySelectorAll('.panel').forEach(p => p.classList.remove('active'));
   btn.classList.add('active');
   document.getElementById('panel-' + name).classList.add('active');
+  if (name === 'executor') loadJarStatus();
 }
 
-function filterTable(tbodyId, query) {
-  const q = query.toLowerCase();
-  document.getElementById(tbodyId).querySelectorAll('tr').forEach(tr => {
-    tr.style.display = tr.textContent.toLowerCase().includes(q) ? '' : 'none';
-  });
+// ── Modal ──
+
+function openModal(type, data) {
+  const m = document.getElementById('modalContent');
+  let html = '';
+  if (type === 'createUser') {
+    html = `<h2>Create User</h2>
+      <label>Username (min 3 chars)</label><input id="m_username" placeholder="username">
+      <label>Password (min 4 chars)</label><input id="m_password" type="password" placeholder="password">
+      <div class="modal-actions"><button class="btn-cancel" onclick="closeModal()">Cancel</button><button class="btn-ok" onclick="doCreateUser()">Create</button></div>`;
+  } else if (type === 'addRepo') {
+    const userOpts = allUsers.map(u => `<option value="${esc(u.id)}">${esc(u.username)}</option>`).join('');
+    html = `<h2>Add Repo</h2>
+      <label>For User</label><select id="m_userId">${userOpts}</select>
+      <label>Repo URL</label><input id="m_repoUrl" placeholder="https://github.com/.../index.min.json">
+      <label>Type (leave empty for auto-detect)</label><select id="m_repoType"><option value="">Auto-detect</option><option value="aniyomi">Aniyomi</option><option value="cloudstream">CloudStream</option><option value="kotatsu">Kotatsu</option></select>
+      <div class="modal-actions"><button class="btn-cancel" onclick="closeModal()">Cancel</button><button class="btn-ok" onclick="doAddRepo()">Add Repo</button></div>`;
+  } else if (type === 'installExt') {
+    html = `<h2>Install Extension for User</h2>
+      <label>User</label><select id="m_instUserId">${allUsers.map(u => `<option value="${esc(u.id)}">${esc(u.username)}</option>`).join('')}</select>
+      <label>Extension ID</label><input id="m_extId" type="number" value="${data?.id || ''}">
+      <div class="modal-actions"><button class="btn-cancel" onclick="closeModal()">Cancel</button><button class="btn-ok" onclick="doInstallExt()">Install</button></div>`;
+  } else if (type === 'downloadExt') {
+    html = `<h2>Download Extension File</h2>
+      <p style="color:#71717a;font-size:13px;margin-bottom:8px">ID: ${data?.id} — ${esc(data?.name)}</p>
+      <label><input type="checkbox" id="m_dlForce"> Force re-download (ignore cache)</label>
+      <div class="modal-actions"><button class="btn-cancel" onclick="closeModal()">Cancel</button><button class="btn-ok" onclick="doDownloadExt(${data?.id})">Download</button></div>`;
+  }
+  m.innerHTML = html;
+  document.getElementById('modalOverlay').classList.add('open');
 }
 
-function toast(msg, type = '') {
-  const el = document.getElementById('toast');
-  el.textContent = msg;
-  el.className = 'toast show ' + type;
-  setTimeout(() => el.className = 'toast', 2500);
+function closeModal() { document.getElementById('modalOverlay').classList.remove('open'); }
+
+// ── Actions ──
+
+async function doCreateUser() {
+  const u = document.getElementById('m_username').value.trim();
+  const p = document.getElementById('m_password').value;
+  if (!u || !p) { toast('Fill all fields', 'error'); return; }
+  const r = await api('/admin/createUser', { method: 'POST', body: JSON.stringify({ username: u, password: p }) });
+  if (r.ok) { toast('User created: ' + u, 'success'); closeModal(); loadAll(); }
+  else toast(r.error || 'Failed', 'error');
 }
 
-function typeBadge(type) {
-  const t = (type || '').replace('aniyomi-', '');
-  return `<span class="badge ${t}">${t}</span>`;
+async function doAddRepo() {
+  const userId = document.getElementById('m_userId').value;
+  const url = document.getElementById('m_repoUrl').value.trim();
+  const type = document.getElementById('m_repoType').value || undefined;
+  if (!url) { toast('URL required', 'error'); return; }
+  toast('Adding repo...', '');
+  const r = await api('/admin/addRepo', { method: 'POST', body: JSON.stringify({ userId, url, type }) });
+  if (r.ok) { toast(`Repo added (${r.extensions || 0} extensions)`, 'success'); closeModal(); loadAll(); }
+  else toast(r.error || 'Failed', 'error');
 }
 
-function esc(s) { const d = document.createElement('div'); d.textContent = s || ''; return d.innerHTML; }
+async function doInstallExt() {
+  const userId = document.getElementById('m_instUserId').value;
+  const extId = document.getElementById('m_extId').value;
+  if (!extId) { toast('Extension ID required', 'error'); return; }
+  toast('Installing...', '');
+  const r = await api('/admin/installExtension', { method: 'POST', body: JSON.stringify({ userId, extId: Number(extId) }) });
+  if (r.ok) { toast('Installed!', 'success'); closeModal(); loadAll(); }
+  else toast(r.error || 'Failed', 'error');
+}
 
-function fmtDate(d) { return d ? new Date(d).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }) : '-'; }
-
-async function loadAll() {
-  const [stats, users, repos, extensions] = await Promise.all([
-    api('/admin/stats'),
-    api('/admin/users'),
-    api('/admin/repos'),
-    api('/admin/extensions')
-  ]);
-
-  document.getElementById('headerStats').textContent = `${stats.users} users · ${stats.extensions} exts`;
-
-  // Stats grid
-  document.getElementById('statsGrid').innerHTML = [
-    ['Users', stats.users],
-    ['Repos', stats.repos],
-    ['Extensions', stats.extensions],
-    ['Installs', stats.installs]
-  ].map(([l, v]) => `<div class="stat-card"><div class="label">${l}</div><div class="value orange">${v}</div></div>`).join('');
-
-  // User maps
-  const userRepoCounts = {};
-  const userExtCounts = {};
-  stats.userDetails?.forEach(u => { userRepoCounts[u.id] = u.repos; userExtCounts[u.id] = u.extensions; });
-
-  // Dashboard users (compact)
-  document.getElementById('usersBody').innerHTML = users.map(u => `
-    <tr>
-      <td>${esc(u.username)}</td>
-      <td>${fmtDate(u.created)}</td>
-      <td>${userRepoCounts[u.id] ?? 0}</td>
-      <td>${userExtCounts[u.id] ?? 0}</td>
-      <td><button class="btn-sm btn-danger" onclick="deleteUser('${u.id}','${esc(u.username)}')">Delete</button></td>
-    </tr>
-  `).join('') || '<tr><td colspan="5" class="empty">No users</td></tr>';
-
-  // Users tab (full)
-  document.getElementById('usersBody2').innerHTML = users.map(u => `
-    <tr>
-      <td>${esc(u.username)}</td>
-      <td style="font-family:monospace;font-size:11px;max-width:120px;overflow:hidden;text-overflow:ellipsis">${esc(u.id)}</td>
-      <td>${fmtDate(u.created)}</td>
-      <td>${userRepoCounts[u.id] ?? 0}</td>
-      <td>${userExtCounts[u.id] ?? 0}</td>
-      <td><button class="btn-sm btn-danger" onclick="deleteUser('${u.id}','${esc(u.username)}')">Delete</button></td>
-    </tr>
-  `).join('') || '<tr><td colspan="6" class="empty">No users</td></tr>';
-
-  // Repos
-  document.getElementById('reposBody').innerHTML = repos.map(r => `
-    <tr>
-      <td title="${esc(r.url)}">${esc(r.name || r.shortname || r.url)}</td>
-      <td>${typeBadge(r.type)}</td>
-      <td>${fmtDate(r.added)}</td>
-      <td>${fmtDate(r.last_fetched)}</td>
-      <td>${r.userCount ?? 0}</td>
-      <td>${r.extCount ?? 0}</td>
-      <td><button class="btn-sm btn-danger" onclick="deleteRepo(${r.id},'${esc(r.name || r.url)}')">Delete</button></td>
-    </tr>
-  `).join('') || '<tr><td colspan="7" class="empty">No repos</td></tr>';
-
-  // Extensions
-  document.getElementById('extsBody').innerHTML = extensions.map(e => `
-    <tr>
-      <td>${esc(e.name)}</td>
-      <td>${typeBadge(e.type)}${e.is_nsfw ? '<span class="badge nsfw">NSFW</span>' : ''}</td>
-      <td>${esc(e.version)}</td>
-      <td>${esc(e.lang)}</td>
-      <td>${e.installCount ?? 0}</td>
-      <td><button class="btn-sm btn-danger" onclick="deleteExtension(${e.id},'${esc(e.name)}')">Delete</button></td>
-    </tr>
-  `).join('') || '<tr><td colspan="6" class="empty">No extensions</td></tr>';
+async function doDownloadExt(extId) {
+  const force = document.getElementById('m_dlForce').checked;
+  toast('Downloading...', '');
+  const r = await api('/admin/downloadExtension', { method: 'POST', body: JSON.stringify({ extId, force }) });
+  if (r.ok) { toast(`Downloaded: ${r.filePath || 'ok'} ${r.updated ? '[UPDATED]' : '[cached]'}`, 'success'); closeModal(); }
+  else toast(r.error || 'Failed', 'error');
 }
 
 async function deleteUser(id, name) {
-  if (!confirm(`Delete user "${name}" and all their data?`)) return;
+  if (!confirm(`Delete user "${name}" and ALL their data?`)) return;
   const r = await api('/admin/user/' + id, { method: 'DELETE' });
   if (r.ok) { toast('User deleted', 'success'); loadAll(); } else toast(r.error || 'Failed', 'error');
 }
 
 async function deleteRepo(id, name) {
-  if (!confirm(`Delete repo "${name}"? This removes it from ALL users.`)) return;
+  if (!confirm(`Delete repo "${name}"? Removes from ALL users.`)) return;
   const r = await api('/admin/repo/' + id, { method: 'DELETE' });
   if (r.ok) { toast('Repo deleted', 'success'); loadAll(); } else toast(r.error || 'Failed', 'error');
 }
 
 async function deleteExtension(id, name) {
-  if (!confirm(`Delete extension "${name}"? This removes it from ALL users.`)) return;
+  if (!confirm(`Delete extension "${name}"? Removes from ALL users.`)) return;
   const r = await api('/admin/extension/' + id, { method: 'DELETE' });
   if (r.ok) { toast('Extension deleted', 'success'); loadAll(); } else toast(r.error || 'Failed', 'error');
 }
 
-// Auto-login if token exists
+async function uninstallExtForUser(userId, extId, name) {
+  const r = await api('/admin/uninstallExtension', { method: 'POST', body: JSON.stringify({ userId, extId: Number(extId) }) });
+  if (r.ok) { toast('Uninstalled ' + name, 'success'); showUserDetail(userId); loadAll(); } else toast('Failed', 'error');
+}
+
+async function refreshSingleRepo(id) {
+  toast('Refreshing...', '');
+  const r = await api('/admin/refreshRepo', { method: 'POST', body: JSON.stringify({ repoId: id }) });
+  if (r.ok) toast('Repo refreshed' + (r.updated?.length ? ` (${r.updated.length} updated)` : ''), 'success');
+  else toast(r.error || 'Failed', 'error');
+  loadAll();
+}
+
+async function forceUpdateAll() {
+  const btn = document.getElementById('btnForceUpdate');
+  btn.disabled = true; btn.textContent = 'Updating... ' + loading();
+  try {
+    const r = await api('/admin/forceUpdate', { method: 'POST' });
+    toast(`Update complete in ${(r.elapsed/1000).toFixed(1)}s`, 'success');
+    loadAll();
+  } catch(e) { toast('Update failed', 'error'); }
+  btn.disabled = false; btn.textContent = '⟳ Force Update All';
+}
+
+// ── User Detail ──
+
+async function showUserDetail(userId) {
+  switchTab('userDetail', document.querySelectorAll('.tab')[1]);
+  const el = document.getElementById('userDetailContent');
+  el.innerHTML = '<div style="padding:24px">' + loading() + ' Loading user...</div>';
+  const d = await api('/admin/user/' + userId);
+
+  const userOpts = allUsers.map(u => `<option value="${esc(u.id)}" ${u.id===userId?'selected':''}>${esc(u.username)}</option>`).join('');
+
+  el.innerHTML = `
+    <div style="margin-bottom:16px;display:flex;align-items:center;gap:12px">
+      <h2 style="font-size:18px">${esc(d.username)}</h2>
+      <span style="color:#71717a;font-size:12px">${d.id}</span>
+      <span style="color:#71717a;font-size:12px">Joined ${fmtDate(d.created)}</span>
+    </div>
+    <div style="margin-bottom:16px;display:flex;gap:8px;flex-wrap:wrap">
+      <button class="btn-sm btn-primary" onclick="openModal('addRepo')">+ Add Repo</button>
+      <button class="btn-sm btn-success" onclick="openModal('installExt')">+ Install Extension</button>
+      <button class="btn-sm btn-danger" onclick="deleteUser('${d.id}','${esc(d.username)}')">Delete User</button>
+    </div>
+    <div class="detail-grid">
+      <div class="detail-section">
+        <h3>Repos (${(d.repos||[]).length})</h3>
+        <table style="min-width:auto">
+          <thead><tr><th>Name</th><th>Type</th><th>Last Fetched</th><th></th></tr></thead>
+          <tbody>${(d.repos||[]).map(r => `<tr>
+            <td title="${esc(r.url)}" style="max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(r.name || r.url)}</td>
+            <td>${typeBadge(r.type)}</td>
+            <td>${fmtDate(r.last_fetched)}</td>
+            <td><button class="btn-sm btn-ghost" onclick="refreshSingleRepo(${r.id})">Refresh</button></td>
+          </tr>`).join('') || '<tr><td colspan="4" class="empty">No repos</td></tr>'}</tbody>
+        </table>
+      </div>
+      <div class="detail-section">
+        <h3>Installed Extensions (${(d.installedExtensions||[]).length})</h3>
+        <table style="min-width:auto">
+          <thead><tr><th>Name</th><th>Type</th><th></th></tr></thead>
+          <tbody>${(d.installedExtensions||[]).map(e => `<tr>
+            <td style="max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(e.name)}</td>
+            <td>${typeBadge(e.type)}</td>
+            <td><button class="btn-sm btn-danger" onclick="uninstallExtForUser('${d.id}',${e.id},'${esc(e.name)}')">Uninstall</button></td>
+          </tr>`).join('') || '<tr><td colspan="3" class="empty">None installed</td></tr>'}</tbody>
+        </table>
+      </div>
+    </div>
+    <div class="detail-section">
+      <h3>Available Extensions (${(d.availableExtensions||[]).length})</h3>
+      <div style="padding:12px 16px;border-bottom:1px solid #27272a">
+        <input placeholder="Filter available..." oninput="filterTable('availBody',this.value)" style="width:100%;max-width:300px;padding:6px 10px;background:#09090b;border:1px solid #27272a;border-radius:6px;color:#e4e4e7;font-size:12px;outline:none">
+      </div>
+      <div style="max-height:300px;overflow-y:auto">
+        <table style="min-width:auto">
+          <thead><tr><th>Name</th><th>Type</th><th>Lang</th><th>Version</th><th></th></tr></thead>
+          <tbody id="availBody">${(d.availableExtensions||[]).map(e => `<tr>
+            <td>${esc(e.name)}</td>
+            <td>${typeBadge(e.type)}${e.is_nsfw ? '<span class="badge nsfw">NSFW</span>' : ''}</td>
+            <td>${esc(e.lang)}</td>
+            <td>${esc(e.version)}</td>
+            <td><button class="btn-sm btn-success" onclick="doQuickInstall('${d.id}',${e.id},'${esc(e.name)}')">Install</button></td>
+          </tr>`).join('') || '<tr><td colspan="5" class="empty">No available extensions (add a repo first)</td></tr>'}</tbody>
+        </table>
+      </div>
+    </div>
+  `;
+}
+
+async function doQuickInstall(userId, extId, name) {
+  toast('Installing ' + name + '...', '');
+  const r = await api('/admin/installExtension', { method: 'POST', body: JSON.stringify({ userId, extId: Number(extId) }) });
+  if (r.ok) { toast('Installed ' + name, 'success'); showUserDetail(userId); }
+  else toast(r.error || 'Failed', 'error');
+}
+
+// ── JAR Executor ──
+
+async function loadJarStatus() {
+  try {
+    const s = await api('/admin/jarStatus');
+    const badge = document.getElementById('jarStatusBadge');
+    badge.textContent = `JAR: ${s.jarReady ? 'Ready' : 'Not running'} (${s.fileSizeMB} MB)`;
+    badge.className = 'status ' + (s.jarReady ? 'ok' : 'off');
+  } catch {}
+}
+
+async function executeJar() {
+  const method = document.getElementById('jarMethod').value.trim();
+  if (!method) { toast('Method name required', 'error'); return; }
+  let args = {};
+  try { const raw = document.getElementById('jarArgs').value.trim(); if (raw) args = JSON.parse(raw); } catch(e) { toast('Invalid JSON args', 'error'); return; }
+  const timeout = Number(document.getElementById('jarTimeout').value);
+
+  const out = document.getElementById('terminalOutput');
+  out.innerHTML += `<div class="line info">\n> ${esc(method)}(${esc(JSON.stringify(args))}) [timeout: ${timeout}ms]</div>`;
+  out.innerHTML += `<div class="line info">${loading()} Executing...</div>`;
+  out.scrollTop = out.scrollHeight;
+
+  const t0 = performance.now();
+  try {
+    const r = await api('/admin/invoke', { method: 'POST', body: JSON.stringify({ method, args, timeout }) });
+    out.lastElementChild?.remove();
+    const elapsed = ((performance.now() - t0)).toFixed(0);
+    if (r.ok) {
+      const dataStr = JSON.stringify(r.data, null, 2);
+      const preview = dataStr.length > 5000 ? dataStr.substring(0, 5000) + '\n... (truncated, ' + dataStr.length + ' chars total)' : dataStr;
+      out.innerHTML += `<div class="line ok">✓ OK [${r.elapsed || elapsed}ms server, ${elapsed}ms total]</div>`;
+      out.innerHTML += `<div class="line result">${esc(preview)}</div>`;
+    } else {
+      out.innerHTML += `<div class="line err">✗ Error: ${esc(r.error)}</div>`;
+    }
+  } catch(e) {
+    out.lastElementChild?.remove();
+    out.innerHTML += `<div class="line err">✗ Exception: ${esc(e.message)}</div>`;
+  }
+  out.scrollTop = out.scrollHeight;
+}
+
+function clearTerminal() { document.getElementById('terminalOutput').innerHTML = '<div class="line info">// Terminal cleared</div>'; }
+
+// ── Extension type filter ──
+
+function filterExtsByType() {
+  const type = document.getElementById('extTypeFilter').value;
+  document.getElementById('extsBody').querySelectorAll('tr').forEach(r => {
+    if (!type) { r.style.display = ''; return; }
+    r.style.display = r.dataset.type === type ? '' : 'none';
+  });
+}
+
+// ── Load All Data ──
+
+async function loadAll() {
+  try {
+    const [stats, users, repos, extensions] = await Promise.all([
+      api('/admin/stats'), api('/admin/users'), api('/admin/repos'), api('/admin/extensions')
+    ]);
+
+    cachedStats = stats; allUsers = users; allRepos = repos; allExtensions = extensions;
+
+    // Header
+    document.getElementById('headerStats').textContent = `${stats.users} users · ${stats.extensions} exts · ${stats.installs} installs`;
+
+    // JAR badge
+    loadJarStatus();
+
+    // Stats grid
+    document.getElementById('statsGrid').innerHTML = [
+      ['Users', stats.users], ['Repos', stats.repos], ['Extensions', stats.extensions], ['Installs', stats.installs]
+    ].map(([l, v]) => `<div class="stat-card"><div class="label">${l}</div><div class="value">${v}</div></div>`).join('');
+
+    // User maps
+    const uRC = {}, uEC = {};
+    stats.userDetails?.forEach(u => { uRC[u.id] = u.repos; uEC[u.id] = u.extensions; });
+
+    const userRow = (u, showId) => `<tr>
+      <td>${esc(u.username)}</td>
+      ${showId ? `<td style="font-family:monospace;font-size:10px;max-width:100px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${esc(u.id)}">${esc(u.id)}</td>` : ''}
+      <td>${fmtDate(u.created)}</td>
+      <td>${uRC[u.id] ?? 0}</td>
+      <td>${uEC[u.id] ?? 0}</td>
+      <td style="white-space:nowrap">
+        <button class="btn-sm btn-primary" onclick="showUserDetail('${u.id}')">Detail</button>
+        <button class="btn-sm btn-danger" onclick="deleteUser('${u.id}','${esc(u.username)}')">Delete</button>
+      </td>
+    </tr>`;
+
+    document.getElementById('dashUsers').innerHTML = users.map(u => userRow(u, false)).join('') || '<tr><td colspan="5" class="empty">No users</td></tr>';
+    document.getElementById('usersBody').innerHTML = users.map(u => userRow(u, true)).join('') || '<tr><td colspan="6" class="empty">No users</td></tr>';
+
+    document.getElementById('reposBody').innerHTML = repos.map(r => `<tr>
+      <td title="${esc(r.url)}" style="max-width:220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(r.name || r.shortname || r.url)}</td>
+      <td>${typeBadge(r.type)}</td>
+      <td>${fmtDate(r.added)}</td>
+      <td>${fmtDate(r.last_fetched)}</td>
+      <td>${r.userCount ?? 0}</td>
+      <td>${r.extCount ?? 0}</td>
+      <td style="white-space:nowrap">
+        <button class="btn-sm btn-ghost" onclick="refreshSingleRepo(${r.id})">Refresh</button>
+        <button class="btn-sm btn-danger" onclick="deleteRepo(${r.id},'${esc(r.name || r.url)}')">Delete</button>
+      </td>
+    </tr>`).join('') || '<tr><td colspan="7" class="empty">No repos</td></tr>';
+
+    document.getElementById('extsBody').innerHTML = extensions.map(e => `<tr data-type="${esc(e.type)}">
+      <td style="color:#71717a;font-size:11px">${e.id}</td>
+      <td>${esc(e.name)}</td>
+      <td>${typeBadge(e.type)}${e.is_nsfw ? '<span class="badge nsfw">NSFW</span>' : ''}</td>
+      <td>${esc(e.version)}</td>
+      <td>${esc(e.lang)}</td>
+      <td>${e.installCount ?? 0}</td>
+      <td style="white-space:nowrap">
+        <button class="btn-sm btn-ghost" onclick="openModal('downloadExt',{id:${e.id},name:'${esc(e.name)}'})">Download</button>
+        <button class="btn-sm btn-success" onclick="openModal('installExt',{id:${e.id}})">Install</button>
+        <button class="btn-sm btn-danger" onclick="deleteExtension(${e.id},'${esc(e.name)}')">Delete</button>
+      </td>
+    </tr>`).join('') || '<tr><td colspan="7" class="empty">No extensions</td></tr>';
+  } catch(e) {
+    if (e.message !== 'unauthorized') toast('Load failed: ' + e.message, 'error');
+  }
+}
+
+// Auto-login
 if (token) showApp();
 </script>
 </body>
