@@ -1,0 +1,808 @@
+     1→     1→import 'dart:io';
+     2→     2→import 'package:anymex/database/data_keys/keys.dart';
+     3→     3→import 'package:anymex/screens/extensions/widgets/plugin_manager.dart';
+     4→     4→import 'package:anymex/screens/other_features.dart';
+     5→     5→import 'package:anymex/utils/theme_extensions.dart';
+     6→     6→import 'package:anymex/widgets/common/custom_tiles.dart';
+     7→     7→import 'package:anymex/widgets/common/glow.dart';
+     8→     8→import 'package:anymex/widgets/helper/platform_builder.dart';
+     9→     9→import 'package:anymex/widgets/helper/tv_wrapper.dart';
+    10→    10→import 'package:anymex/widgets/non_widgets/snackbar.dart';
+    11→    11→import 'package:anymex_extension_runtime_bridge/AnymeXBridge.dart';
+    12→    12→import 'package:anymex_extension_runtime_bridge/ExtensionManager.dart';
+    13→    13→import 'package:anymex/widgets/custom_widgets/anymex_bottomsheet.dart';
+    14→    14→import 'package:file_picker/file_picker.dart';
+    15→    15→import 'package:flutter/material.dart';
+    16→    16→import 'package:get/get.dart';
+    17→    17→
+    18→    18→class SettingsExtensionManager extends StatefulWidget {
+    19→    19→  const SettingsExtensionManager({super.key});
+    20→    20→
+    21→    21→  @override
+    22→    22→  State<SettingsExtensionManager> createState() =>
+    23→    23→      _SettingsExtensionManagerState();
+    24→    24→}
+    25→    25→
+    26→    26→class _SettingsExtensionManagerState extends State<SettingsExtensionManager> {
+    27→    27→  final _pluginManager = PluginManager();
+    28→    28→  bool _isCheckingUpdate = false;
+    29→    29→  bool _isSyncingLocalApk = false;
+    30→    30→  bool _needsRestart = false;
+    31→    31→  final RxBool _isLoadedFromStorage = false.obs;
+    32→    32→  String get _installedVersion => AnymeXRuntimeBridge.installedVersion;
+    33→    33→
+    34→    34→  String get _installedReleaseTitle =>
+    35→    35→      AnymeXRuntimeBridge.installedReleaseTitle;
+    36→    36→
+    37→    37→  bool get _isPluginInstalled => AnymeXRuntimeBridge.isPluginInstalled;
+    38→    38→
+    39→    39→  @override
+    40→    40→  void initState() {
+    41→    41→    super.initState();
+    42→    42→    _checkStorageStatus();
+    43→    43→  }
+    44→    44→
+    45→    45→  void _checkStorageStatus() async {
+    46→    46→    final status = await AnymeXRuntimeBridge.isLoadedFromStorage();
+    47→    47→    _isLoadedFromStorage.value = status;
+    48→    48→  }
+    49→    49→
+    50→    50→  void _showInstallPopup() async {
+    51→    51→    final oldVersion = _installedVersion;
+    52→    52→    await _pluginManager.showInstallSheet(context);
+    53→    53→    if (mounted) {
+    54→    54→      if (_installedVersion != oldVersion) {
+    55→    55→        setState(() {
+    56→    56→          _needsRestart = true;
+    57→    57→        });
+    58→    58→      } else {
+    59→    59→        setState(() {});
+    60→    60→      }
+    61→    61→    }
+    62→    62→  }
+    63→    63→
+    64→    64→  void _showUpdatePopup() async {
+    65→    65→    final release = await _pluginManager.fetchLatestRelease();
+    66→    66→    if (!mounted) return;
+    67→    67→    if (release == null) {
+    68→    68→      errorSnackBar('Failed to check for updates.');
+    69→    69→      return;
+    70→    70→    }
+    71→    71→    final currentVersion = _installedVersion;
+    72→    72→    if (currentVersion.isEmpty) {
+    73→    73→      _showInstallPopup();
+    74→    74→      return;
+    75→    75→    }
+    76→    76→    if (_pluginManager.isNewerVersion(currentVersion, release.tagName)) {
+    77→    77→      final oldVersion = _installedVersion;
+    78→    78→      await _pluginManager.showUpdateSheet(
+    79→    79→        context,
+    80→    80→        release: release,
+    81→    81→        installedVersion: currentVersion,
+    82→    82→      );
+    83→    83→      if (mounted) {
+    84→    84→        if (_installedVersion != oldVersion) {
+    85→    85→          setState(() {
+    86→    86→            _needsRestart = true;
+    87→    87→          });
+    88→    88→        } else {
+    89→    89→          setState(() {});
+    90→    90→        }
+    91→    91→      }
+    92→    92→    } else {
+    93→    93→      successSnackBar('Plugin is already up to date.');
+    94→    94→    }
+    95→    95→  }
+    96→    96→
+    97→    97→  void _checkForUpdates() async {
+    98→    98→    setState(() => _isCheckingUpdate = true);
+    99→    99→    try {
+   100→   100→      final release = await _pluginManager.fetchLatestRelease();
+   101→   101→      if (!mounted) return;
+   102→   102→      if (release == null) {
+   103→   103→        errorSnackBar('Failed to check for updates.');
+   104→   104→        return;
+   105→   105→      }
+   106→   106→      final currentVersion = _installedVersion;
+   107→   107→      if (currentVersion.isEmpty) {
+   108→   108→        _showInstallPopup();
+   109→   109→        return;
+   110→   110→      }
+   111→   111→      if (_pluginManager.isNewerVersion(currentVersion, release.tagName)) {
+   112→   112→        _showUpdatePopup();
+   113→   113→      } else {
+   114→   114→        successSnackBar('Plugin is already up to date.');
+   115→   115→      }
+   116→   116→    } finally {
+   117→   117→      if (mounted) setState(() => _isCheckingUpdate = false);
+   118→   118→    }
+   119→   119→  }
+   120→   120→
+   121→   121→  void _syncLocalApk() async {
+   122→   122→    if (_isSyncingLocalApk) return;
+   123→   123→
+   124→   124→    final result = await FilePicker.platform.pickFiles(
+   125→   125→      type: FileType.custom,
+   126→   126→      allowedExtensions: Platform.isAndroid ? const ['apk'] : const ['jar'],
+   127→   127→      allowMultiple: false,
+   128→   128→      withData: false,
+   129→   129→    );
+   130→   130→
+   131→   131→    final apkPath = result?.files.single.path;
+   132→   132→    if (apkPath == null || apkPath.isEmpty) return;
+   133→   133→    if (!mounted) return;
+   134→   134→
+   135→   135→    setState(() => _isSyncingLocalApk = true);
+   136→   136→    try {
+   137→   137→      final oldVersion = _installedVersion;
+   138→   138→      final synced = await _pluginManager.syncLocalApk(apkPath);
+   139→   139→      if (mounted && synced) {
+   140→   140→        _checkStorageStatus();
+   141→   141→        if (_installedVersion != oldVersion) {
+   142→   142→          setState(() {
+   143→   143→            _needsRestart = true;
+   144→   144→          });
+   145→   145→        } else {
+   146→   146→          setState(() {});
+   147→   147→        }
+   148→   148→      }
+   149→   149→    } finally {
+   150→   150→      if (mounted) setState(() => _isSyncingLocalApk = false);
+   151→   151→    }
+   152→   152→  }
+   153→   153→
+   154→   154→  void _forceReDownload() async {
+   155→   155→    final bridge = AnymeXRuntimeBridge.controller;
+   156→   156→    if (bridge.isDownloading.value) return;
+   157→   157→    try {
+   158→   158→      await AnymeXRuntimeBridge.setupRuntime(force: true);
+   159→   159→      if (bridge.isReady.value) {
+   160→   160→        await Get.find<ExtensionManager>()
+   161→   161→            .onRuntimeBridgeInitialization(force: true);
+   162→   162→        _checkStorageStatus();
+   163→   163→        if (mounted) {
+   164→   164→          setState(() {
+   165→   165→            _needsRestart = true;
+   166→   166→          });
+   167→   167→          successSnackBar('Plugin re-downloaded successfully. Please restart to apply.');
+   168→   168→        }
+   169→   169→      }
+   170→   170→    } catch (error) {
+   171→   171→      if (mounted) errorSnackBar('Re-download failed: $error');
+   172→   172→    }
+   173→   173→  }
+   174→   174→
+   175→   175→  void _showRollbackDialog() async {
+   176→   176→    setState(() => _isCheckingUpdate = true);
+   177→   177→    final releases = await _pluginManager.fetchReleases();
+   178→   178→    setState(() => _isCheckingUpdate = false);
+   179→   179→    if (releases.isEmpty) {
+   180→   180→      errorSnackBar('No releases found.');
+   181→   181→      return;
+   182→   182→    }
+   183→   183→    if (!mounted) return;
+   184→   184→    final theme = Theme.of(context);
+   185→   185→    AnymexSheet(
+   186→   186→      title: 'Select Version to Rollback',
+   187→   187→      showDragHandle: true,
+   188→   188→      contentWidget: Container(
+   189→   189→        constraints: BoxConstraints(
+   190→   190→          maxHeight: MediaQuery.of(context).size.height * 0.5,
+   191→   191→        ),
+   192→   192→        child: ListView.builder(
+   193→   193→          physics: const BouncingScrollPhysics(),
+   194→   194→          shrinkWrap: true,
+   195→   195→          padding: const EdgeInsets.symmetric(vertical: 12),
+   196→   196→          itemCount: releases.length,
+   197→   197→          itemBuilder: (context, index) {
+   198→   198→            final release = releases[index];
+   199→   199→            final isCurrent = release.tagName == _installedVersion;
+   200→   200→            return Padding(
+   201→   201→              padding: const EdgeInsets.only(bottom: 8.0),
+   202→   202→              child: AnymexOnTap(
+   203→   203→                onTap: isCurrent
+   204→   204→                    ? null
+   205→   205→                    : () {
+   206→   206→                        Navigator.pop(context);
+   207→   207→                        _performRollback(release);
+   208→   208→                      },
+   209→   209→                child: AnimatedContainer(
+   210→   210→                  duration: const Duration(milliseconds: 180),
+   211→   211→                  padding: const EdgeInsets.all(14),
+   212→   212→                  decoration: BoxDecoration(
+   213→   213→                    color: isCurrent
+   214→   214→                        ? theme.colorScheme.primaryContainer.opaque(0.35, iReallyMeanIt: true)
+   215→   215→                        : theme.colorScheme.surfaceContainer.opaque(0.3, iReallyMeanIt: true),
+   216→   216→                    borderRadius: BorderRadius.circular(14),
+   217→   217→                    border: Border.all(
+   218→   218→                      color: isCurrent
+   219→   219→                          ? theme.colorScheme.primary.opaque(0.5, iReallyMeanIt: true)
+   220→   220→                          : theme.colorScheme.outline.opaque(0.15, iReallyMeanIt: true),
+   221→   221→                      width: isCurrent ? 1.5 : 1,
+   222→   222→                    ),
+   223→   223→                  ),
+   224→   224→                  child: Row(
+   225→   225→                    children: [
+   226→   226→                      AnimatedContainer(
+   227→   227→                        duration: const Duration(milliseconds: 180),
+   228→   228→                        width: 22,
+   229→   229→                        height: 22,
+   230→   230→                        decoration: BoxDecoration(
+   231→   231→                          shape: BoxShape.circle,
+   232→   232→                          color: isCurrent
+   233→   233→                              ? theme.colorScheme.primary
+   234→   234→                              : Colors.transparent,
+   235→   235→                          border: Border.all(
+   236→   236→                            color: isCurrent
+   237→   237→                                ? theme.colorScheme.primary
+   238→   238→                                : theme.colorScheme.outline.opaque(0.4, iReallyMeanIt: true),
+   239→   239→                            width: 2,
+   240→   240→                          ),
+   241→   241→                        ),
+   242→   242→                        child: isCurrent
+   243→   243→                            ? Icon(Icons.check_rounded,
+   244→   244→                                size: 14, color: theme.colorScheme.onPrimary)
+   245→   245→                            : null,
+   246→   246→                      ),
+   247→   247→                      const SizedBox(width: 14),
+   248→   248→                      Expanded(
+   249→   249→                        child: Column(
+   250→   250→                          crossAxisAlignment: CrossAxisAlignment.start,
+   251→   251→                          children: [
+   252→   252→                            Text(
+   253→   253→                              release.title,
+   254→   254→                              style: TextStyle(
+   255→   255→                                fontFamily: 'Poppins',
+   256→   256→                                fontSize: 14,
+   257→   257→                                fontWeight: isCurrent
+   258→   258→                                    ? FontWeight.bold
+   259→   259→                                    : FontWeight.normal,
+   260→   260→                                color: theme.colorScheme.onSurface,
+   261→   261→                              ),
+   262→   262→                            ),
+   263→   263→                            const SizedBox(height: 2),
+   264→   264→                            Text(
+   265→   265→                              release.tagName,
+   266→   266→                              style: TextStyle(
+   267→   267→                                fontFamily: 'Poppins',
+   268→   268→                                fontSize: 12,
+   269→   269→                                color: theme.colorScheme.onSurface.withOpacity(0.6),
+   270→   270→                              ),
+   271→   271→                            ),
+   272→   272→                          ],
+   273→   273→                        ),
+   274→   274→                      ),
+   275→   275→                    ],
+   276→   276→                  ),
+   277→   277→                ),
+   278→   278→              ),
+   279→   279→            );
+   280→   280→          },
+   281→   281→        ),
+   282→   282→      ),
+   283→   283→    ).show(context);
+   284→   284→  }
+   285→   285→
+   286→   286→  void _performRollback(PluginRelease release) async {
+   287→   287→    final bridge = AnymeXRuntimeBridge.controller;
+   288→   288→    if (bridge.isDownloading.value) return;
+   289→   289→    try {
+   290→   290→      await AnymeXRuntimeBridge.setupRuntime(
+   291→   291→        customDownloadUrl: release.asset.downloadUrl,
+   292→   292→        force: true,
+   293→   293→      );
+   294→   294→      if (bridge.isReady.value) {
+   295→   295→        await Get.find<ExtensionManager>()
+   296→   296→            .onRuntimeBridgeInitialization(force: true);
+   297→   297→        _pluginManager.persistInstalledRelease(release);
+   298→   298→        _checkStorageStatus();
+   299→   299→        if (mounted) {
+   300→   300→          setState(() {
+   301→   301→            _needsRestart = true;
+   302→   302→          });
+   303→   303→          successSnackBar('Rollback to ${release.tagName} successful. Restart app to apply.');
+   304→   304→        }
+   305→   305→      }
+   306→   306→    } catch (error) {
+   307→   307→      if (mounted) errorSnackBar('Rollback failed: $error');
+   308→   308→    }
+   309→   309→  }
+   310→   310→
+   311→   311→  @override
+   312→   312→  Widget build(BuildContext context) {
+   313→   313→    final colors = context.colors;
+   314→   314→    final bridge = AnymeXRuntimeBridge.controller;
+   315→   315→    if (Platform.isIOS) {
+   316→   316→      return const Scaffold(
+   317→   317→        body: Column(
+   318→   318→          children: [
+   319→   319→            NestedHeader(title: 'Extension Manager'),
+   320→   320→            Expanded(
+   321→   321→              child: Center(
+   322→   322→                child: Text('Extension Manager is not supported on iOS.'),
+   323→   323→              ),
+   324→   324→            ),
+   325→   325→          ],
+   326→   326→        ),
+   327→   327→      );
+   328→   328→    }
+   329→   329→
+   330→   330→    return Glow(
+   331→   331→      child: Scaffold(
+   332→   332→        body: Column(
+   333→   333→          children: [
+   334→   334→            const NestedHeader(title: 'Extension Manager'),
+   335→   335→            Expanded(
+   336→   336→              child: SingleChildScrollView(
+   337→   337→                child: Padding(
+   338→   338→                  padding: getResponsiveValue(context,
+   339→   339→                      mobileValue:
+   340→   340→                          const EdgeInsets.fromLTRB(14.0, 20.0, 14.0, 30.0),
+   341→   341→                      desktopValue:
+   342→   342→                          const EdgeInsets.fromLTRB(25.0, 20.0, 25.0, 20.0)),
+   343→   343→                  child: Column(
+   344→   344→                    crossAxisAlignment: CrossAxisAlignment.start,
+   345→   345→                    children: [
+   346→   346→                      _buildPluginStatusCard(context),
+   347→   347→                      ..._buildExtensionSettings(context),
+   348→   348→                      const SizedBox(height: 25),
+   349→   349→                      Padding(
+   350→   350→                        padding: const EdgeInsets.only(left: 4.0, bottom: 10.0),
+   351→   351→                        child: Text(
+   352→   352→                          'PLUGIN INSTALLATION & SYNC',
+   353→   353→                          style: TextStyle(
+   354→   354→                            fontSize: 12,
+   355→   355→                            fontWeight: FontWeight.bold,
+   356→   356→                            color: colors.primary,
+   357→   357→                            letterSpacing: 1.2,
+   358→   358→                          ),
+   359→   359→                        ),
+   360→   360→                      ),
+   361→   361→                      Obx(() {
+   362→   362→                        final _ = bridge.isReady.value;
+   363→   363→                        final isInstalled = bridge.isReady.value || _isLoadedFromStorage.value;
+   364→   364→                        return Container(
+   365→   365→                          decoration: BoxDecoration(
+   366→   366→                            color:
+   367→   367→                                colors.surfaceContainer.withValues(alpha: 0.3),
+   368→   368→                            borderRadius: BorderRadius.circular(18),
+   369→   369→                            border: Border.all(
+   370→   370→                                color: colors.outlineVariant
+   371→   371→                                    .withValues(alpha: 0.4)),
+   372→   372→                          ),
+   373→   373→                          child: Column(
+   374→   374→                            children: [
+   375→   375→                              CustomTile(
+   376→   376→                                icon: Icons.cloud_download_rounded,
+   377→   377→                                title: isInstalled
+   378→   378→                                    ? 'Update Plugin'
+   379→   379→                                    : 'Download the Plugin',
+   380→   380→                                description: isInstalled
+   381→   381→                                    ? 'Check and install the latest plugin update from Github'
+   382→   382→                                    : 'Automatically download and install the latest plugin version',
+   383→   383→                                onTap: isInstalled
+   384→   384→                                    ? (_isCheckingUpdate
+   385→   385→                                        ? null
+   386→   386→                                        : _checkForUpdates)
+   387→   387→                                    : _showInstallPopup,
+   388→   388→                                postFix: _isCheckingUpdate
+   389→   389→                                    ? SizedBox(
+   390→   390→                                        width: 18,
+   391→   391→                                        height: 18,
+   392→   392→                                        child: CircularProgressIndicator(
+   393→   393→                                          strokeWidth: 2,
+   394→   394→                                          color: colors.primary,
+   395→   395→                                        ),
+   396→   396→                                      )
+   397→   397→                                    : null,
+   398→   398→                              ),
+   399→   399→                              if (Platform.isAndroid) ...[
+   400→   400→                                Divider(
+   401→   401→                                    height: 1,
+   402→   402→                                    color: colors.outlineVariant
+   403→   403→                                        .withValues(alpha: 0.3)),
+   404→   404→                                CustomTile(
+   405→   405→                                  icon: Icons.install_mobile_rounded,
+   406→   406→                                  title: 'Load Plugin APK from Storage',
+   407→   407→                                  description: Platform.isAndroid
+   408→   408→                                      ? 'Select a runtime APK from local storage to manually install'
+   409→   409→                                      : 'Select a runtime JAR from local storage to manually install',
+   410→   410→                                  onTap:
+   411→   411→                                      _isSyncingLocalApk ? null : _syncLocalApk,
+   412→   412→                                  postFix: _isSyncingLocalApk
+   413→   413→                                      ? SizedBox(
+   414→   414→                                          width: 18,
+   415→   415→                                          height: 18,
+   416→   416→                                          child: CircularProgressIndicator(
+   417→   417→                                            strokeWidth: 2,
+   418→   418→                                            color: colors.primary,
+   419→   419→                                          ),
+   420→   420→                                        )
+   421→   421→                                      : null,
+   422→   422→                                ),
+   423→   423→                              ],
+   424→   424→                              if (isInstalled) ...[
+   425→   425→                                Divider(
+   426→   426→                                    height: 1,
+   427→   427→                                    color: colors.outlineVariant
+   428→   428→                                        .withValues(alpha: 0.3)),
+   429→   429→                                CustomTile(
+   430→   430→                                  icon: Icons.refresh_rounded,
+   431→   431→                                  title: 'Force Re-download',
+   432→   432→                                  description:
+   433→   433→                                      'Re-download and reinstall the plugin from scratch',
+   434→   434→                                  onTap: _forceReDownload,
+   435→   435→                                ),
+   436→   436→                                Divider(
+   437→   437→                                    height: 1,
+   438→   438→                                    color: colors.outlineVariant
+   439→   439→                                        .withValues(alpha: 0.3)),
+   440→   440→                                CustomTile(
+   441→   441→                                  icon: Icons.history_rounded,
+   442→   442→                                  title: 'Rollback Version',
+   443→   443→                                  description:
+   444→   444→                                      'Downgrade or switch to a specific plugin version',
+   445→   445→                                  onTap: _showRollbackDialog,
+   446→   446→                                ),
+   447→   447→                              ],
+   448→   448→                            ],
+   449→   449→                          ),
+   450→   450→                        );
+   451→   451→                      }),
+   452→   452→                    ],
+   453→   453→                  ),
+   454→   454→                ),
+   455→   455→              ),
+   456→   456→            ),
+   457→   457→          ],
+   458→   458→        ),
+   459→   459→      ),
+   460→   460→    );
+   461→   461→  }
+   462→   462→
+   463→   463→  Widget _buildPluginStatusCard(BuildContext context) {
+   464→   464→    final colors = context.colors;
+   465→   465→    final bridge = AnymeXRuntimeBridge.controller;
+   466→   466→    return Obx(() {
+   467→   467→      final isDownloading = bridge.isDownloading.value;
+   468→   468→      final progress = bridge.downloadProgress.value;
+   469→   469→      final status = bridge.status.value;
+   470→   470→      final isReady = bridge.isReady.value;
+   471→   471→      final sizeInfo = bridge.sizeInfo.value;
+   472→   472→      final hasError = bridge.error.value.isNotEmpty;
+   473→   473→      final isBusy = isDownloading ||
+   474→   474→          (status != "Idle" &&
+   475→   475→              !isReady &&
+   476→   476→              (status.contains("Extracting") || status.contains("Finalizing")));
+   477→   477→      final isActive = isReady || _isPluginInstalled || _isLoadedFromStorage.value;
+   478→   478→
+   479→   479→      return Container(
+   480→   480→        width: double.infinity,
+   481→   481→        padding: const EdgeInsets.all(18),
+   482→   482→        decoration: BoxDecoration(
+   483→   483→          color: colors.surfaceContainer.withValues(alpha: 0.4),
+   484→   484→          borderRadius: BorderRadius.circular(18),
+   485→   485→          border:
+   486→   486→              Border.all(color: colors.outlineVariant.withValues(alpha: 0.5)),
+   487→   487→        ),
+   488→   488→        child: Column(
+   489→   489→          crossAxisAlignment: CrossAxisAlignment.start,
+   490→   490→          children: [
+   491→   491→            Row(
+   492→   492→              children: [
+   493→   493→                Container(
+   494→   494→                  width: 42,
+   495→   495→                  height: 42,
+   496→   496→                  decoration: BoxDecoration(
+   497→   497→                    color: isBusy
+   498→   498→                        ? colors.tertiaryContainer
+   499→   499→                        : isActive
+   500→   500→                            ? colors.primaryContainer
+   501→   501→                            : colors.errorContainer,
+   502→   502→                    borderRadius: BorderRadius.circular(12),
+   503→   503→                  ),
+   504→   504→                  child: isBusy
+   505→   505→                      ? Padding(
+   506→   506→                          padding: const EdgeInsets.all(10),
+   507→   507→                          child: CircularProgressIndicator(
+   508→   508→                            strokeWidth: 2.5,
+   509→   509→                            color: colors.onTertiaryContainer,
+   510→   510→                          ),
+   511→   511→                        )
+   512→   512→                      : Icon(
+   513→   513→                          isActive
+   514→   514→                              ? Icons.check_circle_rounded
+   515→   515→                              : Icons.warning_amber_rounded,
+   516→   516→                          size: 22,
+   517→   517→                          color: isActive
+   518→   518→                              ? colors.onPrimaryContainer
+   519→   519→                              : colors.onErrorContainer,
+   520→   520→                        ),
+   521→   521→                ),
+   522→   522→                const SizedBox(width: 14),
+   523→   523→                Expanded(
+   524→   524→                  child: Column(
+   525→   525→                    crossAxisAlignment: CrossAxisAlignment.start,
+   526→   526→                    children: [
+   527→   527→                      Text(
+   528→   528→                        isBusy
+   529→   529→                            ? 'Downloading Plugin...'
+   530→   530→                            : isActive
+   531→   531→                                ? (_isLoadedFromStorage.value
+   532→   532→                                    ? 'Loaded from Storage'
+   533→   533→                                    : 'Plugin Installed')
+   534→   534→                                : 'Plugin Not Installed',
+   535→   535→                        style: TextStyle(
+   536→   536→                          fontSize: 16,
+   537→   537→                          fontWeight: FontWeight.w700,
+   538→   538→                          color: colors.onSurface,
+   539→   539→                        ),
+   540→   540→                      ),
+   541→   541→                      const SizedBox(height: 3),
+   542→   542→                      Text(
+   543→   543→                        isBusy
+   544→   544→                            ? status
+   545→   545→                            : isActive
+   546→   546→                                ? (_isLoadedFromStorage.value
+   547→   547→                                    ? 'Using local storage APK'
+   548→   548→                                    : 'Aniyomi & Cloudstream ready')
+   549→   549→                                : 'Install runtime plugin to unlock Aniyomi & Cloudstream',
+   550→   550→                        style: TextStyle(
+   551→   551→                          fontSize: 13,
+   552→   552→                          color: colors.onSurfaceVariant,
+   553→   553→                        ),
+   554→   554→                      ),
+   555→   555→                    ],
+   556→   556→                  ),
+   557→   557→                ),
+   558→   558→              ],
+   559→   559→            ),
+   560→   560→            if (isBusy) ...[
+   561→   561→              const SizedBox(height: 16),
+   562→   562→              Row(
+   563→   563→                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+   564→   564→                children: [
+   565→   565→                  Expanded(
+   566→   566→                    child: ClipRRect(
+   567→   567→                      borderRadius: BorderRadius.circular(999),
+   568→   568→                      child: LinearProgressIndicator(
+   569→   569→                        minHeight: 7,
+   570→   570→                        value: progress > 0 ? progress : null,
+   571→   571→                        backgroundColor: colors.surfaceContainerHighest,
+   572→   572→                        valueColor:
+   573→   573→                            AlwaysStoppedAnimation<Color>(colors.primary),
+   574→   574→                      ),
+   575→   575→                    ),
+   576→   576→                  ),
+   577→   577→                  if (sizeInfo.isNotEmpty) ...[
+   578→   578→                    const SizedBox(width: 12),
+   579→   579→                    Text(
+   580→   580→                      sizeInfo,
+   581→   581→                      style: TextStyle(
+   582→   582→                        fontSize: 12,
+   583→   583→                        fontWeight: FontWeight.w600,
+   584→   584→                        color: colors.primary,
+   585→   585→                      ),
+   586→   586→                    ),
+   587→   587→                  ],
+   588→   588→                ],
+   589→   589→              ),
+   590→   590→            ],
+   591→   591→            if (hasError) ...[
+   592→   592→              const SizedBox(height: 12),
+   593→   593→              Text(
+   594→   594→                bridge.error.value,
+   595→   595→                style: TextStyle(
+   596→   596→                  fontSize: 12,
+   597→   597→                  color: colors.error,
+   598→   598→                ),
+   599→   599→              ),
+   600→   600→            ],
+   601→   601→            if (isActive && !isBusy) ...[
+   602→   602→              const SizedBox(height: 16),
+   603→   603→              const Divider(height: 1),
+   604→   604→              const SizedBox(height: 14),
+   605→   605→              if (!_isLoadedFromStorage.value) ...[
+   606→   606→                _buildMetaRow(colors, 'Version', _installedVersion),
+   607→   607→                const SizedBox(height: 8),
+   608→   608→                _buildMetaRow(
+   609→   609→                    colors,
+   610→   610→                    'Release',
+   611→   611→                    _installedReleaseTitle.isNotEmpty
+   612→   612→                        ? _installedReleaseTitle
+   613→   613→                        : 'Unknown'),
+   614→   614→                const SizedBox(height: 8),
+   615→   615→              ],
+   616→   616→              if (!Platform.isAndroid)
+   617→   617→                _buildMetaRow(
+   618→   618→                  colors,
+   619→   619→                  'Bridge Mode',
+   620→   620→                  PluginKeys.bridgeMode.get<String>('sidecar'),
+   621→   621→                ),
+   622→   622→            ],
+   623→   623→            if (isActive && !isBusy && _needsRestart) ...[
+   624→   624→              const SizedBox(height: 14),
+   625→   625→              Container(
+   626→   626→                width: double.infinity,
+   627→   627→                padding:
+   628→   628→                    const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+   629→   629→                decoration: BoxDecoration(
+   630→   630→                  color: colors.tertiaryContainer.withValues(alpha: 0.5),
+   631→   631→                  borderRadius: BorderRadius.circular(12),
+   632→   632→                ),
+   633→   633→                child: Row(
+   634→   634→                  children: [
+   635→   635→                    Icon(Icons.restart_alt_rounded,
+   636→   636→                        size: 16, color: colors.onTertiaryContainer),
+   637→   637→                    const SizedBox(width: 8),
+   638→   638→                    Expanded(
+   639→   639→                      child: Text(
+   640→   640→                        'Please restart the app to apply changes.',
+   641→   641→                        style: TextStyle(
+   642→   642→                          fontSize: 12,
+   643→   643→                          fontWeight: FontWeight.w600,
+   644→   644→                          color: colors.onTertiaryContainer,
+   645→   645→                        ),
+   646→   646→                      ),
+   647→   647→                    ),
+   648→   648→                  ],
+   649→   649→                ),
+   650→   650→              ),
+   651→   651→            ],
+   652→   652→          ],
+   653→   653→        ),
+   654→   654→      );
+   655→   655→    });
+   656→   656→  }
+   657→   657→
+   658→   658→  Widget _buildMetaRow(ColorScheme colors, String label, String value) {
+   659→   659→    return Row(
+   660→   660→      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+   661→   661→      children: [
+   662→   662→        Text(
+   663→   663→          label,
+   664→   664→          style: TextStyle(
+   665→   665→            fontSize: 13,
+   666→   666→            color: colors.onSurfaceVariant,
+   667→   667→          ),
+   668→   668→        ),
+   669→   669→        Container(
+   670→   670→          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+   671→   671→          decoration: BoxDecoration(
+   672→   672→            color: colors.surfaceContainerHighest.withValues(alpha: 0.6),
+   673→   673→            borderRadius: BorderRadius.circular(8),
+   674→   674→          ),
+   675→   675→          child: Text(
+   676→   676→            value,
+   677→   677→            style: TextStyle(
+   678→   678→              fontSize: 12,
+   679→   679→              fontWeight: FontWeight.w600,
+   680→   680→              color: colors.onSurface,
+   681→   681→              fontFamily: 'monospace',
+   682→   682→            ),
+   683→   683→          ),
+   684→   684→        ),
+   685→   685→      ],
+   686→   686→    );
+   687→   687→  }
+   688→   688→
+   689→   689→  List<Widget> _buildExtensionSettings(BuildContext context) {
+   690→   690→    final colors = Theme.of(context).colorScheme;
+   691→   691→    final em = Get.find<ExtensionManager>();
+   692→   692→    final settingsList = <Widget>[];
+   693→   693→
+   694→   694→    for (final manager in em.managers) {
+   695→   695→      final managerSettings = manager.settings;
+   696→   696→      if (managerSettings == null || managerSettings.isEmpty) continue;
+   697→   697→
+   698→   698→      settingsList.add(const SizedBox(height: 25));
+   699→   699→      settingsList.add(
+   700→   700→        Padding(
+   701→   701→          padding: const EdgeInsets.only(left: 4.0, bottom: 10.0),
+   702→   702→          child: Text(
+   703→   703→            '${manager.name.toUpperCase()} SETTINGS',
+   704→   704→            style: TextStyle(
+   705→   705→              fontSize: 12,
+   706→   706→              fontWeight: FontWeight.bold,
+   707→   707→              color: colors.primary,
+   708→   708→              letterSpacing: 1.2,
+   709→   709→            ),
+   710→   710→          ),
+   711→   711→        ),
+   712→   712→      );
+   713→   713→
+   714→   714→      final children = <Widget>[];
+   715→   715→      for (final entry in managerSettings.entries) {
+   716→   716→        final setting = entry.value;
+   717→   717→
+   718→   718→        if (setting.type == 'bool') {
+   719→   719→          children.add(
+   720→   720→            CustomSwitchTile(
+   721→   721→              icon: Icons.settings_input_component_rounded,
+   722→   722→              title: setting.label,
+   723→   723→              description: setting.description,
+   724→   724→              switchValue: setting.value as bool,
+   725→   725→              onChanged: (val) {
+   726→   726→                setting.onChanged(val);
+   727→   727→                setState(() {});
+   728→   728→              },
+   729→   729→            ),
+   730→   730→          );
+   731→   731→        } else if (setting.type == 'string') {
+   732→   732→          children.add(
+   733→   733→            CustomTile(
+   734→   734→              icon: Icons.folder_open_rounded,
+   735→   735→              title: setting.label,
+   736→   736→              description: (setting.value as String).isNotEmpty
+   737→   737→                  ? setting.value as String
+   738→   738→                  : setting.description,
+   739→   739→              onTap: () => _showTextInputDialog(
+   740→   740→                context,
+   741→   741→                title: setting.label,
+   742→   742→                initialValue: setting.value as String,
+   743→   743→                onSave: (val) {
+   744→   744→                  setting.onChanged(val);
+   745→   745→                  setState(() {});
+   746→   746→                },
+   747→   747→              ),
+   748→   748→            ),
+   749→   749→          );
+   750→   750→        }
+   751→   751→      }
+   752→   752→
+   753→   753→      if (children.isNotEmpty) {
+   754→   754→        settingsList.add(
+   755→   755→          Container(
+   756→   756→            decoration: BoxDecoration(
+   757→   757→              color: colors.surfaceContainer.withValues(alpha: 0.3),
+   758→   758→              borderRadius: BorderRadius.circular(18),
+   759→   759→              border: Border.all(
+   760→   760→                  color: colors.outlineVariant.withValues(alpha: 0.4)),
+   761→   761→            ),
+   762→   762→            child: Column(children: children),
+   763→   763→          ),
+   764→   764→        );
+   765→   765→      }
+   766→   766→    }
+   767→   767→
+   768→   768→    return settingsList;
+   769→   769→  }
+   770→   770→
+   771→   771→  void _showTextInputDialog(
+   772→   772→    BuildContext context, {
+   773→   773→    required String title,
+   774→   774→    required String initialValue,
+   775→   775→    required ValueChanged<String> onSave,
+   776→   776→  }) {
+   777→   777→    final controller = TextEditingController(text: initialValue);
+   778→   778→    showDialog(
+   779→   779→      context: context,
+   780→   780→      builder: (context) {
+   781→   781→        return AlertDialog(
+   782→   782→          title: Text(title),
+   783→   783→          content: TextField(
+   784→   784→            controller: controller,
+   785→   785→            decoration: const InputDecoration(
+   786→   786→              border: OutlineInputBorder(),
+   787→   787→              labelText: 'Enter value',
+   788→   788→            ),
+   789→   789→          ),
+   790→   790→          actions: [
+   791→   791→            TextButton(
+   792→   792→              onPressed: () => Navigator.of(context).pop(),
+   793→   793→              child: const Text('Cancel'),
+   794→   794→            ),
+   795→   795→            TextButton(
+   796→   796→              onPressed: () {
+   797→   797→                onSave(controller.text);
+   798→   798→                Navigator.of(context).pop();
+   799→   799→              },
+   800→   800→              child: const Text('Save'),
+   801→   801→            ),
+   802→   802→          ],
+   803→   803→        );
+   804→   804→      },
+   805→   805→    );
+   806→   806→  }
+   807→   807→}
+   808→   808→
