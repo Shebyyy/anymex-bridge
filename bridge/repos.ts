@@ -259,7 +259,7 @@ interface RepoFetchResult {
   subRepos?: string[]
 }
 
-async function fetchAndStoreRepo(url: string, type: RepoType): Promise<RepoFetchResult> {
+async function fetchAndStoreRepo(url: string, type: RepoType, repoId: number | null): Promise<RepoFetchResult> {
   const updated: number[] = []
   let count = 0
   const seenPkgs = new Set<string>()
@@ -289,7 +289,7 @@ async function fetchAndStoreRepo(url: string, type: RepoType): Promise<RepoFetch
           : null
 
         const extId = upsertExtension(
-          ext.name, ext.pkg || null, extType, newVersion, iconUrl,
+          ext.name, ext.pkg || null, extType, repoId, newVersion, iconUrl,
           ext.lang || null, ext.isNsfw || false, null, null,
           { downloadUrl, sources: ext.sources }
         )
@@ -320,7 +320,7 @@ async function fetchAndStoreRepo(url: string, type: RepoType): Promise<RepoFetch
           : null
 
         const extId = upsertExtension(
-          plugin.name, plugin.internalName || null, 'cloudstream', newVersion,
+          plugin.name, plugin.internalName || null, 'cloudstream', repoId, newVersion,
           iconUrl, plugin.language || 'ALL', plugin.isNsfw || false, null, null,
           { downloadUrl, jarUrl: plugin.jarUrl || plugin.jar || null }
         )
@@ -336,7 +336,7 @@ async function fetchAndStoreRepo(url: string, type: RepoType): Promise<RepoFetch
     } else if (type === 'kotatsu') {
       const jarName = url.split('/').pop() || 'plugin.jar'
       upsertExtension(
-        `Kotatsu: ${jarName}`, jarName, 'kotatsu',
+        `Kotatsu: ${jarName}`, jarName, 'kotatsu', repoId,
         null, null, null, false, null, null,
         { downloadUrl: url, isJar: true }
       )
@@ -357,7 +357,7 @@ export async function addRepo(userId: string, url: string, forceType?: string): 
   const repoResult = addRepoForUser(userId, url, type)
   if (!repoResult.ok) return repoResult
 
-  const result = await fetchAndStoreRepo(url, type)
+  const result = await fetchAndStoreRepo(url, type, repoResult.repo?.id || null)
 
   if (result.ok) {
     if (repoResult.repo) markRepoFetched(repoResult.repo.id)
@@ -370,9 +370,9 @@ export async function addRepo(userId: string, url: string, forceType?: string): 
 
 // ─── Refresh Repo (re-fetch, detect changes) ───────────────
 
-export async function refreshRepo(repoUrl: string, repoType: string): Promise<{ ok: boolean; updated?: number[]; error?: string }> {
+export async function refreshRepo(repoUrl: string, repoType: string, repoId: number): Promise<{ ok: boolean; updated?: number[]; error?: string }> {
   console.log(`[auto-update] Refreshing repo: ${repoUrl}`)
-  const result = await fetchAndStoreRepo(repoUrl, repoType as RepoType)
+  const result = await fetchAndStoreRepo(repoUrl, repoType as RepoType, repoId)
   if (!result.ok) {
     console.error(`[auto-update] Failed to refresh ${repoUrl}: ${result.error}`)
     return { ok: false, error: result.error }
@@ -384,5 +384,5 @@ export async function refreshRepo(repoUrl: string, repoType: string): Promise<{ 
 // ─── Get all unique repos from DB (for auto-update) ────────
 
 export function getAllRepos() {
-  return db.query('SELECT DISTINCT url, type FROM repos').all() as { url: string; type: string }[]
+  return db.query('SELECT id, url, type FROM repos').all() as { id: number; url: string; type: string }[]
 }

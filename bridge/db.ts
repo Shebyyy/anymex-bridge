@@ -36,6 +36,7 @@ export function initSchema() {
       name TEXT NOT NULL,
       pkg TEXT,
       type TEXT NOT NULL,
+      repo_id INTEGER REFERENCES repos(id) ON DELETE CASCADE,
       version TEXT,
       icon_url TEXT,
       lang TEXT,
@@ -52,6 +53,14 @@ export function initSchema() {
       PRIMARY KEY (user_id, ext_id)
     );
   `)
+
+  // Migration: add repo_id to extensions if missing (existing installs)
+  try {
+    db.exec('SELECT repo_id FROM extensions LIMIT 0')
+  } catch {
+    db.exec('ALTER TABLE extensions ADD COLUMN repo_id INTEGER REFERENCES repos(id) ON DELETE CASCADE')
+    console.log('[db] Migration: added repo_id column to extensions')
+  }
 }
 
 export function createUser(username: string, password: string): { ok: boolean; error?: string; user?: { id: string; username: string } } {
@@ -91,15 +100,15 @@ export function getUserRepos(userId: string) {
   `).all(userId) as any[]
 }
 
-export function upsertExtension(name: string, pkg: string | null, type: string, version: string | null, iconUrl: string | null, lang: string | null, isNsfw: boolean, filePath: string | null, fileHash: string | null, extra: any): number {
+export function upsertExtension(name: string, pkg: string | null, type: string, repoId: number | null, version: string | null, iconUrl: string | null, lang: string | null, isNsfw: boolean, filePath: string | null, fileHash: string | null, extra: any): number {
   const existing = db.query('SELECT id FROM extensions WHERE pkg = ? OR (pkg IS NULL AND name = ?)').get(pkg, name) as any
   if (existing) {
-    db.run(`UPDATE extensions SET name=?, type=?, version=?, icon_url=?, lang=?, is_nsfw=?, file_path=?, file_hash=?, extra=? WHERE id=?`,
-      [name, type, version, iconUrl, lang, isNsfw ? 1 : 0, filePath, fileHash, typeof extra === 'string' ? extra : JSON.stringify(extra), existing.id])
+    db.run(`UPDATE extensions SET name=?, type=?, repo_id=?, version=?, icon_url=?, lang=?, is_nsfw=?, file_path=?, file_hash=?, extra=? WHERE id=?`,
+      [name, type, repoId, version, iconUrl, lang, isNsfw ? 1 : 0, filePath, fileHash, typeof extra === 'string' ? extra : JSON.stringify(extra), existing.id])
     return existing.id
   }
-  db.run(`INSERT INTO extensions (name, pkg, type, version, icon_url, lang, is_nsfw, file_path, file_hash, extra) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-    [name, pkg, type, version, iconUrl, lang, isNsfw ? 1 : 0, filePath, fileHash, typeof extra === 'string' ? extra : JSON.stringify(extra)])
+  db.run(`INSERT INTO extensions (name, pkg, type, repo_id, version, icon_url, lang, is_nsfw, file_path, file_hash, extra) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    [name, pkg, type, repoId, version, iconUrl, lang, isNsfw ? 1 : 0, filePath, fileHash, typeof extra === 'string' ? extra : JSON.stringify(extra)])
   const row = db.query('SELECT last_insert_rowid() as id').get() as any
   return row.id
 }
@@ -150,7 +159,21 @@ export function markRepoFetched(repoId: number) {
 }
 
 export function getRepoByUrl(url: string) {
-  return db.query('SELECT id, url, type, name FROM repos WHERE url = ?').get(url) as any || null
+  return (db.query('SELECT id, url, type, name FROM repos WHERE url = ?').get(url) as any) || null
+}
+
+export function getUserAvailableExtensions(userId: string, type?: string, query?: string) {
+  let sql = `
+    SELECT e.id, e.name, e.pkg, e.type, e.version, e.icon_url, e.lang, e.is_nsfw, e.extra
+    FROM extensions e
+    JOIN user_repos ur ON e.repo_id = ur.repo_id
+    WHERE ur.user_id = ?
+  `
+  const params: any[] = [userId]
+  if (type) { sql += ' AND e.type LIKE ?'; params.push(`%${type}%`) }
+  if (query) { sql += ' AND e.name LIKE ?'; params.push(`%${query}%`) }
+  sql += ' ORDER BY e.name'
+  return db.prepare(sql).all(...params) as any[]
 }
 
 export function getStats() {

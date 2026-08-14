@@ -40,7 +40,7 @@ async function runUpdateCycle() {
 
     for (const repo of repos) {
       try {
-        const result = await refreshRepo(repo.url, repo.type)
+        const result = await refreshRepo(repo.url, repo.type, repo.id)
         if (result.ok && result.updated?.length) {
           allChangedIds.push(...result.updated)
         }

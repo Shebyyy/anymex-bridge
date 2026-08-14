@@ -3,7 +3,7 @@ import { readFileSync, writeFileSync } from 'node:fs'
 import { generateKeyPairSync } from 'node:crypto'
 import { join } from 'node:path'
 import { Server as SshServer } from 'ssh2'
-import { authenticateUser, createUser, getUserExtensions, uninstallExtensionForUser, removeRepoForUser, getRepoByUrl, db } from './db.js'
+import { authenticateUser, createUser, getUserExtensions, getUserAvailableExtensions, uninstallExtensionForUser, removeRepoForUser, getRepoByUrl, db } from './db.js'
 import { isJarReady, invokeJar, invokeJarOnce } from './jar.js'
 import { addRepo } from './repos.js'
 import { installExtension, downloadExtension } from './extensions.js'
@@ -193,12 +193,7 @@ async function handleMethod(userId: string, username: string, msg: any): Promise
     }
     case 'getExtensions': {
       const { type, query } = args || {}
-      let sql = 'SELECT id, name, pkg, type, version, icon_url, lang, is_nsfw, extra FROM extensions'
-      const params: any[] = []
-      if (type) { sql += ' WHERE type LIKE ?'; params.push(`%${type}%`) }
-      if (query) { sql += (params.length ? ' AND' : ' WHERE') + ' name LIKE ?'; params.push(`%${query}%`) }
-      sql += ' ORDER BY name'
-      return db.prepare(sql).all(...params)
+      return getUserAvailableExtensions(userId, type, query)
     }
     case 'getRepos':
       return db.query(`SELECT r.id, r.url, r.type, r.name, r.last_fetched FROM repos r JOIN user_repos ur ON r.id = ur.repo_id WHERE ur.user_id = ?`).all(userId)
