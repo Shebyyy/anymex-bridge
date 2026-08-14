@@ -121,14 +121,14 @@ export async function convertApkToJar(apkPath: string): Promise<{ ok: boolean; e
   try {
     const outJarPath = apkPath.replace(/\.apk$/, '.jar')
     const result = await invokeJar('convertApk', { apkPath, outJarPath }, 120000)
-    if (result?.jarPath && existsSync(result.jarPath)) {
-      return { ok: true, jarPath: result.jarPath }
+    let jarPath = result?.jarPath
+    if (!jarPath || !existsSync(jarPath)) {
+      if (outJarPath !== apkPath && existsSync(outJarPath)) jarPath = outJarPath
+      else return { ok: false, error: 'JAR convertApk returned no jarPath' }
     }
-    // JAR might return jarPath at different key or the outJarPath was used
-    if (outJarPath !== apkPath && existsSync(outJarPath)) {
-      return { ok: true, jarPath: outJarPath }
-    }
-    return { ok: false, error: 'JAR convertApk returned no jarPath' }
+    // Delete APK after successful conversion
+    try { if (existsSync(apkPath)) unlinkSync(apkPath) } catch {}
+    return { ok: true, jarPath }
   } catch (e: any) {
     return { ok: false, error: `convertApk failed: ${e.message}` }
   }
@@ -149,9 +149,8 @@ export async function convertAllApks(): Promise<{ converted: number; failed: num
       const result = await convertApkToJar(apkPath)
       if (result.ok && result.jarPath) {
         converted++
-        // Update DB: find extension with this apk path and update to jar path
         db.run('UPDATE extensions SET file_path = ? WHERE file_path = ?', [result.jarPath, apkPath])
-        console.log(`[ext] Converted: ${file} → ${basename(result.jarPath)}`)
+        console.log(`[ext] Converted & deleted APK: ${file} → ${basename(result.jarPath)}`)
       } else {
         failed++
         errors.push(`${file}: ${result.error}`)
