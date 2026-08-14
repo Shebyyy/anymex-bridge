@@ -54,6 +54,8 @@ export function initSchema() {
   `)
 }
 
+// ─── User auth (used by SSH password authentication) ───────
+
 export function createUser(username: string, password: string): { ok: boolean; error?: string; user?: { id: string; username: string } } {
   const existing = db.query('SELECT id FROM users WHERE username = ?').get(username)
   if (existing) return { ok: false, error: 'username already exists' }
@@ -66,6 +68,8 @@ export function createUser(username: string, password: string): { ok: boolean; e
 export function authenticateUser(username: string, password: string): { id: string; username: string } | null {
   return db.query('SELECT id, username FROM users WHERE username = ? AND password = ?').get(username, password) as any || null
 }
+
+// ─── Extension storage (used by auto-update system) ───────
 
 export function addRepoForUser(userId: string, url: string, type: string, name?: string, shortname?: string): { ok: boolean; error?: string; repo?: { id: number; url: string; type: string } } {
   const existing = db.query('SELECT id FROM repos WHERE url = ?').get(url) as any
@@ -83,14 +87,6 @@ export function addRepoForUser(userId: string, url: string, type: string, name?:
   return { ok: true, repo: { id: repoId, url, type } }
 }
 
-export function getUserRepos(userId: string) {
-  return db.query(`
-    SELECT r.id, r.url, r.type, r.name, r.shortname, r.added, r.last_fetched
-    FROM repos r JOIN user_repos ur ON r.id = ur.repo_id
-    WHERE ur.user_id = ? ORDER BY r.added DESC
-  `).all(userId) as any[]
-}
-
 export function upsertExtension(name: string, pkg: string | null, type: string, version: string | null, iconUrl: string | null, lang: string | null, isNsfw: boolean, filePath: string | null, fileHash: string | null, extra: any): number {
   const existing = db.query('SELECT id FROM extensions WHERE pkg = ? OR (pkg IS NULL AND name = ?)').get(pkg, name) as any
   if (existing) {
@@ -104,42 +100,10 @@ export function upsertExtension(name: string, pkg: string | null, type: string, 
   return row.id
 }
 
-export function installExtensionForUser(userId: string, extId: number): boolean {
-  try {
-    db.run('INSERT OR IGNORE INTO user_extensions (user_id, ext_id) VALUES (?, ?)', [userId, extId])
-    return true
-  } catch { return false }
-}
-
-export function getUserExtensions(userId: string) {
-  return db.query(`
-    SELECT e.* FROM extensions e
-    JOIN user_extensions ue ON e.id = ue.ext_id
-    WHERE ue.user_id = ?
-  `).all(userId) as any[]
-}
-
-export function getAllExtensions() {
-  return db.query('SELECT * FROM extensions ORDER BY name').all() as any[]
-}
-
 export function getExtension(id: number) {
   return db.query('SELECT * FROM extensions WHERE id = ?').get(id) as any || null
 }
 
-export function getAllUsers() {
-  return db.query('SELECT id, username, created FROM users ORDER BY username').all() as any[]
-}
-
 export function markRepoFetched(repoId: number) {
   db.run("UPDATE repos SET last_fetched = datetime('now') WHERE id = ?", [repoId])
-}
-
-export function getStats() {
-  return db.query(`SELECT
-    (SELECT COUNT(*) FROM users) as users,
-    (SELECT COUNT(*) FROM user_repos) as repos,
-    (SELECT COUNT(*) FROM extensions) as extensions,
-    (SELECT COUNT(*) FROM user_extensions) as installs
-  `).get() as any
 }
