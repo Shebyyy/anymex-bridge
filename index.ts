@@ -4,7 +4,6 @@ import { startSshServer, startHttpServer } from './ssh.js'
 import { startAutoUpdate, stopAutoUpdate } from './auto-update.js'
 
 const JAR_UPDATE_INTERVAL = 6 * 60 * 60 * 1000 // 6 hours
-const EXT_UPDATE_INTERVAL = 6 * 60 * 60 * 1000 // 6 hours
 
 // ── Crash protection ────────────────────────────────────────
 process.on('uncaughtException', (err) => {
@@ -49,21 +48,8 @@ async function main() {
     console.warn('[jar] Management methods work. Extension methods require JAR.')
   }
 
-  // Auto-update extension plugins every 6h
-  startAutoUpdate(EXT_UPDATE_INTERVAL)
-
-  // Auto-update JAR every 6h
-  setInterval(async () => {
-    try {
-      console.log('[jar] Auto-update check...')
-      const result = await checkOrDownloadJar()
-      if (result.ok && !isJarReady()) {
-        await startSidecar()
-      }
-    } catch (e: any) {
-      console.error('[jar] Auto-update error:', e.message)
-    }
-  }, JAR_UPDATE_INTERVAL)
+  // Auto-update JAR every 6h (size check → stop sidecar → download → restart)
+  startAutoUpdate(JAR_UPDATE_INTERVAL)
 
   // Graceful shutdown
   process.on('SIGINT', () => { console.log('[shutdown] SIGINT'); stopSidecar(); stopAutoUpdate(); process.exit(0) })
