@@ -1,4 +1,4 @@
-import { db, getExtension } from './db.js'
+import { db, installExtensionForUser, getExtension } from './db.js'
 import { join } from 'node:path'
 import { existsSync, mkdirSync, writeFileSync, readFileSync, unlinkSync, renameSync } from 'node:fs'
 import { createHash } from 'node:crypto'
@@ -77,6 +77,16 @@ export async function downloadExtension(extId: number, force = false): Promise<{
     if (tmpPath) try { unlinkSync(tmpPath) } catch {}
     return { ok: false, error: `Download error: ${e.message}` }
   }
+}
+
+// Install extension for user — downloads if needed, tracks in DB
+export async function installExtension(userId: string, extId: number): Promise<{ ok: boolean; error?: string }> {
+  const dl = await downloadExtension(extId)
+  if (!dl.ok) return dl
+
+  installExtensionForUser(userId, extId)
+  console.log(`[ext] Installed ext ${extId} for user ${userId}`)
+  return { ok: true }
 }
 
 // Convert APK to JAR using the runtime JAR
