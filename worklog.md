@@ -114,3 +114,25 @@ Stage Summary:
 - iOS gray screen: already fixed, needs app rebuild
 - Admin panel: now has method dropdown (loadExtensions, search, getPopular, getLatest, getDetail, getFilterList, getVideoList, convertApk), source/extension selector, auto-fill args, source count badge
 
+---
+Task ID: 2
+Agent: Main Agent
+Task: Fix SSH "empty command" error on app login/register
+
+Work Log:
+- Reproduced the issue: SSH exec returns "empty command" for ALL clients (Node.js, Bun, dartssh2)
+- Discovered root cause: ssh2 v1.17.0 BREAKING CHANGE in exec event API
+  - Old API: session.on('exec', (accept, info) => {...})
+  - New API: session.on('exec', (accept, reject, info) => {...})
+  - Command data moved from arg[1] to arg[2], causing (info.command || '').trim() to always be empty
+- Extracted SSH server into ssh-server.cjs (runs under Node.js, not Bun)
+- ssh-server.cjs handles both old and new ssh2 API signatures
+- Added /login and /rpc HTTP endpoints to Bun server for SSH proxy to use
+- ssh.ts now spawns Node.js child process for SSH, Bun handles HTTP only
+- Tested locally: Node.js client → Node.js SSH proxy → Bun HTTP /rpc → success
+
+Stage Summary:
+- Root cause: ssh2 v1.17.0 exec event signature changed from (accept, info) to (accept, reject, info)
+- Fix: ssh-server.cjs handles both API versions, proxies to Bun HTTP /login + /rpc
+- Pushed to beta branch, commit 4d7950a
+- No Dart/client changes needed — server-side only fix
