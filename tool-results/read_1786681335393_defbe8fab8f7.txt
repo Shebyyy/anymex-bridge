@@ -1,0 +1,777 @@
+     1→/**
+     2→ * AnymeX Bridge — Request Router
+     3→ *
+     4→ * Dispatches ClientRequests to handlers, doing install-gating before
+     5→ * forwarding invoke requests to the JAR.
+     6→ *
+     7→ * For invoke/invokeStream, we:
+     8→ *   1. validate userId has the requested ext installed
+     9→ *   2. ensure the .apk is downloaded (shared store)
+    10→ *   3. forward the inner {method, args, id} to the JAR
+    11→ *   4. stream responses back to the client
+    12→ *
+    13→ * For management actions (install/uninstall/addRepo/etc.), we handle
+    14→ * them locally (DB + filesystem) and return JSON immediately.
+    15→ */
+    16→
+    17→import { jarRunner } from './jar-runner.js';
+    18→import { downloadExt, extPath, isExtCached } from './extension-store.js';
+    19→import { apkToJar, extJarDir, isJarCached, jarPathFor } from './dex2jar.js';
+    20→import { installCsPlugin, isCsJarCached, csJarDir } from './cs-installer.js';
+    21→import { installKotatsuJar, isKotatsuJarCached, kotatsuJarPath } from './kotatsu-installer.js';
+    22→import { listAvailableForRepos, getRepoIndex, synthesizeKotatsuRepoIndex } from './repo-indexer.js';
+    23→import { loadExtensionsCache, csLoadExtensionsCache, kotatsuLoadExtensionsCache } from './ext-loader.js';
+    24→import {
+    25→  addRepo,
+    26→  getOrCreateUser,
+    27→  installExt,
+    28→  isExtInstalled,
+    29→  listRepos,
+    30→  listUserExts,
+    31→  removeRepo,
+    32→  uninstallExt,
+    33→} from './db.js';
+    34→import type { ClientRequest, ServerResponse, BridgeAction } from './types.js';
+    35→import { stampItemTypeAndManager, ITEM_TYPE_INT, type ItemTypeStr } from './item-type.js';
+    36→
+    37→export type SendFn = (resp: ServerResponse) => void;
+    38→
+    39→/**
+    40→ * Management methods that arrive via the `invoke` wrapper.
+    41→ *
+    42→ * The Dart client calls these via `BridgeDispatcher().invokeMethod(...)` which
+    43→ * `RemoteSidecarBridge` wraps as `{action:'invoke', payload:{method:'addRepo',
+    44→ * args:{...}}}`. Without interception, `handleInvoke` rejects them because
+    45→ * `extId` is null.
+    46→ *
+    47→ * We intercept them here and re-dispatch as top-level actions so they hit
+    48→ * the dedicated `case 'addRepo'` / `case 'install'` / etc. handlers.
+    49→ */
+    50→const MANAGEMENT_METHODS = new Set<string>([
+    51→  'addRepo',
+    52→  'removeRepo',
+    53→  'listRepos',
+    54→  'listAvailable',
+    55→  'listInstalled',
+    56→  'install',
+    57→  'uninstall',
+    58→  'loadExtensions',
+    59→  'csLoadExtensions',
+    60→  'kotatsuLoadExtensions',
+    61→]);
+    62→
+    63→/** Main dispatcher. Returns nothing; pushes responses via `send`. */
+    64→export async function routeRequest(
+    65→  req: ClientRequest,
+    66→  send: SendFn,
+    67→): Promise<void> {
+    68→  const { id, action } = req;
+    69→  const userId = req.userId;
+    70→
+    71→  if (!userId) {
+    72→    send({ id, status: 'error', error: 'Missing userId (server should set this from SSH key)' });
+    73→    return;
+    74→  }
+    75→
+    76→  try {
+    77→    switch (action) {
+    78→      case 'hello': {
+    79→        send({ id, status: 'ok', data: { pong: true, userId, ts: Date.now() } });
+    80→        return;
+    81→      }
+    82→
+    83→      case 'addRepo': {
+    84→        const { repoUrl, runtime } = req.payload ?? {};
+    85→        if (typeof repoUrl !== 'string' || !/^https?:\/\//.test(repoUrl)) {
+    86→          send({ id, status: 'error', error: 'Invalid repoUrl' });
+    87→          return;
+    88→        }
+    89→        if (runtime != null && !['aniyomi', 'cloudstream', 'kotatsu'].includes(runtime)) {
+    90→          send({ id, status: 'error', error: `Invalid runtime '${runtime}' (expected aniyomi|cloudstream|kotatsu)` });
+    91→          return;
+    92→        }
+    93→        // Validate the repo is reachable & parses.
+    94→        const idx = await getRepoIndex(repoUrl, { force: true });
+    95→        addRepo(userId, repoUrl, runtime);
+    96→
+    97→        // For Kotatsu .jar repos, the index is empty until we download + load the jar.
+    98→        // Respond immediately and trigger jar download + load in the background
+    99→        // so addRepo doesn't block for 60+ seconds.
+   100→        if ((idx as any).isKotatsuJar && idx.extensions.length === 0) {
+   101→          send({ id, status: 'ok', data: { repoUrl, name: 'Kotatsu Manga Repo', extensionCount: 0, runtime: 'kotatsu', loading: true } });
+   102→          installKotatsuJar(repoUrl).then(() => kotatsuLoadExtensionsCache.reload())
+   103→            .then((sources) => console.log(`[router] Kotatsu jar loaded in background: ${sources.length} sources`))
+   104→            .catch((e: any) => console.warn(`[router] Kotatsu background jar load failed: ${e?.message ?? e}`));
+   105→          return;
+   106→        }
+   107→
+   108→        send({ id, status: 'ok', data: { repoUrl, name: idx.name, extensionCount: idx.extensions.length } });
+   109→        return;
+   110→      }
+   111→
+   112→      case 'removeRepo': {
+   113→        const { repoUrl, runtime } = req.payload ?? {};
+   114→        removeRepo(userId, repoUrl, runtime);
+   115→        send({ id, status: 'ok', data: { repoUrl } });
+   116→        return;
+   117→      }
+   118→
+   119→      case 'listRepos': {
+   120→        const { runtime } = req.payload ?? {};
+   121→        const repos = listRepos(userId, runtime);
+   122→        send({ id, status: 'ok', data: { repos } });
+   123→        return;
+   124→      }
+   125→
+   126→      case 'listAvailable': {
+   127→        // Optional filters:
+   128→        //   payload.type = 'anime' | 'manga' | 'novel'
+   129→        //   payload.runtime = 'aniyomi' | 'cloudstream' | 'kotatsu'
+   130→        // Mirrors the runtime's fetchAnimeExtensions / fetchMangaExtensions /
+   131→        // fetchNovelExtensions — iOS calls each separately so it can populate
+   132→        // the three aggregated Rx lists (availableAnimeExtensions etc.).
+   133→        const typeFilter: ItemTypeStr | undefined = req.payload?.type;
+   134→        if (typeFilter != null && !['anime', 'manga', 'novel'].includes(typeFilter)) {
+   135→          send({ id, status: 'error', error: `listAvailable: invalid type '${typeFilter}' (expected anime|manga|novel)` });
+   136→          return;
+   137→        }
+   138→        const runtimeFilter: string | undefined = req.payload?.runtime;
+   139→        if (runtimeFilter != null && !['aniyomi', 'cloudstream', 'kotatsu'].includes(runtimeFilter)) {
+   140→          send({ id, status: 'error', error: `listAvailable: invalid runtime '${runtimeFilter}' (expected aniyomi|cloudstream|kotatsu)` });
+   141→          return;
+   142→        }
+   143→        const repos = listRepos(userId, runtimeFilter).map((r) => r.repoUrl);
+   144→        const grouped = await listAvailableForRepos(repos);
+   145→        // Flatten + tag each entry with its source repo.
+   146→        const installed = new Set(listUserExts(userId).map((e) => e.extId));
+   147→        let all = grouped.flatMap((g) =>
+   148→          g.extensions.map((e) => ({
+   149→            ...stampItemTypeAndManager({ ...e }),
+   150→            repoUrl: g.repoUrl,
+   151→            installed: installed.has(e.id),
+   152→          })),
+   153→        );
+   154→        // Filter by runtime FIRST — this prevents CloudStream/Kotatsu extensions
+   155→        // from leaking into Aniyomi's list and vice versa.
+   156→        if (runtimeFilter) {
+   157→          all = all.filter((e) => e.runtime === runtimeFilter || e.managerId === runtimeFilter);
+   158→        }
+   159→        if (typeFilter) {
+   160→          const wantInt = ITEM_TYPE_INT[typeFilter];
+   161→          all = all.filter((e) => e.type === typeFilter || e.itemType === wantInt);
+   162→        }
+   163→        send({ id, status: 'ok', data: { extensions: all, type: typeFilter ?? null } });
+   164→        return;
+   165→      }
+   166→
+   167→      case 'listInstalled': {
+   168→        // Optional filters:
+   169→        //   payload.type = 'anime' | 'manga' | 'novel'
+   170→        //   payload.runtime = 'aniyomi' | 'cloudstream' | 'kotatsu'
+   171→        const typeFilter: ItemTypeStr | undefined = req.payload?.type;
+   172→        if (typeFilter != null && !['anime', 'manga', 'novel'].includes(typeFilter)) {
+   173→          send({ id, status: 'error', error: `listInstalled: invalid type '${typeFilter}' (expected anime|manga|novel)` });
+   174→          return;
+   175→        }
+   176→        const runtimeFilter: string | undefined = req.payload?.runtime;
+   177→        if (runtimeFilter != null && !['aniyomi', 'cloudstream', 'kotatsu'].includes(runtimeFilter)) {
+   178→          send({ id, status: 'error', error: `listInstalled: invalid runtime '${runtimeFilter}' (expected aniyomi|cloudstream|kotatsu)` });
+   179→          return;
+   180→        }
+   181→        const userExts = listUserExts(userId);
+   182→        // Enrich with metadata from the source repo.
+   183→        let enriched = await Promise.all(
+   184→          userExts.map(async (ue) => {
+   185→            try {
+   186→              const idx = await getRepoIndex(ue.repoUrl);
+   187→              // Kotatsu: look up source from loaded jar
+   188→              if ((idx as any).isKotatsuJar) {
+   189→                const sources = await kotatsuLoadExtensionsCache.ensureLoaded();
+   190→                const src = sources.find((s) => String(s.id) === String(ue.extId)) ?? null;
+   191→                const meta = src
+   192→                  ? stampItemTypeAndManager({
+   193→                      id: String(src.id ?? ''),
+   194→                      name: String(src.name ?? src.id ?? ''),
+   195→                      file: '',
+   196→                      baseUrl: src.baseUrl ? String(src.baseUrl) : undefined,
+   197→                      lang: src.lang ? String(src.lang) : undefined,
+   198→                      isNsfw: !!src.isNsfw,
+   199→                      version: src.version ? String(src.version) : undefined,
+   200→                      type: 'manga',
+   201→                      runtime: 'kotatsu',
+   202→                    })
+   203→                  : null;
+   204→                return {
+   205→                  ...ue,
+   206→                  meta,
+   207→                  runtime: 'kotatsu' as const,
+   208→                  managerId: 'kotatsu' as const,
+   209→                  itemType: 0,
+   210→                  jarCached: isKotatsuJarCached(ue.repoUrl),
+   211→                };
+   212→              }
+   213→              const meta = idx.extensions.find((e) => e.id === ue.extId) ?? null;
+   214→              const stampedMeta = meta ? stampItemTypeAndManager({ ...meta }) : null;
+   215→              const runtime = stampedMeta?.runtime ?? 'aniyomi';
+   216→              return {
+   217→                ...ue,
+   218→                meta: stampedMeta,
+   219→                runtime,
+   220→                managerId: stampedMeta?.managerId ?? runtime,
+   221→                itemType: stampedMeta?.itemType,
+   222→                apkCached: runtime === 'aniyomi' ? isExtCached(stampedMeta?.fileUrl ?? '') : false,
+   223→                jarCached: runtime === 'cloudstream'
+   224→                  ? (stampedMeta?.internalName ? isCsJarCached(stampedMeta.internalName) : false)
+   225→                  : (stampedMeta?.pkg ? isJarCached(stampedMeta.pkg) : false),
+   226→              };
+   227→            } catch {
+   228→              // Don't default to 'aniyomi' — preserve whatever runtime the user
+   229→              // originally installed this extension under. If we can't determine it,
+   230→              // omit runtime/managerId so the client can skip it rather than mis-categorize.
+   231→              return { ...ue, meta: null, itemType: undefined, apkCached: false, jarCached: false };
+   232→            }
+   233→          }),
+   234→        );
+   235→        // Filter by runtime FIRST — prevents cross-runtime leaking.
+   236→        if (runtimeFilter) {
+   237→          enriched = enriched.filter((e: any) => e.runtime === runtimeFilter || e.managerId === runtimeFilter || e.meta?.runtime === runtimeFilter || e.meta?.managerId === runtimeFilter);
+   238→        }
+   239→        if (typeFilter) {
+   240→          const wantInt = ITEM_TYPE_INT[typeFilter];
+   241→          enriched = enriched.filter((e: any) => e.meta?.type === typeFilter || e.meta?.itemType === wantInt || e.itemType === wantInt);
+   242→        }
+   243→        send({ id, status: 'ok', data: { extensions: enriched, type: typeFilter ?? null } });
+   244→        return;
+   245→      }
+   246→
+   247→      case 'loadExtensions': {
+   248→        // Force the JAR to rescan the Aniyomi exts-jar folder.
+   249→        // Returns the bare `sources` array — the Dart client's
+   250→        // `_loadInstalled` does `for (final e in (result as List))` and
+   251→        // expects each element to be a Map with keys: type, className,
+   252→        // pkgName, version, isNsfw, name, lang, baseUrl, id.
+   253→        const sources = await loadExtensionsCache.reload();
+   254→        send({ id, status: 'ok', data: sources });
+   255→        return;
+   256→      }
+   257→
+   258→      case 'csLoadExtensions': {
+   259→        // Force the JAR to rescan the CloudStream exts-jar-cs folder.
+   260→        // Returns the bare `sources` array — the Dart client's
+   261→        // `_loadInstalled` does `for (final e in (result as List))`.
+   262→        const sources = await csLoadExtensionsCache.reload();
+   263→        send({ id, status: 'ok', data: sources });
+   264→        return;
+   265→      }
+   266→
+   267→      case 'kotatsuLoadExtensions': {
+   268→        // Force the JAR to rescan the Kotatsu exts-jar-kotatsu folder.
+   269→        // Returns the bare `sources` array — the Dart client checks
+   270→        // `if (data == null || data is! List)` and then maps each element
+   271→        // via `KotatsuSource.fromJson(...)`.
+   272→        const sources = await kotatsuLoadExtensionsCache.reload();
+   273→        send({ id, status: 'ok', data: sources });
+   274→        return;
+   275→      }
+   276→
+   277→      case 'install': {
+   278→        const { extId, repoUrl } = req.payload ?? {};
+   279→        if (typeof extId !== 'string' || typeof repoUrl !== 'string') {
+   280→          send({ id, status: 'error', error: 'install requires { extId, repoUrl }' });
+   281→          return;
+   282→        }
+   283→        const idx = await getRepoIndex(repoUrl);
+   284→
+   285→        // Kotatsu special case: the repo is a single .jar containing multiple sources.
+   286→        // The "extension" is a source inside that jar — no per-source download.
+   287→        if ((idx as any).isKotatsuJar) {
+   288→          // Ensure the jar is downloaded + loaded.
+   289→          try {
+   290→            await installKotatsuJar(repoUrl);
+   291→          } catch (e: any) {
+   292→            send({ id, status: 'error', error: `Kotatsu jar install failed: ${e?.message ?? e}` });
+   293→            return;
+   294→          }
+   295→          const sources = await kotatsuLoadExtensionsCache.reload();
+   296→          const src = sources.find((s) => String(s.id) === String(extId)) ?? null;
+   297→          if (!src) {
+   298→            send({ id, status: 'error', error: `Kotatsu source ${extId} not found in jar` });
+   299→            return;
+   300→          }
+   301→          // Record install in DB (just marks it active — no per-source download).
+   302→          installExt(userId, extId, repoUrl);
+   303→          send({
+   304→            id,
+   305→            status: 'ok',
+   306→            data: {
+   307→              extId,
+   308→              repoUrl,
+   309→              runtime: 'kotatsu',
+   310→              managerId: 'kotatsu',
+   311→              type: 'manga',
+   312→              itemType: 0, // manga
+   313→              sourceId: src.id,
+   314→              name: src.name,
+   315→              baseUrl: src.baseUrl,
+   316→              lang: src.lang,
+   317→              loaded: true,
+   318→            },
+   319→          });
+   320→          return;
+   321→        }
+   322→
+   323→        const meta = idx.extensions.find((e) => e.id === extId);
+   324→        if (!meta || !meta.fileUrl) {
+   325→          send({ id, status: 'error', error: `Extension ${extId} not found in repo ${repoUrl}` });
+   326→          return;
+   327→        }
+   328→
+   329→        // 1. Record install in DB.
+   330→        installExt(userId, extId, repoUrl);
+   331→
+   332→        // 2. Branch on runtime.
+   333→        const runtime = meta.runtime ?? 'aniyomi';
+   334→        if (runtime === 'cloudstream') {
+   335→          // CloudStream: download .cs3 + .jar, repackage with bridge manifest.
+   336→          let jarPath: string | undefined;
+   337→          let installError: string | undefined;
+   338→          try {
+   339→            jarPath = await installCsPlugin({
+   340→              name: meta.name,
+   341→              internalName: meta.internalName ?? meta.name,
+   342→              version: meta.version,
+   343→              jarUrl: meta.jarUrl,
+   344→              pluginUrl: meta.fileUrl,
+   345→              authors: meta.authors,
+   346→            });
+   347→          } catch (e: any) {
+   348→            installError = e?.message ?? String(e);
+   349→            console.warn(`[router] CS install failed for ${extId}: ${installError}`);
+   350→          }
+   351→          // Send response IMMEDIATELY — don't wait for csLoadExtensions.
+   352→          send({
+   353→            id,
+   354→            status: jarPath ? 'ok' : 'error',
+   355→            error: installError,
+   356→            data: {
+   357→              extId,
+   358→              repoUrl,
+   359→              runtime: 'cloudstream',
+   360→              managerId: 'cloudstream',
+   361→              type: meta.type ?? 'anime',
+   362→              itemType: meta.itemType ?? 1, // anime
+   363→              internalName: meta.internalName,
+   364→              version: meta.version,
+   365→              jarPath: jarPath?.split('/').pop(),
+   366→              loaded: !!jarPath,
+   367→              sourceId: extId,
+   368→              baseUrl: meta.baseUrl,
+   369→            },
+   370→          });
+   371→
+   372→          // Kick off csLoadExtensions in the background.
+   373→          if (jarPath) {
+   374→            csLoadExtensionsCache.reload().catch((e: any) => {
+   375→              console.warn(`[router] background csLoadExtensions failed: ${e?.message ?? e}`);
+   376→            });
+   377→          }
+   378→          return;
+   379→        }
+   380→
+   381→        // Aniyomi: download .apk → dex2jar → .jar
+   382→        const apkPath = await downloadExt(meta.fileUrl);
+   383→        let jarPath: string | undefined;
+   384→        let convertError: string | undefined;
+   385→        try {
+   386→          jarPath = await apkToJar(apkPath, meta.pkg ?? extId);
+   387→        } catch (e: any) {
+   388→          convertError = e?.message ?? String(e);
+   389→          console.warn(`[router] dex2jar conversion failed for ${extId}: ${convertError}`);
+   390→        }
+   391→        // Send response IMMEDIATELY after dex2jar — don't wait for loadExtensions
+   392→        // which can timeout and cause the client to show "loading" for 60s+.
+   393→        // The JAR will load the extension on the next invoke call via ensureLoaded().
+   394→        send({
+   395→          id,
+   396→          status: jarPath ? 'ok' : 'error',
+   397→          error: convertError,
+   398→          data: {
+   399→            extId,
+   400→            repoUrl,
+   401→            runtime: 'aniyomi',
+   402→            managerId: 'aniyomi',
+   403→            type: meta.type,
+   404→            itemType: meta.itemType,
+   405→            pkg: meta.pkg,
+   406→            version: meta.version,
+   407→            sourceId: meta.id,
+   408→            apkPath,
+   409→            jarPath: jarPath?.split('/').pop(),
+   410→            loaded: !!jarPath,
+   411→            baseUrl: meta.baseUrl,
+   412→          },
+   413→        });
+   414→
+   415→        // Kick off loadExtensions in the background so the JAR registers
+   416→        // the new .jar for the next invoke call.
+   417→        if (jarPath) {
+   418→          loadExtensionsCache.reload().catch((e: any) => {
+   419→            console.warn(`[router] background loadExtensions failed: ${e?.message ?? e}`);
+   420→          });
+   421→        }
+   422→        return;
+   423→      }
+   424→
+   425→      case 'uninstall': {
+   426→        const { extId } = req.payload ?? {};
+   427→        if (typeof extId !== 'string') {
+   428→          send({ id, status: 'error', error: 'uninstall requires { extId }' });
+   429→          return;
+   430→        }
+   431→        uninstallExt(userId, extId);
+   432→        send({ id, status: 'ok', data: { extId } });
+   433→        // NOTE: We do NOT delete the .apk here — another user may still
+   434→        // reference it. A separate GC pass could clean up unreferenced files.
+   435→        return;
+   436→      }
+   437→
+   438→      case 'invoke': {
+   439→        await handleInvoke(req, send, /*stream=*/ false);
+   440→        return;
+   441→      }
+   442→
+   443→      case 'invokeStream': {
+   444→        await handleInvoke(req, send, /*stream=*/ true);
+   445→        return;
+   446→      }
+   447→
+   448→      case 'cancel': {
+   449→        const { innerId } = req.payload ?? {};
+   450→        if (typeof innerId !== 'string') {
+   451→          send({ id, status: 'error', error: 'cancel requires { innerId }' });
+   452→          return;
+   453→        }
+   454→        // Forward cancel to JAR (same shape SidecarBridge.dart sends).
+   455→        await jarRunner.ensureReady();
+   456→        await jarRunner.send({ method: 'cancel', args: { id: innerId } });
+   457→        send({ id, status: 'ok', data: { cancelled: innerId } });
+   458→        return;
+   459→      }
+   460→
+   461→      default:
+   462→        send({ id, status: 'error', error: `Unknown action: ${action}` });
+   463→    }
+   464→  } catch (e: any) {
+   465→    send({ id, status: 'error', error: e?.message ?? String(e) });
+   466→  }
+   467→}
+   468→
+   469→/** Handle invoke / invokeStream: gate + forward to JAR + relay responses. */
+   470→async function handleInvoke(req: ClientRequest, send: SendFn, stream: boolean): Promise<void> {
+   471→  const { id, userId } = req;
+   472→  const { extId, method, innerId } = req.payload ?? {};
+   473→  let args = req.payload?.args;
+   474→
+   475→  if (typeof method !== 'string') {
+   476→    send({ id, status: 'error', error: 'invoke requires { extId, method, args?, innerId? }' });
+   477→    return;
+   478→  }
+   479→
+   480→  // --- Management method interception ---
+   481→  // The Dart client calls management actions (addRepo, install, uninstall,
+   482→  // loadExtensions, etc.) via `BridgeDispatcher().invokeMethod(...)`, which
+   483→  // `RemoteSidecarBridge` wraps as `{action:'invoke', payload:{method:'addRepo',
+   484→  // args:{...}}}` with `extId: null`. Without this interception, `handleInvoke`
+   485→  // rejects them at the `extId` validation below.
+   486→  //
+   487→  // Re-dispatch as top-level actions so they hit the dedicated case handlers
+   488→  // (addRepo/install/uninstall/loadExtensions/etc.) which handle them locally
+   489→  // (DB + filesystem) and return a single JSON response.
+   490→  if (MANAGEMENT_METHODS.has(method)) {
+   491→    await routeRequest(
+   492→      // `method` is verified to be in MANAGEMENT_METHODS (a subset of
+   493→      // BridgeAction), so the cast is safe.
+   494→      { id, action: method as BridgeAction, userId, payload: args ?? {} },
+   495→      send,
+   496→    );
+   497→    return;
+   498→  }
+   499→
+   500→  if (typeof extId !== 'string') {
+   501→    send({ id, status: 'error', error: `invoke requires { extId } for method: ${method}` });
+   502→    return;
+   503→  }
+   504→
+   505→  // 1. Install-gate
+   506→  if (!isExtInstalled(userId!, extId)) {
+   507→    send({ id, status: 'error', error: `Extension ${extId} is not installed for user ${userId}` });
+   508→    return;
+   509→  }
+   510→
+   511→  // 2. Look up metadata + runtime
+   512→  const userExts = listUserExts(userId!);
+   513→  const ue = userExts.find((e) => e.extId === extId);
+   514→  if (!ue) {
+   515→    send({ id, status: 'error', error: `Lost reference to ${extId}` });
+   516→    return;
+   517→  }
+   518→  const idx = await getRepoIndex(ue.repoUrl);
+   519→
+   520→  // Kotatsu: the repo is a single .jar, sources are inside it.
+   521→  let runtime: 'aniyomi' | 'cloudstream' | 'kotatsu';
+   522→  let meta: any;
+   523→  if ((idx as any).isKotatsuJar) {
+   524→    runtime = 'kotatsu';
+   525→    // Ensure jar is downloaded + loaded, then find the source.
+   526→    if (!isKotatsuJarCached(ue.repoUrl)) {
+   527→      try { await installKotatsuJar(ue.repoUrl); }
+   528→      catch (e: any) {
+   529→        send({ id, status: 'error', error: `Kotatsu jar install failed: ${e?.message ?? e}` });
+   530→        return;
+   531→      }
+   532→    }
+   533→    await kotatsuLoadExtensionsCache.ensureLoaded();
+   534→    const src = kotatsuLoadExtensionsCache.getSource(extId);
+   535→    if (!src) {
+   536→      send({ id, status: 'error', error: `Kotatsu source ${extId} not loaded` });
+   537→      return;
+   538→    }
+   539→    meta = { id: src.id, name: src.name, baseUrl: src.baseUrl, lang: src.lang, runtime: 'kotatsu' };
+   540→  } else {
+   541→    meta = idx.extensions.find((e) => e.id === extId);
+   542→    if (!meta) {
+   543→      send({ id, status: 'error', error: `Extension ${extId} metadata missing from repo` });
+   544→      return;
+   545→    }
+   546→    runtime = meta.runtime ?? 'aniyomi';
+   547→  }
+   548→
+   549→  // 3. Ensure the binary is downloaded + converted + loaded into the JAR.
+   550→  if (runtime === 'cloudstream') {
+   551→    // CloudStream: ensure .cs3+.jar downloaded + repackaged + csLoadExtensions called.
+   552→    if (!isCsJarCached(meta.internalName ?? meta.name)) {
+   553→      try {
+   554→        await installCsPlugin({
+   555→          name: meta.name,
+   556→          internalName: meta.internalName ?? meta.name,
+   557→          version: meta.version,
+   558→          jarUrl: meta.jarUrl,
+   559→          pluginUrl: meta.fileUrl,
+   560→          authors: meta.authors,
+   561→        });
+   562→      } catch (e: any) {
+   563→        send({ id, status: 'error', error: `CS install failed: ${e?.message ?? e}` });
+   564→        return;
+   565→      }
+   566→    }
+   567→    await csLoadExtensionsCache.ensureLoaded();
+   568→  } else if (runtime === 'kotatsu') {
+   569→    // Already ensured above.
+   570→  } else {
+   571→    // Aniyomi: ensure .apk downloaded + dex2jar + loadExtensions called.
+   572→    if (meta.fileUrl) {
+   573→      const apkPath = await downloadExt(meta.fileUrl); // idempotent
+   574→      if (meta.pkg && !isJarCached(meta.pkg)) {
+   575→        try {
+   576→          await apkToJar(apkPath, meta.pkg);
+   577→        } catch (e: any) {
+   578→          send({ id, status: 'error', error: `dex2jar conversion failed: ${e?.message ?? e}` });
+   579→          return;
+   580→        }
+   581→      }
+   582→    }
+   583→    await loadExtensionsCache.ensureLoaded();
+   584→  }
+   585→
+   586→  // 4. Build the JAR request — different per runtime.
+   587→  //    Aniyomi: { method, args:{...methodArgs, sourceId, isAnime}, id }
+   588→  //    CloudStream: method is prefixed 'cs' + args shape differs:
+   589→  //      csSearch      → { sourceId, query, page }
+   590→  //      csGetDetail   → { sourceId, url }
+   591→  //      csGetVideoList→ { sourceId, url }
+   592→  //    Kotatsu: method is prefixed 'kotatsu' + args shape:
+   593→  //      kotatsuGetPopular      → { sourceId, page }
+   594→  //      kotatsuGetLatestUpdates→ { sourceId, page }
+   595→  //      kotatsuSearch          → { sourceId, query, page }
+   596→  //      kotatsuGetDetail       → { sourceId, media:{title,url,thumbnail_url} }
+   597→  //      kotatsuGetPageList     → { sourceId, episode:{name,url} }
+   598→  //    The client passes `method` as the Aniyomi-style name (getPopular/search/getDetail/getVideoList);
+   599→  //    we translate to the runtime-specific method name + arg shape here.
+   600→  let jarMethod: string = method;
+   601→  let jarArgs: any;
+   602→
+   603→  if (runtime === 'cloudstream') {
+   604→    // Resolve the JAR-assigned sourceId (CloudStream ids may differ from our extId).
+   605→    const csSource = csLoadExtensionsCache.getSource(meta.internalName ?? meta.id);
+   606→    const csSourceId = csSource?.id ?? meta.id;
+   607→    const clientArgs = args ?? {};
+   608→
+   609→    if (method === 'getPopular' || method === 'getLatestUpdates') {
+   610→      jarMethod = 'csSearch';
+   611→      jarArgs = { sourceId: csSourceId, query: '', page: clientArgs.page ?? 1 };
+   612→    } else if (method === 'search') {
+   613→      jarMethod = 'csSearch';
+   614→      jarArgs = { sourceId: csSourceId, query: clientArgs.query ?? '', page: clientArgs.page ?? 1 };
+   615→    } else if (method === 'getDetail') {
+   616→      jarMethod = 'csGetDetail';
+   617→      jarArgs = { sourceId: csSourceId, url: clientArgs.url ?? clientArgs.media?.url };
+   618→    } else if (method === 'getVideoList') {
+   619→      jarMethod = 'csGetVideoList';
+   620→      jarArgs = { sourceId: csSourceId, url: clientArgs.url ?? clientArgs.episode?.url };
+   621→    } else if (method.startsWith('cs')) {
+   622→      // Already a CloudStream method — pass through.
+   623→      jarMethod = method;
+   624→      jarArgs = { ...clientArgs, sourceId: csSourceId };
+   625→    } else {
+   626→      send({ id, status: 'error', error: `CloudStream runtime doesn't support method: ${method}` });
+   627→      return;
+   628→    }
+   629→  } else if (runtime === 'kotatsu') {
+   630→    const kotatsuSourceId = meta.id; // already resolved from kotatsuLoadExtensionsCache
+   631→    const clientArgs = args ?? {};
+   632→
+   633→    if (method === 'getPopular') {
+   634→      jarMethod = 'kotatsuGetPopular';
+   635→      jarArgs = { sourceId: kotatsuSourceId, page: clientArgs.page ?? 1 };
+   636→    } else if (method === 'getLatestUpdates') {
+   637→      jarMethod = 'kotatsuGetLatestUpdates';
+   638→      jarArgs = { sourceId: kotatsuSourceId, page: clientArgs.page ?? 1 };
+   639→    } else if (method === 'search') {
+   640→      jarMethod = 'kotatsuSearch';
+   641→      jarArgs = { sourceId: kotatsuSourceId, query: clientArgs.query ?? '', page: clientArgs.page ?? 1 };
+   642→    } else if (method === 'getDetail') {
+   643→      jarMethod = 'kotatsuGetDetail';
+   644→      // Kotatsu expects { media: { title, url, thumbnail_url } }
+   645→      const media = clientArgs.media ?? {};
+   646→      jarArgs = {
+   647→        sourceId: kotatsuSourceId,
+   648→        media: {
+   649→          title: media.title ?? clientArgs.title,
+   650→          url: media.url ?? clientArgs.url,
+   651→          thumbnail_url: media.thumbnail_url ?? media.cover ?? clientArgs.cover,
+   652→        },
+   653→      };
+   654→    } else if (method === 'getPageList' || method === 'getVideoList') {
+   655→      // For Kotatsu, "getVideoList" from the client maps to kotatsuGetPageList
+   656→      // (Kotatsu is manga-only — returns page URLs, not video streams).
+   657→      jarMethod = 'kotatsuGetPageList';
+   658→      const episode = clientArgs.episode ?? {};
+   659→      jarArgs = {
+   660→        sourceId: kotatsuSourceId,
+   661→        episode: {
+   662→          name: episode.name ?? clientArgs.name,
+   663→          url: episode.url ?? clientArgs.url,
+   664→        },
+   665→      };
+   666→    } else if (method.startsWith('kotatsu')) {
+   667→      // Already a Kotatsu method — pass through.
+   668→      jarMethod = method;
+   669→      jarArgs = { ...clientArgs, sourceId: kotatsuSourceId };
+   670→    } else {
+   671→      send({ id, status: 'error', error: `Kotatsu runtime doesn't support method: ${method}` });
+   672→      return;
+   673→    }
+   674→  } else {
+   675→    // Aniyomi
+   676→    const sourceId = meta.id;
+   677→    const isAnime = meta.type !== 'manga';
+   678→    jarArgs = { ...(args ?? {}), sourceId, isAnime };
+   679→  }
+   680→
+   681→  // 5. Forward to JAR.
+   682→  await jarRunner.ensureReady();
+   683→  const jid = innerId ?? id;
+   684→  await jarRunner.send({ method: jarMethod, args: jarArgs, id: jid });
+   685→
+   686→  if (!stream) {
+   687→    // Wait for ONE final response, then unsubscribe.
+   688→    // The JAR's final response has NO status field (just {id, data}) — mirrors
+   689→    // Dart SidecarBridge._handleResponse where non-'partial' → complete.
+   690→    return new Promise<void>((resolve) => {
+   691→      let settled = false;
+   692→      const off = jarRunner.onLine((line) => {
+   693→        try {
+   694→          const resp = JSON.parse(line);
+   695→          if (resp?.id !== jid) return;
+   696→          if (settled) return;
+   697→          const status = resp.status;
+   698→          if (status === 'partial' || status === 'log') {
+   699→            // Intermediate — forward as a log line.
+   700→            send({ id, status: 'log', data: resp.data });
+   701→            return;
+   702→          }
+   703→          settled = true;
+   704→          off();
+   705→          // Final response. Detect error payloads.
+   706→          const isError = status === 'error' || (resp.data && typeof resp.data === 'object' && !Array.isArray(resp.data) && resp.data.error);
+   707→          if (isError) {
+   708→            send({
+   709→              id,
+   710→              status: 'error',
+   711→              error: resp.error ?? (resp.data?.error ? String(resp.data.error) : 'unknown error'),
+   712→              data: resp.data,
+   713→            });
+   714→          } else {
+   715→            send({ id, status: 'ok', data: resp.data });
+   716→          }
+   717→          resolve();
+   718→        } catch {
+   719→          // not JSON, ignore
+   720→        }
+   721→      });
+   722→      // Safety timeout: 5 min
+   723→      setTimeout(() => {
+   724→        if (settled) return;
+   725→        settled = true;
+   726→        off();
+   727→        send({ id, status: 'error', error: 'invoke timeout (5min)' });
+   728→        resolve();
+   729→      }, 5 * 60 * 1000);
+   730→    });
+   731→  } else {
+   732→    // Stream: relay all responses with this jid until completed/error.
+   733→    // The JAR emits 'partial' for intermediate chunks and 'completed'/'error'
+   734→    // for the terminal event. If the JAR sends a statusless response (no
+   735→    // 'partial'/'completed'/'error'), treat it as a single chunk.
+   736→    return new Promise<void>((resolve) => {
+   737→      let settled = false;
+   738→      const off = jarRunner.onLine((line) => {
+   739→        try {
+   740→          const resp = JSON.parse(line);
+   741→          if (resp?.id !== jid) return;
+   742→          const status = resp.status;
+   743→          if (status === 'completed') {
+   744→            if (settled) return;
+   745→            settled = true;
+   746→            off();
+   747→            send({ id, status: 'completed' });
+   748→            resolve();
+   749→          } else if (status === 'error') {
+   750→            if (settled) return;
+   751→            settled = true;
+   752→            off();
+   753→            send({ id, status: 'error', error: resp.error ?? 'unknown', data: resp.data });
+   754→            resolve();
+   755→          } else if (status === 'partial' || status === 'log') {
+   756→            // relay chunk
+   757→            send({ id, status: 'partial', data: resp.data });
+   758→          } else {
+   759→            // statusless final (single-shot response) — relay + complete
+   760→            if (settled) return;
+   761→            settled = true;
+   762→            off();
+   763→            send({ id, status: 'ok', data: resp.data });
+   764→            resolve();
+   765→          }
+   766→        } catch {}
+   767→      });
+   768→    });
+   769→  }
+   770→}
+   771→
+   772→/** Helper for SSH auth: create-or-touch user record from a key fingerprint. */
+   773→export function authenticateUser(fingerprint: string): string {
+   774→  const user = getOrCreateUser(fingerprint);
+   775→  return user.id;
+   776→}
+   777→
