@@ -1,0 +1,505 @@
+     1→   200→   200→
+     2→   201→   201→  <!-- Extensions -->
+     3→   202→   202→  <div class="panel" id="panel-extensions">
+     4→   203→   203→    <div class="content">
+     5→   204→   204→      <div class="table-wrap">
+     6→   205→   205→        <div class="table-bar">
+     7→   206→   206→          <input placeholder="Search extensions..." oninput="filterTable('extsBody',this.value)">
+     8→   207→   207→          <select id="extTypeFilter" onchange="filterExts()"><option value="">All types</option><option value="aniyomi-anime">Anime</option><option value="aniyomi-manga">Manga</option><option value="cloudstream">CloudStream</option><option value="kotatsu">Kotatsu</option></select>
+     9→   208→   208→          <button class="btn-sm btn-ghost" onclick="loadAll()">Refresh</button>
+    10→   209→   209→        </div>
+    11→   210→   210→        <table><thead><tr><th>ID</th><th>Extension</th><th>Type</th><th>Version</th><th>Lang</th><th>Installs</th><th>File</th><th>Actions</th></tr></thead><tbody id="extsBody"></tbody></table>
+    12→   211→   211→      </div>
+    13→   212→   212→    </div>
+    14→   213→   213→  </div>
+    15→   214→   214→
+    16→   215→   215→  <!-- Terminal -->
+    17→   216→   216→  <div class="panel" id="panel-terminal">
+    18→   217→   217→    <div class="content">
+    19→   218→   218→      <div class="terminal">
+    20→   219→   219→        <div class="section-label">Step 1: Setup Extensions</div>
+    21→   220→   220→        <div class="input-row">
+    22→   221→   221→          <label>Files</label>
+    23→   222→   222→          <span id="extFilesInfo" style="color:#52525b;font-size:12px">Loading...</span>
+    24→   223→   223→          <button class="btn-sm btn-ghost" onclick="doShowExtFiles()" style="flex:none">List Files</button>
+    25→   224→   224→          <button class="btn-sm btn-ghost" onclick="doDownloadAll()" style="flex:none">Download All</button>
+    26→   225→   225→          <button class="btn-sm btn-primary" onclick="doConvertAllApks()" style="flex:none">Convert APKs → JARs</button>
+    27→   226→   226→        </div>
+    28→   227→   227→
+    29→   228→   228→        <div class="section-label">Step 2: Load Sources into JAR</div>
+    30→   229→   229→        <div class="input-row">
+    31→   230→   230→          <label>Source</label>
+    32→   231→   231→          <select id="invokeSource" onchange="onSourceChange()">
+    33→   232→   232→            <option value="">-- Load sources first --</option>
+    34→   233→   233→          </select>
+    35→   234→   234→          <button class="btn-sm btn-primary" onclick="doLoadSources()" style="flex:none">Load Sources</button>
+    36→   235→   235→          <button class="btn-sm btn-ghost" onclick="runJarStatus()" style="flex:none">JAR Status</button>
+    37→   236→   236→        </div>
+    38→   237→   237→
+    39→   238→   238→        <div class="section-label">Step 3: Test JAR Methods</div>
+    40→   239→   239→        <div class="input-row">
+    41→   240→   240→          <label>Method</label>
+    42→   241→   241→          <select id="invokeMethod" onchange="onMethodChange()">
+    43→   242→   242→            <option value="search">search</option>
+    44→   243→   243→            <option value="getPopular">getPopular</option>
+    45→   244→   244→            <option value="getLatest">getLatest</option>
+    46→   245→   245→            <option value="getDetail">getDetail</option>
+    47→   246→   246→            <option value="getFilterList">getFilterList</option>
+    48→   247→   247→            <option value="getVideoList">getVideoList</option>
+    49→   248→   248→            <option value="loadExtensions">loadExtensions</option>
+    50→   249→   249→            <option value="convertApk">convertApk</option>
+    51→   250→   250→            <option value="">── custom ──</option>
+    52→   251→   251→          </select>
+    53→   252→   252→        </div>
+    54→   253→   253→        <div class="input-row" id="customMethodRow" style="display:none">
+    55→   254→   254→          <label>Custom</label>
+    56→   255→   255→          <input id="customMethod" placeholder="method name">
+    57→   256→   256→        </div>
+    58→   257→   257→        <div class="input-row">
+    59→   258→   258→          <label>Type</label>
+    60→   259→   259→          <select id="invokeType">
+    61→   260→   260→            <option value="true">Anime</option>
+    62→   261→   261→            <option value="false">Manga</option>
+    63→   262→   262→          </select>
+    64→   263→   263→        </div>
+    65→   264→   264→        <div class="input-row">
+    66→   265→   265→          <label>Args (JSON)</label>
+    67→   266→   266→          <input id="invokeArgs" placeholder='{"page":1}' value='{}'>
+    68→   267→   267→        </div>
+    69→   268→   268→        <div class="input-row">
+    70→   269→   269→          <label>Timeout (s)</label>
+    71→   270→   270→          <input id="invokeTimeout" type="number" value="60" style="max-width:80px;flex:none">
+    72→   271→   271→          <button class="btn-sm btn-primary" onclick="runInvoke()" style="margin-left:4px;height:36px">▶ Run</button>
+    73→   272→   272→          <button class="btn-sm btn-ghost" onclick="runForceUpdate()">Force Update</button>
+    74→   273→   273→        </div>
+    75→   274→   274→        <div class="section-label">Output</div>
+    76→   275→   275→        <textarea id="outputArea" readonly placeholder="Output will appear here..."></textarea>
+    77→   276→   276→        <div class="output-meta" id="outputMeta"></div>
+    78→   277→   277→      </div>
+    79→   278→   278→    </div>
+    80→   279→   279→  </div>
+    81→   280→   280→</div>
+    82→   281→   281→
+    83→   282→   282→<!-- Modals -->
+    84→   283→   283→<div id="modalOverlay" class="modal-overlay" style="display:none" onclick="if(event.target===this)closeModal()">
+    85→   284→   284→  <div class="modal" id="modalContent"></div>
+    86→   285→   285→</div>
+    87→   286→   286→
+    88→   287→   287→<div class="toast" id="toast"></div>
+    89→   288→   288→
+    90→   289→   289→<script>
+    91→   290→   290→let token=localStorage.getItem('bridge_admin_token')||'';
+    92→   291→   291→let _sources=[];
+    93→   292→   292→const keyInput=document.getElementById('keyInput');
+    94→   293→   293→keyInput.addEventListener('keydown',e=>{if(e.key==='Enter')login()});
+    95→   294→   294→
+    96→   295→   295→// ── API ──
+    97→   296→   296→async function api(path,opts={}){
+    98→   297→   297→  const r=await fetch(path,{headers:{'Content-Type':'application/json','Authorization':'Bearer '+token},...opts});
+    99→   298→   298→  if(r.status===401){logout();throw new Error('unauthorized')}
+   100→   299→   299→  return r.json();
+   101→   300→   300→}
+   102→   301→   301→
+   103→   302→   302→async function apiPost(path,body){
+   104→   303→   303→  return api(path,{method:'POST',body:JSON.stringify(body)});
+   105→   304→   304→}
+   106→   305→   305→
+   107→   306→   306→// ── Auth ──
+   108→   307→   307→async function login(){
+   109→   308→   308→  const key=keyInput.value.trim();if(!key)return;
+   110→   309→   309→  try{
+   111→   310→   310→    const r=await fetch('/admin/login',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({key})});
+   112→   311→   311→    const d=await r.json();
+   113→   312→   312→    if(d.ok){token=d.token;localStorage.setItem('bridge_admin_token',token);showApp()}
+   114→   313→   313→    else{const el=document.getElementById('loginError');el.style.display='block';setTimeout(()=>el.style.display='none',2000)}
+   115→   314→   314→  }catch(e){toast('Connection failed','error')}
+   116→   315→   315→}
+   117→   316→   316→function logout(){token='';localStorage.removeItem('bridge_admin_token');document.getElementById('app').style.display='none';document.getElementById('loginScreen').style.display='flex';keyInput.value=''}
+   118→   317→   317→function showApp(){document.getElementById('loginScreen').style.display='none';document.getElementById('app').style.display='block';loadAll();loadJarStatus();loadCachedSources();loadExtFilesInfo()}
+   119→   318→   318→
+   120→   319→   319→// ── Tabs ──
+   121→   320→   320→function switchTab(name,btn){document.querySelectorAll('.tab').forEach(t=>t.classList.remove('active'));document.querySelectorAll('.panel').forEach(p=>p.classList.remove('active'));btn.classList.add('active');document.getElementById('panel-'+name).classList.add('active')}
+   122→   321→   321→
+   123→   322→   322→// ── Util ──
+   124→   323→   323→function filterTable(id,q){q=q.toLowerCase();document.getElementById(id).querySelectorAll('tr').forEach(tr=>{tr.style.display=tr.textContent.toLowerCase().includes(q)?'':'none'})}
+   125→   324→   324→function toast(msg,type=''){const el=document.getElementById('toast');el.textContent=msg;el.className='toast show '+type;setTimeout(()=>el.className='toast',2500)}
+   126→   325→   325→function typeBadge(t){const s=(t||'').replace('aniyomi-','');return`<span class="badge ${s}">${s}</span>`}
+   127→   326→   326→function esc(s){const d=document.createElement('div');d.textContent=s||'';return d.innerHTML}
+   128→   327→   327→function fmtDate(d){return d?new Date(d).toLocaleDateString('en-US',{month:'short',day:'numeric',year:'numeric',hour:'2-digit',minute:'2-digit'}):'-'}
+   129→   328→   328→function fmtSize(b){if(!b)return'-';if(b>1048576)return(b/1048576).toFixed(1)+'MB';if(b>1024)return(b/1024).toFixed(0)+'KB';return b+'B'}
+   130→   329→   329→
+   131→   330→   330→// ── Modal ──
+   132→   331→   331→function openModal(type,data){
+   133→   332→   332→  const m=document.getElementById('modalContent');
+   134→   333→   333→  if(type==='createUser') m.innerHTML=`<h2>Create User</h2><label>Username</label><input id="m_username" placeholder="min 3 chars"><label>Password</label><input id="m_password" type="password" placeholder="min 4 chars"><div class="modal-actions"><button class="btn-sm btn-ghost" onclick="closeModal()">Cancel</button><button class="btn-sm btn-primary" onclick="doCreateUser()">Create</button></div>`;
+   135→   334→   334→  else if(type==='addRepo') m.innerHTML=`<h2>Add Repo</h2><label>User</label><select id="m_userId">${window._users.map(u=>`<option value="${u.id}">${esc(u.username)}</option>`).join('')}</select><label>Repo URL</label><input id="m_repoUrl" placeholder="https://..."><label>Type (optional, auto-detect)</label><select id="m_repoType"><option value="">Auto-detect</option><option value="aniyomi">Aniyomi</option><option value="cloudstream">CloudStream</option><option value="kotatsu">Kotatsu</option></select><div class="modal-actions"><button class="btn-sm btn-ghost" onclick="closeModal()">Cancel</button><button class="btn-sm btn-primary" onclick="doAddRepo()">Add</button></div>`;
+   136→   335→   335→  else if(type==='userDetail') m.innerHTML=`<h2>${esc(data.username)}</h2><p style="color:#71717a;font-size:12px;margin-bottom:12px">ID: ${esc(data.id)} · Joined: ${fmtDate(data.created)}</p><div class="detail-section"><h3>Repos (${(data.repos||[]).length})</h3><table><thead><tr><th>Name</th><th>Type</th><th>URL</th></tr></thead><tbody>${(data.repos||[]).map(r=>`<tr><td>${esc(r.name||'-')}</td><td>${typeBadge(r.type)}</td><td style="max-width:200px;overflow:hidden;text-overflow:ellipsis" title="${esc(r.url)}">${esc(r.url)}</td></tr>`).join('')||'<tr><td colspan="3" class="empty">No repos</td></tr>'}</tbody></table></div><div class="detail-section"><h3>Installed Extensions (${(data.installedExtensions||[]).length})</h3><table><thead><tr><th>Name</th><th>Type</th><th>Version</th></tr></thead><tbody>${(data.installedExtensions||[]).map(e=>`<tr><td>${esc(e.name)}</td><td>${typeBadge(e.type)}</td><td>${esc(e.version)}</td></tr>`).join('')||'<tr><td colspan="3" class="empty">None</td></tr>'}</tbody></table></div><div class="detail-section"><h3>Available Extensions (${(data.availableExtensions||[]).length})</h3><table><thead><tr><th>Name</th><th>Type</th><th>Version</th><th>Action</th></tr></thead><tbody>${(data.availableExtensions||[]).map(e=>`<tr><td>${esc(e.name)}</td><td>${typeBadge(e.type)}</td><td>${esc(e.version)}</td><td><button class="btn-sm btn-success" onclick="doInstallExt('${data.id}',${e.id},this)">Install</button></td></tr>`).join('')||'<tr><td colspan="4" class="empty">None (add repos first)</td></tr>'}</tbody></table></div>`;
+   137→   336→   336→  else if(type==='installForUser') m.innerHTML=`<h2>Install Extension for User</h2><label>Extension: ${esc(data.name)} (#${data.id})</label><label>User</label><select id="m_userId">${window._users.map(u=>`<option value="${u.id}">${esc(u.username)}</option>`).join('')}</select><div class="modal-actions"><button class="btn-sm btn-ghost" onclick="closeModal()">Cancel</button><button class="btn-sm btn-primary" onclick="doInstallExtModal(${data.id})">Install</button></div>`;
+   138→   337→   337→  document.getElementById('modalOverlay').style.display='flex';
+   139→   338→   338→}
+   140→   339→   339→function closeModal(){document.getElementById('modalOverlay').style.display='none'}
+   141→   340→   340→
+   142→   341→   341→// ── Actions ──
+   143→   342→   342→async function doCreateUser(){
+   144→   343→   343→  const u=document.getElementById('m_username').value.trim();
+   145→   344→   344→  const p=document.getElementById('m_password').value;
+   146→   345→   345→  if(!u||!p)return toast('Fill all fields','error');
+   147→   346→   346→  const r=await apiPost('/admin/createUser',{username:u,password:p});
+   148→   347→   347→  if(r.ok){toast('User created','success');closeModal();loadAll()}else toast(r.error||'Failed','error');
+   149→   348→   348→}
+   150→   349→   349→async function doAddRepo(){
+   151→   350→   350→  const uid=document.getElementById('m_userId').value;
+   152→   351→   351→  const url=document.getElementById('m_repoUrl').value.trim();
+   153→   352→   352→  const type=document.getElementById('m_repoType').value||undefined;
+   154→   353→   353→  if(!url)return toast('URL required','error');
+   155→   354→   354→  toast('Adding repo...');closeModal();
+   156→   355→   355→  const r=await apiPost('/admin/addRepo',{userId:uid,url,type});
+   157→   356→   356→  if(r.ok){toast(`Repo added (${r.extensions||0} extensions)`,'success');loadAll()}else toast(r.error||'Failed','error');
+   158→   357→   357→}
+   159→   358→   358→async function doInstallExt(userId,extId,btn){
+   160→   359→   359→  if(btn)btn.disabled=true;
+   161→   360→   360→  const r=await apiPost('/admin/installExtension',{userId,extId});
+   162→   361→   361→  if(r.ok)toast('Installed','success');else toast(r.error||'Failed','error');
+   163→   362→   362→  if(btn)btn.disabled=false;
+   164→   363→   363→}
+   165→   364→   364→async function doInstallExtModal(extId){
+   166→   365→   365→  const uid=document.getElementById('m_userId').value;
+   167→   366→   366→  const r=await apiPost('/admin/installExtension',{userId:uid,extId});
+   168→   367→   367→  if(r.ok){toast('Installed','success');closeModal();loadAll()}else toast(r.error||'Failed','error');
+   169→   368→   368→}
+   170→   369→   369→async function doUninstallExt(userId,extId){
+   171→   370→   370→  const r=await apiPost('/admin/uninstallExtension',{userId,extId});
+   172→   371→   371→  if(r.ok)toast('Uninstalled','success');else toast(r.error||'Failed','error');
+   173→   372→   372→}
+   174→   373→   373→async function doDownloadExt(extId,force){
+   175→   374→   374→  toast('Downloading...');
+   176→   375→   375→  const r=await apiPost('/admin/downloadExtension',{extId,force:!!force});
+   177→   376→   376→  if(r.ok)toast(`Downloaded: ${r.filePath||'ok'}${r.updated?' [UPDATED]':''}`,'success');else toast(r.error||'Failed','error');
+   178→   377→   377→  loadAll();
+   179→   378→   378→}
+   180→   379→   379→async function doRefreshRepo(repoId){
+   181→   380→   380→  toast('Refreshing repo...');
+   182→   381→   381→  const r=await apiPost('/admin/refreshRepo',{repoId});
+   183→   382→   382→  if(r.ok)toast(`Refreshed (${r.updated?.length||0} updated)`,'success');else toast(r.error||'Failed','error');
+   184→   383→   383→  loadAll();
+   185→   384→   384→}
+   186→   385→   385→async function deleteUser(id,name){
+   187→   386→   386→  if(!confirm(`Delete user "${name}" and ALL their data?`))return;
+   188→   387→   387→  const r=await api('/admin/user/'+id,{method:'DELETE'});
+   189→   388→   388→  if(r.ok){toast('Deleted','success');loadAll()}else toast(r.error||'Failed','error');
+   190→   389→   389→}
+   191→   390→   390→async function deleteRepo(id,name){
+   192→   391→   391→  if(!confirm(`Delete repo "${name}"? Removes from ALL users.`))return;
+   193→   392→   392→  const r=await api('/admin/repo/'+id,{method:'DELETE'});
+   194→   393→   393→  if(r.ok){toast('Deleted','success');loadAll()}else toast(r.error||'Failed','error');
+   195→   394→   394→}
+   196→   395→   395→async function deleteExtension(id,name){
+   197→   396→   396→  if(!confirm(`Delete extension "${name}"? Removes from ALL users.`))return;
+   198→   397→   397→  const r=await api('/admin/extension/'+id,{method:'DELETE'});
+   199→   398→   398→  if(r.ok){toast('Deleted','success');loadAll()}else toast(r.error||'Failed','error');
+   200→   399→   399→}
+   201→   400→   400→
+   202→   401→   401→// ── Terminal: Setup ──
+   203→   402→   402→async function loadExtFilesInfo(){
+   204→   403→   403→  try{
+   205→   404→   404→    const files=await api('/admin/extFiles');
+   206→   405→   405→    const jars=files.filter(f=>f.type==='jar').length;
+   207→   406→   406→    const apks=files.filter(f=>f.type==='apk').length;
+   208→   407→   407→    const cs3s=files.filter(f=>f.type==='cs3').length;
+   209→   408→   408→    const el=document.getElementById('extFilesInfo');
+   210→   409→   409→    if(!files.length){el.textContent='No files in extensions dir';el.style.color='#ef4444'}
+   211→   410→   410→    else{
+   212→   411→   411→      let t=`${files.length} files (${jars} JAR`;
+   213→   412→   412→      if(apks)t+=`, <span style="color:#ef4444">${apks} APK</span>`;
+   214→   413→   413→      if(cs3s)t+=`, ${cs3s} CS3`;
+   215→   414→   414→      t+=')';
+   216→   415→   415→      el.innerHTML=t;el.style.color=apks?'#ef4444':'#22c55e';
+   217→   416→   416→    }
+   218→   417→   417→  }catch{document.getElementById('extFilesInfo').textContent='(check failed)'}
+   219→   418→   418→}
+   220→   419→   419→async function doShowExtFiles(){
+   221→   420→   420→  const out=document.getElementById('outputArea');
+   222→   421→   421→  const files=await api('/admin/extFiles');
+   223→   422→   422→  if(!files.length){out.value='No files in extensions directory.';return}
+   224→   423→   423→  out.value='Files in extensions directory:\n';
+   225→   424→   424→  files.forEach(f=>{out.value+=`  [${f.type.toUpperCase()}] ${f.name} (${fmtSize(f.size)})\n`});
+   226→   425→   425→  const apks=files.filter(f=>f.type==='apk');
+   227→   426→   426→  if(apks.length)out.value+=`\n⚠ ${apks.length} APK files need conversion. Click "Convert APKs → JARs" above.`;
+   228→   427→   427→  document.getElementById('outputMeta').innerHTML='';
+   229→   428→   428→}
+   230→   429→   429→async function doDownloadAll(){
+   231→   430→   430→  const out=document.getElementById('outputArea');
+   232→   431→   431→  out.value='Downloading all missing extensions...\n';
+   233→   432→   432→  document.getElementById('outputMeta').innerHTML='';
+   234→   433→   433→  const r=await apiPost('/admin/downloadAll',{});
+   235→   434→   434→  if(r.ok){
+   236→   435→   435→    out.value+=`Done: ${r.downloaded} downloaded, ${r.failed} failed (${r.total} total) in ${(r.elapsed/1000).toFixed(1)}s\n`;
+   237→   436→   436→    if(r.errors?.length)out.value+=`\nErrors:\n${r.errors.map(e=>'  '+e).join('\n')}\n`;
+   238→   437→   437→    toast(`Downloaded ${r.downloaded} extensions`,'success');
+   239→   438→   438→    loadExtFilesInfo();loadAll();
+   240→   439→   439→  }else{out.value+='ERROR: '+r.error;toast(r.error||'Failed','error')}
+   241→   440→   440→}
+   242→   441→   441→async function doConvertAllApks(){
+   243→   442→   442→  const out=document.getElementById('outputArea');
+   244→   443→   443→  out.value='Converting APKs to JARs... (this may take a while)\n';
+   245→   444→   444→  document.getElementById('outputMeta').innerHTML='';
+   246→   445→   445→  const r=await apiPost('/admin/convertAllApks',{});
+   247→   446→   446→  if(r.ok){
+   248→   447→   447→    out.value+=`Done: ${r.converted} converted, ${r.failed} failed in ${(r.elapsed/1000).toFixed(1)}s\n`;
+   249→   448→   448→    if(r.errors?.length)out.value+=`\nErrors:\n${r.errors.map(e=>'  '+e).join('\n')}\n`;
+   250→   449→   449→    toast(`Converted ${r.converted} APKs`,'success');
+   251→   450→   450→    loadExtFilesInfo();loadAll();
+   252→   451→   451→  }else{out.value+='ERROR: '+r.error;toast(r.error||'Failed','error')}
+   253→   452→   452→}
+   254→   453→   453→
+   255→   454→   454→// ── Terminal: Sources ──
+   256→   455→   455→async function doLoadSources(){
+   257→   456→   456→  const out=document.getElementById('outputArea');
+   258→   457→   457→  out.value='Loading extensions into JAR... (may take a minute)\n';
+   259→   458→   458→  document.getElementById('outputMeta').innerHTML='';
+   260→   459→   459→  try{
+   261→   460→   460→    const r=await apiPost('/admin/loadExtensions',{});
+   262→   461→   461→    if(r.ok){
+   263→   462→   462→      _sources=r.sources||[];
+   264→   463→   463→      populateSourceDropdown();
+   265→   464→   464→      out.value+=`Loaded ${r.total} sources:\n`;
+   266→   465→   465→      // Count unique base names
+   267→   466→   466→      const bases=new Set(_sources.map(s=>baseName(s.name)));
+   268→   467→   467→      out.value+=`  (${bases.size} unique extensions, ${r.total} language variants)\n`;
+   269→   468→   468→      _sources.sort((a,b)=>(baseName(a.name)+a.lang).localeCompare(baseName(b.name)+b.lang)).forEach(s=>{out.value+=`  [${s.type}] ${s.name} (id: ${s.id})\n`});
+   270→   469→   469→      toast(`Loaded ${r.total} sources`,'success');
+   271→   470→   470→    }else{
+   272→   471→   471→      out.value+='ERROR: '+r.error+'\n';
+   273→   472→   472→      toast(r.error||'Failed','error');
+   274→   473→   473→    }
+   275→   474→   474→  }catch(e){out.value+='EXCEPTION: '+e.message+'\n'}
+   276→   475→   475→  updateSrcBadge();
+   277→   476→   476→}
+   278→   477→   477→
+   279→   478→   478→function loadCachedSources(){
+   280→   479→   479→  api('/admin/sources').then(r=>{
+   281→   480→   480→    _sources=r.sources||[];
+   282→   481→   481→    populateSourceDropdown();
+   283→   482→   482→    updateSrcBadge();
+   284→   483→   483→  }).catch(()=>{});
+   285→   484→   484→}
+   286→   485→   485→
+   287→   486→   486→// Extract base name from extension (strip language codes like " (All)", " - EN", etc.)
+   288→   487→   487→function baseName(name){
+   289→   488→   488→  return (name||'').replace(/\s*[\-–—(].*$/, '').replace(/\s+(All|Multi|English|Japanese|Spanish|Portuguese|French|Italian|German|Arabic|Hindi|Thai|Vietnamese|Indonesian|Korean|Chinese|Turkish|Polish|Russian)$/i, '').trim();
+   290→   489→   489→}
+   291→   490→   490→
+   292→   491→   491→function populateSourceDropdown(){
+   293→   492→   492→  const sel=document.getElementById('invokeSource');
+   294→   493→   493→  if(!_sources.length){
+   295→   494→   494→    sel.innerHTML='<option value="">-- No sources loaded --</option>';
+   296→   495→   495→    return;
+   297→   496→   496→  }
+   298→   497→   497→  // Group by type, then by base name
+   299→   498→   498→  const byType={};
+   300→   499→   499→  _sources.forEach(s=>{
+   301→   500→   500→    const t=s.type||'other';
+   302→   501→   501→    if(!byType[t])byType[t]=[];
+   303→   502→   502→    byType[t].push(s);
+   304→   503→   503→  });
+   305→   504→   504→  let html='<option value="">-- Select a source --</option>';
+   306→   505→   505→  for(const[type,sources] of Object.entries(byType)){
+   307→   506→   506→    html+=`<optgroup label="${type}">`;
+   308→   507→   507→    // Group by base name
+   309→   508→   508→    const groups=new Map();
+   310→   509→   509→    sources.forEach(s=>{
+   311→   510→   510→      const bn=baseName(s.name);
+   312→   511→   511→      if(!groups.has(bn))groups.set(bn,[]);
+   313→   512→   512→      groups.get(bn).push(s);
+   314→   513→   513→    });
+   315→   514→   514→    // Sort base names
+   316→   515→   515→    [...groups.keys()].sort().forEach(bn=>{
+   317→   516→   516→      const items=groups.get(bn);
+   318→   517→   517→      if(items.length===1){
+   319→   518→   518→        const s=items[0];
+   320→   519→   519→        html+=`<option value="${s.id}" data-type="${s.type}" data-pkg="${esc(s.pkg)}">${esc(s.name)}</option>`;
+   321→   520→   520→      }else{
+   322→   521→   521→        // Multiple languages — use optgroup
+   323→   522→   522→        html+=`<optgroup label="${esc(bn)}">`;
+   324→   523→   523→        items.sort((a,b)=>(a.lang||'').localeCompare(b.lang||'')).forEach(s=>{
+   325→   524→   524→          const label=s.lang?s.lang:s.name.replace(bn,'').replace(/^[\s\-–—(]+|[\s\-–—)]+$/g,'')||'?';
+   326→   525→   525→          html+=`<option value="${s.id}" data-type="${s.type}" data-pkg="${esc(s.pkg)}">${esc(s.name)}</option>`;
+   327→   526→   526→        });
+   328→   527→   527→        html+='</optgroup>';
+   329→   528→   528→      }
+   330→   529→   529→    });
+   331→   530→   530→    html+='</optgroup>';
+   332→   531→   531→  }
+   333→   532→   532→  sel.innerHTML=html;
+   334→   533→   533→}
+   335→   534→   534→
+   336→   535→   535→function updateSrcBadge(){
+   337→   536→   536→  const b=document.getElementById('srcBadge');
+   338→   537→   537→  if(_sources.length){b.style.display='';b.textContent=_sources.length+' sources'}
+   339→   538→   538→  else{b.style.display='none'}
+   340→   539→   539→}
+   341→   540→   540→
+   342→   541→   541→function onSourceChange(){
+   343→   542→   542→  const sel=document.getElementById('invokeSource');
+   344→   543→   543→  const opt=sel.selectedOptions[0];
+   345→   544→   544→  if(opt&&opt.dataset.type){
+   346→   545→   545→    // Auto-set type dropdown based on source type
+   347→   546→   546→    const isAnime=opt.dataset.type.includes('anime');
+   348→   547→   547→    document.getElementById('invokeType').value=isAnime?'true':'false';
+   349→   548→   548→  }
+   350→   549→   549→  // Re-fill args based on current method
+   351→   550→   550→  onMethodChange();
+   352→   551→   551→}
+   353→   552→   552→
+   354→   553→   553→// ── Terminal: Method auto-fill args ──
+   355→   554→   554→function onMethodChange(){
+   356→   555→   555→  const sel=document.getElementById('invokeMethod');
+   357→   556→   556→  const customRow=document.getElementById('customMethodRow');
+   358→   557→   557→  if(sel.value===''){customRow.style.display='flex';return}
+   359→   558→   558→  customRow.style.display='none';
+   360→   559→   559→
+   361→   560→   560→  const sourceId=document.getElementById('invokeSource').value;
+   362→   561→   561→  const isAnime=document.getElementById('invokeType').value==='true';
+   363→   562→   562→  let args={};
+   364→   563→   563→
+   365→   564→   564→  switch(sel.value){
+   366→   565→   565→    case 'loadExtensions':
+   367→   566→   566→      args={folderPath:'/home/z/my-project/bridge/extensions'};
+   368→   567→   567→      break;
+   369→   568→   568→    case 'search':
+   370→   569→   569→      args={sourceId,isAnime,query:'naruto',page:1,filters:[]};
+   371→   570→   570→      break;
+   372→   571→   571→    case 'getPopular':
+   373→   572→   572→      args={sourceId,isAnime,page:1};
+   374→   573→   573→      break;
+   375→   574→   574→    case 'getLatest':
+   376→   575→   575→      args={sourceId,isAnime,page:1};
+   377→   576→   576→      break;
+   378→   577→   577→    case 'getDetail':
+   379→   578→   578→      args={sourceId,isAnime,media:{title:'Test',url:'https://example.com/anime/1'}};
+   380→   579→   579→      break;
+   381→   580→   580→    case 'getFilterList':
+   382→   581→   581→      args={sourceId,isAnime};
+   383→   582→   582→      break;
+   384→   583→   583→    case 'getVideoList':
+   385→   584→   584→      args={sourceId,isAnime,episode:{name:'Episode 1',url:'https://example.com/episode/1',episode_number:1}};
+   386→   585→   585→      break;
+   387→   586→   586→    case 'convertApk':
+   388→   587→   587→      args={apkPath:'/path/to/file.apk'};
+   389→   588→   588→      break;
+   390→   589→   589→    default:
+   391→   590→   590→      args={};
+   392→   591→   591→  }
+   393→   592→   592→  document.getElementById('invokeArgs').value=JSON.stringify(args,null,2);
+   394→   593→   593→}
+   395→   594→   594→
+   396→   595→   595→// ── Terminal: Invoke ──
+   397→   596→   596→async function runInvoke(){
+   398→   597→   597→  const sel=document.getElementById('invokeMethod');
+   399→   598→   598→  let method=sel.value;
+   400→   599→   599→  if(method===''){
+   401→   600→   600→    method=document.getElementById('customMethod').value.trim();
+   402→   601→   601→    if(!method)return toast('Enter a method name','error');
+   403→   602→   602→  }
+   404→   603→   603→  let args={};try{args=JSON.parse(document.getElementById('invokeArgs').value||'{}')}catch{return toast('Invalid JSON in args','error')};
+   405→   604→   604→  const timeout=(parseInt(document.getElementById('invokeTimeout').value)||60)*1000;
+   406→   605→   605→  const out=document.getElementById('outputArea');
+   407→   606→   606→  out.value='Running '+method+'...\n';
+   408→   607→   607→  document.getElementById('outputMeta').innerHTML='';
+   409→   608→   608→  const t0=Date.now();
+   410→   609→   609→  try{
+   411→   610→   610→    const r=await apiPost('/admin/invoke',{method,args,timeout});
+   412→   611→   611→    const elapsed=Date.now()-t0;
+   413→   612→   612→    if(r.ok){
+   414→   613→   613→      out.value=JSON.stringify(r.data,null,2);
+   415→   614→   614→      document.getElementById('outputMeta').innerHTML=`<span class="ok">OK</span> · ${elapsed}ms`;
+   416→   615→   615→      // If this was loadExtensions, refresh source list
+   417→   616→   616→      if(method==='loadExtensions'&&Array.isArray(r.data)){
+   418→   617→   617→        _sources=r.data.map(s=>({id:s.id,name:s.name,type:s.type||(s.pkg?.includes('manga')?'aniyomi-manga':'aniyomi-anime'),lang:s.lang||'',pkg:s.pkg||''}));
+   419→   618→   618→        populateSourceDropdown();
+   420→   619→   619→        updateSrcBadge();
+   421→   620→   620→      }
+   422→   621→   621→    }else{
+   423→   622→   622→      out.value='ERROR: '+r.error;
+   424→   623→   623→      document.getElementById('outputMeta').innerHTML=`<span class="err">FAILED</span> · ${elapsed}ms`;
+   425→   624→   624→    }
+   426→   625→   625→  }catch(e){out.value='EXCEPTION: '+e.message;document.getElementById('outputMeta').innerHTML=`<span class="err">ERROR</span>`}
+   427→   626→   626→}
+   428→   627→   627→async function runForceUpdate(){
+   429→   628→   628→  const out=document.getElementById('outputArea');
+   430→   629→   629→  out.value='Force updating all repos...\n';
+   431→   630→   630→  const t0=Date.now();
+   432→   631→   631→  try{
+   433→   632→   632→    const r=await apiPost('/admin/forceUpdate',{});
+   434→   633→   633→    out.value+=JSON.stringify(r,null,2);
+   435→   634→   634→    document.getElementById('outputMeta').innerHTML=`<span class="ok">OK</span> · ${Date.now()-t0}ms`;
+   436→   635→   635→    loadAll();
+   437→   636→   636→  }catch(e){out.value+='ERROR: '+e.message}
+   438→   637→   637→}
+   439→   638→   638→async function runJarStatus(){
+   440→   639→   639→  const r=await api('/admin/jarStatus');
+   441→   640→   640→  document.getElementById('outputArea').value=JSON.stringify(r,null,2);
+   442→   641→   641→  document.getElementById('outputMeta').innerHTML=r.jarReady?'<span class="ok">JAR Ready</span>':'<span class="err">JAR Not Ready</span>';
+   443→   642→   642→  loadJarStatus();
+   444→   643→   643→}
+   445→   644→   644→
+   446→   645→   645→// ── JAR badge ──
+   447→   646→   646→async function loadJarStatus(){
+   448→   647→   647→  try{
+   449→   648→   648→    const r=await api('/admin/jarStatus');
+   450→   649→   649→    const b=document.getElementById('jarBadge');
+   451→   650→   650→    b.className='jar-badge '+(r.jarReady?'on':'off');
+   452→   651→   651→    b.textContent='JAR '+(r.jarReady?'Ready':('('+r.fileSizeMB+'MB)'));
+   453→   652→   652→  }catch{}
+   454→   653→   653→}
+   455→   654→   654→
+   456→   655→   655→// ── Load data ──
+   457→   656→   656→async function loadAll(){
+   458→   657→   657→  try{
+   459→   658→   658→    const [stats,users,repos,extensions]=await Promise.all([api('/admin/stats'),api('/admin/users'),api('/admin/repos'),api('/admin/extensions')]);
+   460→   659→   659→    window._users=users;
+   461→   660→   660→    document.getElementById('headerStats').textContent=`${stats.users} users · ${stats.extensions} exts · ${stats.installs} installs`;
+   462→   661→   661→
+   463→   662→   662→    // Stats grid
+   464→   663→   663→    document.getElementById('statsGrid').innerHTML=[
+   465→   664→   664→      ['Users',stats.users],['Repos',stats.repos],['Extensions',stats.extensions],['Installs',stats.installs]
+   466→   665→   665→    ].map(([l,v])=>`<div class="stat-card"><div class="label">${l}</div><div class="value">${v}</div></div>`).join('');
+   467→   666→   666→
+   468→   667→   667→    // User counts
+   469→   668→   668→    const uc={};users.forEach(u=>{uc[u.id]={repos:0,exts:0}});
+   470→   669→   669→    (stats.userDetails||[]).forEach(u=>{if(uc[u.id])uc[u.id]={repos:u.repos,exts:u.extensions}});
+   471→   670→   670→
+   472→   671→   671→    // Dashboard users
+   473→   672→   672→    document.getElementById('dashUsers').innerHTML=users.map(u=>`<tr><td>${esc(u.username)}</td><td>${fmtDate(u.created)}</td><td>${uc[u.id].repos}</td><td>${uc[u.id].exts}</td><td><button class="btn-sm btn-ghost" onclick="loadUserDetail('${u.id}')">Detail</button><button class="btn-sm btn-danger" onclick="deleteUser('${u.id}','${esc(u.username)}')">Del</button></td></tr>`).join('')||'<tr><td colspan="5" class="empty">No users</td></tr>';
+   474→   673→   673→
+   475→   674→   674→    // Users tab
+   476→   675→   675→    document.getElementById('usersBody').innerHTML=users.map(u=>`<tr><td>${esc(u.username)}</td><td style="font-family:monospace;font-size:11px;max-width:120px;overflow:hidden;text-overflow:ellipsis" title="${esc(u.id)}">${esc(u.id)}</td><td>${fmtDate(u.created)}</td><td>${uc[u.id].repos}</td><td>${uc[u.id].exts}</td><td><button class="btn-sm btn-ghost" onclick="loadUserDetail('${u.id}')">Detail</button><button class="btn-sm btn-danger" onclick="deleteUser('${u.id}','${esc(u.username)}')">Del</button></td></tr>`).join('')||'<tr><td colspan="6" class="empty">No users</td></tr>';
+   477→   676→   676→
+   478→   677→   677→    // Repos
+   479→   678→   678→    document.getElementById('reposBody').innerHTML=repos.map(r=>`<tr><td title="${esc(r.url)}">${esc(r.name||r.shortname||r.url)}</td><td>${typeBadge(r.type)}</td><td>${r.userCount||0}</td><td>${r.extCount||0}</td><td>${fmtDate(r.last_fetched)}</td><td><button class="btn-sm btn-ghost" onclick="doRefreshRepo(${r.id})">Refresh</button><button class="btn-sm btn-danger" onclick="deleteRepo(${r.id},'${esc(r.name||r.url)}')">Del</button></td></tr>`).join('')||'<tr><td colspan="6" class="empty">No repos</td></tr>';
+   480→   679→   679→
+   481→   680→   680→    // Extensions
+   482→   681→   681→    renderExtensions(extensions);
+   483→   682→   682→  }catch(e){console.error(e)}
+   484→   683→   683→}
+   485→   684→   684→
+   486→   685→   685→function renderExtensions(exts){
+   487→   686→   686→  const tf=document.getElementById('extTypeFilter').value;
+   488→   687→   687→  const filtered=tf?exts.filter(e=>e.type===tf):exts;
+   489→   688→   688→  document.getElementById('extsBody').innerHTML=filtered.map(e=>`<tr><td>${e.id}</td><td>${esc(e.name)}</td><td>${typeBadge(e.type)}${e.is_nsfw?'<span class="badge nsfw">NSFW</span>':''}</td><td>${esc(e.version)}</td><td>${esc(e.lang)}</td><td>${e.installCount||0}</td><td>${e.file_path?'<button class="btn-sm btn-ghost" onclick="doDownloadExt('+e.id+',false)" title="Re-download">${esc(e.file_path.split('/').pop())}</button>':'<button class="btn-sm btn-ghost" onclick="doDownloadExt('+e.id+',true)">Download</button>'}</td><td><button class="btn-sm btn-success" onclick="openModal('installForUser',{id:${e.id},name:'${esc(e.name)}'})">Install</button><button class="btn-sm btn-danger" onclick="deleteExtension(${e.id},'${esc(e.name)}')">Del</button></td></tr>`).join('')||'<tr><td colspan="8" class="empty">No extensions</td></tr>';
+   490→   689→   689→}
+   491→   690→   690→function filterExts(){api('/admin/extensions').then(renderExtensions)}
+   492→   691→   691→
+   493→   692→   692→async function loadUserDetail(uid){
+   494→   693→   693→  toast('Loading user...');
+   495→   694→   694→  const d=await api('/admin/user/'+uid);
+   496→   695→   695→  openModal('userDetail',d);
+   497→   696→   696→}
+   498→   697→   697→
+   499→   698→   698→// Initialize args on page load
+   500→   699→   699→onMethodChange();
+   501→   700→   700→
+   502→   701→   701→if(token)showApp();
+   503→   702→   702→</script>
+   504→   703→   703→</body>
+   505→   704→   704→</html>

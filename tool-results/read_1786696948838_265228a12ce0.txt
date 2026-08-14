@@ -1,0 +1,1026 @@
+     1→import 'dart:async';
+     2→import 'dart:collection';
+     3→import 'dart:typed_data';
+     4→
+     5→import 'package:dartssh2/src/http/http_client.dart';
+     6→import 'package:dartssh2/src/sftp/sftp_client.dart';
+     7→import 'package:dartssh2/src/ssh_algorithm.dart';
+     8→import 'package:dartssh2/src/ssh_channel.dart';
+     9→import 'package:dartssh2/src/ssh_channel_id.dart';
+    10→import 'package:dartssh2/src/ssh_errors.dart';
+    11→import 'package:dartssh2/src/ssh_forward.dart';
+    12→import 'package:dartssh2/src/ssh_keepalive.dart';
+    13→import 'package:dartssh2/src/ssh_key_pair.dart';
+    14→import 'package:dartssh2/src/ssh_session.dart';
+    15→import 'package:dartssh2/src/ssh_transport.dart';
+    16→import 'package:dartssh2/src/utils/async_queue.dart';
+    17→import 'package:dartssh2/src/message/msg_channel.dart';
+    18→import 'package:dartssh2/src/message/msg_request.dart';
+    19→import 'package:dartssh2/src/message/msg_service.dart';
+    20→import 'package:dartssh2/src/message/msg_userauth.dart';
+    21→import 'package:dartssh2/src/ssh_message.dart';
+    22→import 'package:dartssh2/src/socket/ssh_socket.dart';
+    23→import 'package:dartssh2/src/ssh_userauth.dart';
+    24→
+    25→/// https://datatracker.ietf.org/doc/html/rfc4252#section-8
+    26→typedef SSHPasswordRequestHandler = FutureOr<String?> Function();
+    27→
+    28→typedef SSHChangePasswordRequestHandler = FutureOr<SSHChangePasswordResponse?>
+    29→    Function(String prompt);
+    30→
+    31→/// https://datatracker.ietf.org/doc/html/rfc4256#section-3.3
+    32→typedef SSHUserInfoRequestHandler = FutureOr<List<String>?> Function(
+    33→  SSHUserInfoRequest request,
+    34→);
+    35→
+    36→/// https://datatracker.ietf.org/doc/html/rfc4252#section-5.4
+    37→typedef SSHUserauthBannerHandler = void Function(String banner);
+    38→
+    39→typedef SSHAuthenticatedHandler = void Function();
+    40→
+    41→typedef SSHRemoteConnectionFilter = bool Function(String host, int port);
+    42→
+    43→// /// Function called when the host has sent additional host keys after the initial
+    44→// /// key exchange.
+    45→// typedef SSHHostKeysHandler = void Function(List<Uint8List>);
+    46→
+    47→const _initialWindowSize = 1024 * 1024 * 2;
+    48→
+    49→const _maximumPacketSize = 32768;
+    50→
+    51→class SSHPtyConfig {
+    52→  /// Type of terminal, for example 'xterm', 'xterm-256color'.
+    53→  final String type;
+    54→
+    55→  /// Width of the terminal in number of columns.
+    56→  final int width;
+    57→
+    58→  /// Height of the terminal in number of rows.
+    59→  final int height;
+    60→
+    61→  /// Width of the terminal in pixels. 0 if unknown.
+    62→  final int pixelWidth;
+    63→
+    64→  /// Height of the terminal in pixels. 0 if unknown.
+    65→  final int pixelHeight;
+    66→
+    67→  const SSHPtyConfig({
+    68→    this.type = 'xterm-256color',
+    69→    this.width = 80,
+    70→    this.height = 24,
+    71→    this.pixelWidth = 0,
+    72→    this.pixelHeight = 0,
+    73→  });
+    74→}
+    75→
+    76→class SSHClient {
+    77→  final SSHSocket socket;
+    78→
+    79→  /// The username to authenticate as.
+    80→  final String username;
+    81→
+    82→  /// Function invoked with debug messages.
+    83→  final SSHPrintHandler? printDebug;
+    84→
+    85→  /// Function invoked with network traffic messages.
+    86→  final SSHPrintHandler? printTrace;
+    87→
+    88→  /// Crypto algorithms available for the client.
+    89→  final SSHAlgorithms algorithms;
+    90→
+    91→  /// Function called when the first host key is received. Return true to accept
+    92→  /// the host key, false to reject it and close the connection. If this is
+    93→  /// null, the host key is accepted automatically.
+    94→  final SSHHostkeyVerifyHandler? onVerifyHostKey;
+    95→
+    96→  /// List of key pairs to use for authentication. Set this field to enable
+    97→  /// authentication with public key.
+    98→  final List<SSHKeyPair>? identities;
+    99→
+   100→  /// Set this field to enable the 'password' authentication method. Return null
+   101→  /// to skip to the next available authentication method.
+   102→  final SSHPasswordRequestHandler? onPasswordRequest;
+   103→
+   104→  /// Set this field to enable setting new passwords when the server requests
+   105→  /// changing password when using the 'password' authentication method. Return
+   106→  /// null to skip to the next available authentication method.
+   107→  final SSHChangePasswordRequestHandler? onChangePasswordRequest;
+   108→
+   109→  /// Set this field to enable the 'keyboard-interactive' authentication method.
+   110→  /// This may be called multiple times to request additional prompts. Return
+   111→  /// null to skip to the next available authentication method.
+   112→  final SSHUserInfoRequestHandler? onUserInfoRequest;
+   113→
+   114→  /// The SSH server may send banner message at any time before authentication
+   115→  /// is successful. Set this field to receive the banner message.
+   116→  final SSHUserauthBannerHandler? onUserauthBanner;
+   117→
+   118→  /// A [Future] that completes normally when the client is connected to the
+   119→  // Future<void> get handshake => _handshakeCompleter.future;
+   120→
+   121→  /// Function called when authentication is complete.
+   122→  final SSHAuthenticatedHandler? onAuthenticated;
+   123→
+   124→  /// The interval at which to send a keep-alive message through the [ping]
+   125→  /// method. Set this to null to disable automatic keep-alive messages.
+   126→  final Duration? keepAliveInterval;
+   127→
+   128→  /// Function called when additional host keys are received. This is an OpenSSH
+   129→  /// extension. May not be called if the server does not support the extension.
+   130→  // final SSHHostKeysHandler? onHostKeys;
+   131→
+   132→  /// A [Future] that completes when the transport is closed, or when an error
+   133→  /// occurs. After this [Future] completes, [isClosed] will be true and no more
+   134→  /// data can be sent or received.
+   135→  Future<void> get done => _transport.done;
+   136→
+   137→  /// true if the connection is closed normally or due to an error.
+   138→  bool get isClosed => _transport.isClosed;
+   139→
+   140→  SSHClient(
+   141→    this.socket, {
+   142→    required this.username,
+   143→    this.printDebug,
+   144→    this.printTrace,
+   145→    this.algorithms = const SSHAlgorithms(),
+   146→    this.onVerifyHostKey,
+   147→    this.identities,
+   148→    this.onPasswordRequest,
+   149→    this.onChangePasswordRequest,
+   150→    this.onUserInfoRequest,
+   151→    this.onUserauthBanner,
+   152→    this.onAuthenticated,
+   153→    this.keepAliveInterval = const Duration(seconds: 10),
+   154→  }) {
+   155→    _transport = SSHTransport(
+   156→      socket,
+   157→      isServer: false,
+   158→      printDebug: printDebug,
+   159→      printTrace: printTrace,
+   160→      algorithms: algorithms,
+   161→      onVerifyHostKey: onVerifyHostKey,
+   162→      onReady: _handleTransportReady,
+   163→      onPacket: _handlePacket,
+   164→    );
+   165→
+   166→    _transport.done.then(
+   167→      (_) => _handleTransportClosed(),
+   168→      onError: (_) => _handleTransportClosed(),
+   169→    );
+   170→
+   171→    _authenticated.future.catchError(
+   172→      (error, stackTrace) => _transport.closeWithError(error, stackTrace),
+   173→    );
+   174→
+   175→    if (identities != null) {
+   176→      _keyPairsLeft.addAll(identities!);
+   177→    }
+   178→  }
+   179→
+   180→  late final SSHTransport _transport;
+   181→
+   182→  /// A [Completer] that completes when the client has authenticated, or
+   183→  /// completes with an error if the client could not authenticate.
+   184→  final _authenticated = Completer<void>();
+   185→
+   186→  final _globalRequestReplyQueue = AsyncQueue<SSHMessage>();
+   187→
+   188→  final _channelIdAllocator = SSHChannelIdAllocator();
+   189→
+   190→  final _channelOpenReplyWaiters = <int, Completer<SSHMessage>>{};
+   191→
+   192→  final _channels = <int, SSHChannelController>{};
+   193→
+   194→  final _authMethodsLeft = Queue<SSHAuthMethod>();
+   195→
+   196→  final _keyPairsLeft = Queue<SSHKeyPair>();
+   197→
+   198→  final _remoteForwards = <SSHRemoteForward>{};
+   199→
+   200→  late final _keepAlive = keepAliveInterval != null
+   201→      ? SSHKeepAlive(ping: ping, interval: keepAliveInterval!)
+   202→      : null;
+   203→
+   204→  SSHAuthMethod? _currentAuthMethod;
+   205→
+   206→  /// A [Future] that completes when the client has authenticated, or
+   207→  /// completes with an error if the client could not authenticate.
+   208→  Future<void> get authenticated => _authenticated.future;
+   209→
+   210→  /// Identification string sent by the other side. For example,
+   211→  /// "SSH-2.0-OpenSSH_7.4p1". May be null if the handshake has not yet
+   212→  /// completed.
+   213→  String? get remoteVersion => _transport.remoteVersion;
+   214→
+   215→  /// Request connections to a port on the other side be forwarded to the local
+   216→  /// side.
+   217→  /// Set [host] to null to listen on all interfaces, `"0.0.0.0"` to
+   218→  /// listen on all IPv4 interfaces, `"::"` to listen on all IPv6 interfaces,
+   219→  /// and `"localhost"` to listen on the loopback interface on all protocols.
+   220→  /// Set [port] to null to listen on a random port.
+   221→  Future<SSHRemoteForward?> forwardRemote({
+   222→    String? host,
+   223→    int? port,
+   224→    SSHRemoteConnectionFilter? filter,
+   225→  }) async {
+   226→    await _authenticated.future;
+   227→
+   228→    // Lisning on all interfaces if not specified.
+   229→    host ??= '';
+   230→
+   231→    // Lisning on a random port if not specified.
+   232→    port ??= 0;
+   233→
+   234→    _sendMessage(SSH_Message_Global_Request.tcpipForward(host, port));
+   235→    final reply = await _globalRequestReplyQueue.next;
+   236→
+   237→    if (reply is SSH_Message_Request_Failure) return null;
+   238→
+   239→    if (reply is! SSH_Message_Request_Success) {
+   240→      throw SSHStateError('Unexpected reply to tcpip-forward request: $reply');
+   241→    }
+   242→
+   243→    final reader = SSHMessageReader(reply.requestData);
+   244→    final assignedPort = port != 0 ? port : reader.readUint32();
+   245→
+   246→    final remoteForward = SSHRemoteForward(this, host, assignedPort, filter);
+   247→    _remoteForwards.add(remoteForward);
+   248→
+   249→    return remoteForward;
+   250→  }
+   251→
+   252→  /// Cancel a previous request to forward connections to a port on the other
+   253→  /// side. Returns [true] if successful, [false] otherwise.
+   254→  /// See also: [forwardRemote].
+   255→  Future<bool> cancelForwardRemote(SSHRemoteForward forward) async {
+   256→    await _authenticated.future;
+   257→
+   258→    if (!_remoteForwards.remove(forward)) return false;
+   259→
+   260→    _sendMessage(
+   261→      SSH_Message_Global_Request.cancelTcpipForward(
+   262→        bindAddress: forward.host,
+   263→        bindPort: forward.port,
+   264→      ),
+   265→    );
+   266→
+   267→    final reply = await _globalRequestReplyQueue.next;
+   268→    if (reply is SSH_Message_Request_Failure) {
+   269→      return false;
+   270→    }
+   271→
+   272→    return true;
+   273→  }
+   274→
+   275→  /// Forward connections to a [localHost]:[localPort] to [remoteHost]:[remotePort]
+   276→  /// [localHost] and [localPort] are only required by the protocol and do not
+   277→  /// need to be specified in most cases.
+   278→  Future<SSHForwardChannel> forwardLocal(
+   279→    String remoteHost,
+   280→    int remotePort, {
+   281→    String localHost = 'localhost',
+   282→    int localPort = 0,
+   283→  }) async {
+   284→    await _authenticated.future;
+   285→    final channelController = await _openForwardLocalChannel(
+   286→      localHost,
+   287→      localPort,
+   288→      remoteHost,
+   289→      remotePort,
+   290→    );
+   291→    return SSHForwardChannel(channelController.channel);
+   292→  }
+   293→
+   294→  /// Execute [command] on the remote side. Returns a [SSHChannel] that can be
+   295→  /// used to read and write to the remote side.
+   296→  Future<SSHSession> execute(
+   297→    String command, {
+   298→    SSHPtyConfig? pty,
+   299→    Map<String, String>? environment,
+   300→  }) async {
+   301→    await _authenticated.future;
+   302→
+   303→    final channelController = await _openSessionChannel();
+   304→
+   305→    if (environment != null) {
+   306→      for (var pair in environment.entries) {
+   307→        channelController.sendEnv(pair.key, pair.value);
+   308→      }
+   309→    }
+   310→
+   311→    if (pty != null) {
+   312→      final ptyOk = await channelController.sendPtyReq(
+   313→        terminalType: pty.type,
+   314→        terminalWidth: pty.width,
+   315→        terminalHeight: pty.height,
+   316→        terminalPixelWidth: pty.pixelWidth,
+   317→        terminalPixelHeight: pty.pixelHeight,
+   318→      );
+   319→      if (!ptyOk) {
+   320→        channelController.close();
+   321→        throw SSHChannelRequestError('Failed to start pty');
+   322→      }
+   323→    }
+   324→
+   325→    final success = await channelController.sendExec(command);
+   326→    if (!success) {
+   327→      channelController.close();
+   328→      throw SSHChannelRequestError('Failed to execute');
+   329→    }
+   330→
+   331→    return SSHSession(channelController.channel);
+   332→  }
+   333→
+   334→  /// Start a shell on the remote side. Returns a [SSHSession] that can be
+   335→  /// used to read, write and control the pty on the remote side.
+   336→  Future<SSHSession> shell({
+   337→    SSHPtyConfig? pty = const SSHPtyConfig(),
+   338→    Map<String, String>? environment,
+   339→  }) async {
+   340→    await _authenticated.future;
+   341→
+   342→    final channelController = await _openSessionChannel();
+   343→
+   344→    if (environment != null) {
+   345→      for (var pair in environment.entries) {
+   346→        channelController.sendEnv(pair.key, pair.value);
+   347→      }
+   348→    }
+   349→
+   350→    if (pty != null) {
+   351→      final ok = await channelController.sendPtyReq(
+   352→        terminalType: pty.type,
+   353→        terminalWidth: pty.width,
+   354→        terminalHeight: pty.height,
+   355→        terminalPixelWidth: pty.pixelWidth,
+   356→        terminalPixelHeight: pty.pixelHeight,
+   357→      );
+   358→      if (!ok) {
+   359→        channelController.close();
+   360→        throw SSHChannelRequestError('Failed to start pty');
+   361→      }
+   362→    }
+   363→
+   364→    if (!await channelController.sendShell()) {
+   365→      channelController.close();
+   366→      throw SSHChannelRequestError('Failed to start shell');
+   367→    }
+   368→
+   369→    return SSHSession(channelController.channel);
+   370→  }
+   371→
+   372→  Future<void> subsystem(String subsystem) async {
+   373→    await _authenticated.future;
+   374→
+   375→    final channelController = await _openSessionChannel();
+   376→    channelController.sendSubsystem(subsystem);
+   377→  }
+   378→
+   379→  /// Open a new SFTP session. Returns a [SftpClient] that can be used to
+   380→  /// interact with the remote side.
+   381→  Future<SftpClient> sftp() async {
+   382→    await _authenticated.future;
+   383→
+   384→    final channelController = await _openSessionChannel();
+   385→    channelController.sendSubsystem('sftp');
+   386→
+   387→    return SftpClient(
+   388→      channelController.channel,
+   389→      printDebug: printDebug,
+   390→      printTrace: printTrace,
+   391→    );
+   392→  }
+   393→
+   394→  /// Create a new [SSHHttpClient] that can be used to make HTTP requests
+   395→  /// that are tunneled over the SSH connection. The returned [SSHHttpClient]
+   396→  /// is a very basic implementation, only intended for making simple requests.
+   397→  SSHHttpClient httpClient() {
+   398→    return SSHHttpClient(this);
+   399→  }
+   400→
+   401→  /// Execute [command] on the remote side non-interactively. Returns a
+   402→  /// [Future<String?>] that completes with the output of the command.
+   403→  /// This is a convenience method over [execute]. If [stdout] is false,
+   404→  /// the standard output of the command will be ignored. If [stderr] is
+   405→  /// false, the standard error of the command will be ignored.
+   406→  Future<Uint8List> run(
+   407→    String command, {
+   408→    bool runInPty = false,
+   409→    bool stdout = true,
+   410→    bool stderr = true,
+   411→    Map<String, String>? environment,
+   412→  }) async {
+   413→    final session = await execute(
+   414→      command,
+   415→      pty: runInPty ? const SSHPtyConfig() : null,
+   416→      environment: environment,
+   417→    );
+   418→
+   419→    final result = BytesBuilder(copy: false);
+   420→    final stdoutDone = Completer<void>();
+   421→    final stderrDone = Completer<void>();
+   422→
+   423→    session.stdout.listen(
+   424→      stdout ? result.add : (_) {},
+   425→      onDone: stdoutDone.complete,
+   426→      onError: stderrDone.completeError,
+   427→    );
+   428→
+   429→    session.stderr.listen(
+   430→      stderr ? result.add : (_) {},
+   431→      onDone: stderrDone.complete,
+   432→      onError: stderrDone.completeError,
+   433→    );
+   434→
+   435→    await stdoutDone.future;
+   436→    await stderrDone.future;
+   437→
+   438→    return result.takeBytes();
+   439→  }
+   440→
+   441→  /// Send a empty message to the server to keep the connection alive.
+   442→  Future<void> ping() async {
+   443→    await _authenticated.future;
+   444→    _sendMessage(SSH_Message_Global_Request.keepAlive());
+   445→    await _globalRequestReplyQueue.next;
+   446→  }
+   447→
+   448→  /// Shutdown the entire SSH connection. Sessions and channels will also be
+   449→  /// closed immediately.
+   450→  void close() {
+   451→    _closeChannels();
+   452→    _transport.close();
+   453→  }
+   454→
+   455→  /// Close all channels that are currently open.
+   456→  void _closeChannels() {
+   457→    for (final channel in _channels.values) {
+   458→      channel.destroy();
+   459→      _channelIdAllocator.release(channel.localId);
+   460→    }
+   461→
+   462→    _channels.clear();
+   463→  }
+   464→
+   465→  void _handleTransportReady() {
+   466→    printDebug?.call('SSHClient._onTransportReady');
+   467→    _requestAuthentication();
+   468→  }
+   469→
+   470→  void _handleTransportClosed() {
+   471→    printDebug?.call('SSHClient._onTransportClosed');
+   472→    if (!_authenticated.isCompleted) {
+   473→      _authenticated.completeError(
+   474→        SSHAuthAbortError('Connection closed before authentication'),
+   475→      );
+   476→    }
+   477→    _keepAlive?.stop();
+   478→    _closeChannels();
+   479→  }
+   480→
+   481→  void _handlePacket(Uint8List payload) {
+   482→    try {
+   483→      _dispatchMessage(payload);
+   484→    } catch (e) {
+   485→      rethrow;
+   486→    }
+   487→  }
+   488→
+   489→  void _sendMessage(SSHMessage message) {
+   490→    printTrace?.call('-> $socket: $message');
+   491→    _transport.sendPacket(message.encode());
+   492→  }
+   493→
+   494→  void _catch(FutureOr<dynamic> Function() fn) {
+   495→    Future.sync(fn).catchError((e, st) {
+   496→      _transport.closeWithError(SSHInternalError(e), st);
+   497→    });
+   498→  }
+   499→
+   500→  void _dispatchMessage(Uint8List message) {
+   501→    final messageId = SSHMessage.readMessageId(message);
+   502→    switch (messageId) {
+   503→      case SSH_Message_Service_Accept.messageId:
+   504→        return _handleServiceAccept(message);
+   505→      case SSH_Message_Userauth_Success.messageId:
+   506→        return _handleUserauthSuccess();
+   507→      case SSH_Message_Userauth_Failure.messageId:
+   508→        return _handleUserauthFailure(message);
+   509→      case SSH_Message_Userauth_Passwd_ChangeReq.messageId:
+   510→        return _handleUserauthIntermidiate(message);
+   511→      case SSH_Message_Userauth_Banner.messageId:
+   512→        return _handleUserauthBanner(message);
+   513→      case SSH_Message_Global_Request.messageId:
+   514→        return _handleGlobalRequest(message);
+   515→      case SSH_Message_Request_Success.messageId:
+   516→        return _handleGlobalRequestSuccess(message);
+   517→      case SSH_Message_Request_Failure.messageId:
+   518→        return _handleGlobalRequestFailure(message);
+   519→      case SSH_Message_Channel_Open.messageId:
+   520→        return _handleChannelOpen(message);
+   521→      case SSH_Message_Channel_Confirmation.messageId:
+   522→        return _handleChannelConfirmation(message);
+   523→      case SSH_Message_Channel_Open_Failure.messageId:
+   524→        return _handleChannelOpenFailure(message);
+   525→      case SSH_Message_Channel_Window_Adjust.messageId:
+   526→        return _handleChannelWindowAdjust(message);
+   527→      case SSH_Message_Channel_Success.messageId:
+   528→        return _handleChannelSuccess(message);
+   529→      case SSH_Message_Channel_Failure.messageId:
+   530→        return _handleChannelFailure(message);
+   531→      case SSH_Message_Channel_Data.messageId:
+   532→        return _handleChannelData(message);
+   533→      case SSH_Message_Channel_Extended_Data.messageId:
+   534→        return _handleChannelExtendedData(message);
+   535→      case SSH_Message_Channel_EOF.messageId:
+   536→        return _handleChannelEOF(message);
+   537→      case SSH_Message_Channel_Close.messageId:
+   538→        return _handleChannelClose(message);
+   539→      case SSH_Message_Channel_Request.messageId:
+   540→        return _handleChannelRequest(message);
+   541→      default:
+   542→        printDebug?.call('unknown messageId: $messageId');
+   543→    }
+   544→  }
+   545→
+   546→  void _handleServiceAccept(Uint8List payload) {
+   547→    final message = SSH_Message_Service_Accept.decode(payload);
+   548→    printTrace?.call('<- $socket: $message');
+   549→
+   550→    switch (message.serviceName) {
+   551→      case 'ssh-userauth':
+   552→        return _startAuthentication();
+   553→      default:
+   554→        printDebug?.call('unknown serviceName: ${message.serviceName}');
+   555→    }
+   556→  }
+   557→
+   558→  void _handleUserauthSuccess() {
+   559→    printTrace?.call('<- $socket: SSH_Message_Userauth_Success');
+   560→    printDebug?.call('SSHClient._handleUserauthSuccess');
+   561→    _authenticated.complete();
+   562→    onAuthenticated?.call();
+   563→    _keepAlive?.start();
+   564→  }
+   565→
+   566→  void _handleUserauthFailure(Uint8List payload) {
+   567→    final message = SSH_Message_Userauth_Failure.decode(payload);
+   568→    printTrace?.call('<- $socket: $message');
+   569→    printDebug?.call('SSHClient._handleUserauthFailure');
+   570→    _tryNextAuthMethod();
+   571→  }
+   572→
+   573→  void _handleUserauthIntermidiate(Uint8List payload) {
+   574→    printDebug?.call('SSHClient._handleUserauthIntermidiate');
+   575→
+   576→    switch (_currentAuthMethod) {
+   577→      case SSHAuthMethod.password:
+   578→        return _catch(() => _handleUserauthPasswordChangeRequest(payload));
+   579→      case SSHAuthMethod.keyboardInteractive:
+   580→        return _catch(() => _handleUserauthInfoRequest(payload));
+   581→      default:
+   582→        printDebug?.call('unknown auth method: $_currentAuthMethod');
+   583→    }
+   584→  }
+   585→
+   586→  Future<void> _handleUserauthPasswordChangeRequest(Uint8List payload) async {
+   587→    printDebug?.call('SSHClient._handleUserauthPasswordChangeRequest');
+   588→    final message = SSH_Message_Userauth_Passwd_ChangeReq.decode(payload);
+   589→    printTrace?.call('<- $socket: $message');
+   590→
+   591→    final response = await onChangePasswordRequest!(message.prompt);
+   592→    if (response == null) return _tryNextAuthMethod();
+   593→
+   594→    _sendMessage(SSH_Message_Userauth_Request.newPassword(
+   595→      user: username,
+   596→      oldPassword: response.oldPassword,
+   597→      newPassword: response.newPassword,
+   598→    ));
+   599→  }
+   600→
+   601→  Future<void> _handleUserauthInfoRequest(Uint8List payload) async {
+   602→    printDebug?.call('SSHClient._handleUserauthInfoRequest');
+   603→    final message = SSH_Message_Userauth_InfoRequest.decode(payload);
+   604→    printTrace?.call('<- $socket: $message');
+   605→
+   606→    final responses = await onUserInfoRequest!(
+   607→      SSHUserInfoRequest(message.name, message.instruction, message.prompts),
+   608→    );
+   609→
+   610→    if (responses == null) return _tryNextAuthMethod();
+   611→
+   612→    if (responses.length != message.prompts.length) {
+   613→      throw ArgumentError(
+   614→        'responses.length (${responses.length}) != message.prompts.length (${message.prompts.length})',
+   615→      );
+   616→    }
+   617→
+   618→    _sendMessage(SSH_Message_Userauth_InfoResponse(responses: responses));
+   619→  }
+   620→
+   621→  void _handleUserauthBanner(Uint8List payload) {
+   622→    final message = SSH_Message_Userauth_Banner.decode(payload);
+   623→    printDebug?.call('<- $socket: $message');
+   624→    onUserauthBanner?.call(message.message);
+   625→  }
+   626→
+   627→  void _handleGlobalRequest(Uint8List payload) {
+   628→    final message = SSH_Message_Global_Request.decode(payload);
+   629→    printTrace?.call('<- $socket: $message');
+   630→
+   631→    // Currently we don't support any global requests on the client side.
+   632→    if (message.wantReply) {
+   633→      _sendMessage(SSH_Message_Request_Failure());
+   634→    }
+   635→  }
+   636→
+   637→  // void _handleGlobalRequestHostkey(SSH_Message_Global_Request request) {
+   638→  //   printDebug?.call('SSHClient._handleGlobalRequestHostkey');
+   639→  //   // sendMessage(SSH_Message_Request_Success.e
+   640→  //   if (onHostKeys != null) {
+   641→  //     // onHostKeys(request.hostKeyAlgorithms);
+   642→  //   }
+   643→  // }
+   644→
+   645→  void _handleGlobalRequestSuccess(Uint8List payload) {
+   646→    final message = SSH_Message_Request_Success.decode(payload);
+   647→    printTrace?.call('<- $socket: $message');
+   648→    _globalRequestReplyQueue.add(message);
+   649→  }
+   650→
+   651→  void _handleGlobalRequestFailure(Uint8List payload) {
+   652→    final message = SSH_Message_Request_Failure.decode(payload);
+   653→    printTrace?.call('<- $socket: $message');
+   654→    _globalRequestReplyQueue.add(message);
+   655→  }
+   656→
+   657→  void _handleChannelOpen(Uint8List payload) {
+   658→    final message = SSH_Message_Channel_Open.decode(payload);
+   659→    printTrace?.call('<- $socket: $message');
+   660→
+   661→    switch (message.channelType) {
+   662→      case 'forwarded-tcpip':
+   663→        return _handleForwardedTcpipChannelOpen(message);
+   664→    }
+   665→
+   666→    printDebug?.call('unknown channelType: ${message.channelType}');
+   667→    final reply = SSH_Message_Channel_Open_Failure(
+   668→      recipientChannel: message.senderChannel,
+   669→      reasonCode: SSH_Message_Channel_Open_Failure.codeUnknownChannelType,
+   670→      description: 'unknown channel type: ${message.channelType}',
+   671→    );
+   672→    _sendMessage(reply);
+   673→  }
+   674→
+   675→  void _handleForwardedTcpipChannelOpen(SSH_Message_Channel_Open message) {
+   676→    printDebug?.call('SSHClient._handleTcpipForwardChannelOpen');
+   677→
+   678→    final remoteForward = _findRemoteForward(message.host!, message.port!);
+   679→
+   680→    if (remoteForward == null) {
+   681→      printDebug?.call('unknown remote forward: $message');
+   682→      final reply = SSH_Message_Channel_Open_Failure(
+   683→        recipientChannel: message.senderChannel,
+   684→        reasonCode: SSH_Message_Channel_Open_Failure.codeUnknownChannelType,
+   685→        description: 'unknown remote forward: $message',
+   686→      );
+   687→      _sendMessage(reply);
+   688→      return;
+   689→    }
+   690→
+   691→    if (remoteForward.filter != null) {
+   692→      if (!remoteForward.filter!(message.host!, message.port!)) {
+   693→        printDebug?.call('remote forward rejected by filter: $message');
+   694→        final reply = SSH_Message_Channel_Open_Failure(
+   695→          recipientChannel: message.senderChannel,
+   696→          reasonCode: 1, // SSH_OPEN_ADMINISTRATIVELY_PROHIBITED
+   697→          description: 'rejected by filter',
+   698→        );
+   699→        _sendMessage(reply);
+   700→        return;
+   701→      }
+   702→    }
+   703→
+   704→    final localChannelId = _channelIdAllocator.allocate();
+   705→
+   706→    final confirmation = SSH_Message_Channel_Confirmation(
+   707→      recipientChannel: message.senderChannel,
+   708→      senderChannel: localChannelId,
+   709→      initialWindowSize: _initialWindowSize,
+   710→      maximumPacketSize: _maximumPacketSize,
+   711→      data: Uint8List(0),
+   712→    );
+   713→
+   714→    _sendMessage(confirmation);
+   715→
+   716→    final channelController = _acceptChannel(
+   717→      localChannelId: localChannelId,
+   718→      remoteChannelId: message.senderChannel,
+   719→      remoteInitialWindowSize: message.initialWindowSize,
+   720→      remoteMaximumPacketSize: message.maximumPacketSize,
+   721→    );
+   722→
+   723→    remoteForward._connections.add(
+   724→      SSHForwardChannel(channelController.channel),
+   725→    );
+   726→  }
+   727→
+   728→  /// Finds a remote forward that matches the given host and port.
+   729→  SSHRemoteForward? _findRemoteForward(String host, int port) {
+   730→    final result = _remoteForwards.where(
+   731→      (forward) => forward.host == host && forward.port == port,
+   732→    );
+   733→    return result.isEmpty ? null : result.first;
+   734→  }
+   735→
+   736→  void _handleChannelConfirmation(Uint8List payload) {
+   737→    final message = SSH_Message_Channel_Confirmation.decode(payload);
+   738→    printTrace?.call('<- $socket: $message');
+   739→    _dispatchChannelOpenReply(message.recipientChannel, message);
+   740→  }
+   741→
+   742→  void _handleChannelOpenFailure(Uint8List payload) {
+   743→    final message = SSH_Message_Channel_Open_Failure.decode(payload);
+   744→    printTrace?.call('<- $socket: $message');
+   745→    _dispatchChannelOpenReply(message.recipientChannel, message);
+   746→  }
+   747→
+   748→  void _handleChannelWindowAdjust(Uint8List payload) {
+   749→    final message = SSH_Message_Channel_Window_Adjust.decode(payload);
+   750→    printTrace?.call('<- $socket: $message');
+   751→    _channels[message.recipientChannel]?.handleMessage(message);
+   752→  }
+   753→
+   754→  void _handleChannelRequest(Uint8List payload) {
+   755→    final message = SSH_Message_Channel_Request.decode(payload);
+   756→    printTrace?.call('<- $socket: $message');
+   757→    _channels[message.recipientChannel]?.handleMessage(message);
+   758→  }
+   759→
+   760→  void _handleChannelSuccess(Uint8List payload) {
+   761→    final message = SSH_Message_Channel_Success.decode(payload);
+   762→    printTrace?.call('<- $socket: $message');
+   763→    _channels[message.recipientChannel]?.handleMessage(message);
+   764→  }
+   765→
+   766→  void _handleChannelFailure(Uint8List payload) {
+   767→    final message = SSH_Message_Channel_Failure.decode(payload);
+   768→    printTrace?.call('<- $socket: $message');
+   769→    _channels[message.recipientChannel]?.handleMessage(message);
+   770→  }
+   771→
+   772→  void _handleChannelData(Uint8List payload) {
+   773→    final message = SSH_Message_Channel_Data.decode(payload);
+   774→    printTrace?.call('<- $socket: $message');
+   775→    _channels[message.recipientChannel]?.handleMessage(message);
+   776→  }
+   777→
+   778→  void _handleChannelExtendedData(Uint8List payload) {
+   779→    final message = SSH_Message_Channel_Extended_Data.decode(payload);
+   780→    printTrace?.call('<- $socket: $message');
+   781→    _channels[message.recipientChannel]?.handleMessage(message);
+   782→  }
+   783→
+   784→  void _handleChannelEOF(Uint8List payload) {
+   785→    final message = SSH_Message_Channel_EOF.decode(payload);
+   786→    printTrace?.call('<- $socket: $message');
+   787→    _channels[message.recipientChannel]?.handleMessage(message);
+   788→  }
+   789→
+   790→  void _handleChannelClose(Uint8List payload) {
+   791→    final message = SSH_Message_Channel_Close.decode(payload);
+   792→    printTrace?.call('<- $socket: $message');
+   793→    final channel = _channels[message.recipientChannel];
+   794→    if (channel != null) {
+   795→      channel.close();
+   796→      _channels.remove(message.recipientChannel);
+   797→      _channelIdAllocator.release(message.recipientChannel);
+   798→    }
+   799→  }
+   800→
+   801→  void _requestAuthentication() {
+   802→    printDebug?.call('SSHClient._requestAuthentication');
+   803→    _sendMessage(SSH_Message_Service_Request('ssh-userauth'));
+   804→  }
+   805→
+   806→  void _startAuthentication() {
+   807→    printDebug?.call('SSHClient._startAuthentication');
+   808→
+   809→    if (identities != null && identities!.isNotEmpty) {
+   810→      _authMethodsLeft.add(SSHAuthMethod.publicKey);
+   811→    }
+   812→
+   813→    if (onPasswordRequest != null) {
+   814→      _authMethodsLeft.add(SSHAuthMethod.password);
+   815→    }
+   816→
+   817→    if (onUserInfoRequest != null) {
+   818→      _authMethodsLeft.add(SSHAuthMethod.keyboardInteractive);
+   819→    }
+   820→
+   821→    _authMethodsLeft.add(SSHAuthMethod.none);
+   822→
+   823→    _tryNextAuthMethod();
+   824→  }
+   825→
+   826→  void _tryNextAuthMethod() {
+   827→    printDebug?.call('SSHClient._tryNextAuthenticationMethod');
+   828→
+   829→    if (_currentAuthMethod == SSHAuthMethod.publicKey) {
+   830→      if (_keyPairsLeft.isNotEmpty) {
+   831→        return _authWithNextPublicKey();
+   832→      }
+   833→    }
+   834→
+   835→    if (_authMethodsLeft.isEmpty) {
+   836→      return _authenticated.completeError(
+   837→        SSHAuthFailError('All authentication methods failed'),
+   838→        StackTrace.current,
+   839→      );
+   840→    }
+   841→
+   842→    _currentAuthMethod = _authMethodsLeft.removeFirst();
+   843→    printDebug?.call('_currentAuthMethod = $_currentAuthMethod');
+   844→
+   845→    switch (_currentAuthMethod!) {
+   846→      case SSHAuthMethod.none:
+   847→        return _authWithNone();
+   848→      case SSHAuthMethod.password:
+   849→        return _catch(() => _authWithPassword());
+   850→      case SSHAuthMethod.publicKey:
+   851→        return _authWithNextPublicKey();
+   852→      case SSHAuthMethod.keyboardInteractive:
+   853→        return _authWithKeyboardInteractive();
+   854→    }
+   855→  }
+   856→
+   857→  void _authWithNone() {
+   858→    printDebug?.call('SSHClient._authWithNone');
+   859→    _sendMessage(SSH_Message_Userauth_Request.none(user: username));
+   860→  }
+   861→
+   862→  Future<void> _authWithPassword() async {
+   863→    printDebug?.call('SSHClient._authWithPassword');
+   864→
+   865→    final password = await onPasswordRequest!();
+   866→    if (password == null) {
+   867→      _tryNextAuthMethod();
+   868→      return;
+   869→    }
+   870→
+   871→    _sendMessage(
+   872→      SSH_Message_Userauth_Request.password(user: username, password: password),
+   873→    );
+   874→  }
+   875→
+   876→  void _authWithNextPublicKey() {
+   877→    printDebug?.call('SSHClient._authWithPublicKey');
+   878→
+   879→    final keyPair = _keyPairsLeft.removeFirst();
+   880→
+   881→    final challenge = _transport.composeChallenge(
+   882→      username: username,
+   883→      service: 'ssh-connection',
+   884→      publicKeyAlgorithm: keyPair.type,
+   885→      publicKey: keyPair.toPublicKey().encode(),
+   886→    );
+   887→
+   888→    _sendMessage(
+   889→      SSH_Message_Userauth_Request.publicKey(
+   890→        username: username,
+   891→        publicKeyAlgorithm: keyPair.type,
+   892→        publicKey: keyPair.toPublicKey().encode(),
+   893→        signature: keyPair.sign(challenge).encode(),
+   894→        // signature: null,
+   895→      ),
+   896→    );
+   897→  }
+   898→
+   899→  void _authWithKeyboardInteractive() {
+   900→    printDebug?.call('SSHClient._authWithKeyboardInteractive');
+   901→    _sendMessage(
+   902→      SSH_Message_Userauth_Request.keyboardInteractive(user: username),
+   903→    );
+   904→  }
+   905→
+   906→  Future<SSHChannelController> _openSessionChannel() async {
+   907→    final localChannelId = _channelIdAllocator.allocate();
+   908→
+   909→    final request = SSH_Message_Channel_Open.session(
+   910→      senderChannel: localChannelId,
+   911→      initialWindowSize: _initialWindowSize,
+   912→      maximumPacketSize: _maximumPacketSize,
+   913→    );
+   914→    _sendMessage(request);
+   915→
+   916→    return await _waitChannelOpen(localChannelId);
+   917→  }
+   918→
+   919→  Future<SSHChannelController> _openForwardLocalChannel(
+   920→    String bindAddress,
+   921→    int bindPort,
+   922→    String remoteAddress,
+   923→    int remotePort,
+   924→  ) async {
+   925→    final localChannelId = _channelIdAllocator.allocate();
+   926→
+   927→    final request = SSH_Message_Channel_Open.directTcpip(
+   928→      senderChannel: localChannelId,
+   929→      initialWindowSize: _initialWindowSize,
+   930→      maximumPacketSize: _maximumPacketSize,
+   931→      host: remoteAddress,
+   932→      port: remotePort,
+   933→      originatorIP: bindAddress,
+   934→      originatorPort: bindPort,
+   935→    );
+   936→    _sendMessage(request);
+   937→
+   938→    return await _waitChannelOpen(localChannelId);
+   939→  }
+   940→
+   941→  Future<SSHChannelController> _waitChannelOpen(
+   942→    SSHChannelId localChannelId,
+   943→  ) async {
+   944→    final message = await _waitChannelOpenReply(localChannelId);
+   945→    if (message is SSH_Message_Channel_Open_Failure) {
+   946→      throw SSHChannelOpenError(message.reasonCode, message.description);
+   947→    }
+   948→
+   949→    final reply = message as SSH_Message_Channel_Confirmation;
+   950→    if (reply.recipientChannel != localChannelId) {
+   951→      throw SSHStateError('Unexpected channel confirmation');
+   952→    }
+   953→
+   954→    return _acceptChannel(
+   955→      localChannelId: localChannelId,
+   956→      remoteChannelId: reply.senderChannel,
+   957→      remoteInitialWindowSize: reply.initialWindowSize,
+   958→      remoteMaximumPacketSize: reply.maximumPacketSize,
+   959→    );
+   960→  }
+   961→
+   962→  SSHChannelController _acceptChannel({
+   963→    required SSHChannelId localChannelId,
+   964→    required SSHChannelId remoteChannelId,
+   965→    required int remoteInitialWindowSize,
+   966→    required int remoteMaximumPacketSize,
+   967→  }) {
+   968→    final channelController = SSHChannelController(
+   969→      localId: localChannelId,
+   970→      localInitialWindowSize: _initialWindowSize,
+   971→      localMaximumPacketSize: _maximumPacketSize,
+   972→      remoteId: remoteChannelId,
+   973→      remoteInitialWindowSize: remoteInitialWindowSize,
+   974→      remoteMaximumPacketSize: remoteMaximumPacketSize,
+   975→      sendMessage: _sendMessage,
+   976→      printDebug: printDebug,
+   977→    );
+   978→
+   979→    _channels[localChannelId] = channelController;
+   980→    return channelController;
+   981→  }
+   982→
+   983→  Future<SSHMessage> _waitChannelOpenReply(SSHChannelId id) async {
+   984→    if (_channelOpenReplyWaiters.containsKey(id)) {
+   985→      printDebug?.call('_waitChannelOpenReply: already waiting for $id');
+   986→      return _channelOpenReplyWaiters[id]!.future;
+   987→    }
+   988→    final replyCompleter = Completer<SSHMessage>();
+   989→    _channelOpenReplyWaiters[id] = replyCompleter;
+   990→    return replyCompleter.future;
+   991→  }
+   992→
+   993→  void _dispatchChannelOpenReply(SSHChannelId id, SSHMessage message) {
+   994→    if (!_channelOpenReplyWaiters.containsKey(id)) {
+   995→      printDebug?.call('_dispatchChannelOpenReply: no pending request for $id');
+   996→      return;
+   997→    }
+   998→    final replyCompleter = _channelOpenReplyWaiters.remove(id)!;
+   999→    replyCompleter.complete(message);
+  1000→  }
+  1001→}
+  1002→
+  1003→class SSHRemoteForward {
+  1004→  final String host;
+  1005→
+  1006→  final int port;
+  1007→
+  1008→  final SSHRemoteConnectionFilter? filter;
+  1009→
+  1010→  SSHRemoteForward(this._client, this.host, this.port, this.filter);
+  1011→
+  1012→  final SSHClient _client;
+  1013→
+  1014→  final _connections = StreamController<SSHForwardChannel>();
+  1015→
+  1016→  Stream<SSHForwardChannel> get connections => _connections.stream;
+  1017→
+  1018→  void close() {
+  1019→    _connections.close();
+  1020→    _client.cancelForwardRemote(this);
+  1021→  }
+  1022→
+  1023→  @override
+  1024→  String toString() => '$runtimeType($host:$port)';
+  1025→}
+  1026→
