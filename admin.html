@@ -458,7 +458,7 @@ async function loadAll(){
       return `<tr><td>${esc(u.username)} ${u.banned?'<span class="badge banned">BANNED</span>':''}</td><td>${u.banned?'<span style="color:#ef4444">Banned</span>':'<span style="color:#22c55e">Active</span>'}</td><td style="font-family:monospace;font-size:11px;max-width:120px;overflow:hidden;text-overflow:ellipsis" title="${esc(u.id)}">${esc(u.id)}</td><td>${fmtDate(u.created)}</td><td>${u.extensions||0}</td><td><button class="btn-sm btn-ghost" onclick="loadUserDetail('${u.id}')">Detail</button><button class="btn-sm btn-yellow" onclick="doBanToggle('${u.id}',${!!u.banned})" title="${u.banned?'Unban':'Ban'}">${u.banned?'Unban':'Ban'}</button><button class="btn-sm btn-danger" onclick="doDeleteAllExtForUser('${u.id}','${esc(u.username)}')" title="Delete all extensions">Ext</button><button class="btn-sm btn-danger" onclick="deleteUser('${u.id}','${esc(u.username)}')">Del</button></td></tr>`;
     }
 
-    document.getElementById('dashUsers').innerHTML=userDetail.map(u=>{const uc=userDetails.find(x=>x.id===u.id)||{extensions:0};return userRow({...u,extensions:uc.extensions})}).join('')||'<tr><td colspan="5" class="empty">No users</td></tr>';
+    document.getElementById('dashUsers').innerHTML=users.map(u=>{const uc=userDetails.find(x=>x.id===u.id)||{extensions:0};return userRow({...u,extensions:uc.extensions})}).join('')||'<tr><td colspan="5" class="empty">No users</td></tr>';
     document.getElementById('usersBody').innerHTML=users.map(u=>{const uc=userDetails.find(x=>x.id===u.id)||{extensions:0};return userRow({...u,extensions:uc.extensions})}).join('')||'<tr><td colspan="6" class="empty">No users</td></tr>';
 
     loadJarStatus();
