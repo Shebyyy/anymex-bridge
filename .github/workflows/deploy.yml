@@ -32,8 +32,10 @@ jobs:
             if [ -d /root/anymex-bridge/.git ]; then
               cd /root/anymex-bridge
               git fetch origin beta
+              git clean -fd
               git reset --hard origin/beta
             else
+              rm -rf /root/anymex-bridge
               git clone -b beta https://github.com/Shebyyy/anymex-bridge.git /root/anymex-bridge
             fi
             echo "OK: code fetched"
