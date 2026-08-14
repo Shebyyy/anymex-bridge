@@ -3,7 +3,7 @@ import { readFileSync, writeFileSync } from 'node:fs'
 import { generateKeyPairSync } from 'node:crypto'
 import { join } from 'node:path'
 import { Server as SshServer } from 'ssh2'
-import { authenticateUser, createUser, getUserExtensions, db } from './db.js'
+import { authenticateUser, createUser, getUserExtensions, uninstallExtensionForUser, removeRepoForUser, getRepoByUrl, db } from './db.js'
 import { isJarReady, invokeJar, invokeJarOnce } from './jar.js'
 import { addRepo } from './repos.js'
 import { installExtension, downloadExtension } from './extensions.js'
@@ -163,6 +163,20 @@ async function handleMethod(userId: string, username: string, msg: any): Promise
       const { extId } = args || {}
       if (!extId) throw new Error('extId required')
       return installExtension(userId, Number(extId))
+    }
+    case 'uninstallExtension': {
+      const { extId } = args || {}
+      if (!extId) throw new Error('extId required')
+      const ok = uninstallExtensionForUser(userId, Number(extId))
+      return { ok }
+    }
+    case 'removeRepo': {
+      const { url } = args || {}
+      if (!url) throw new Error('url required')
+      const repo = getRepoByUrl(url)
+      if (!repo) throw new Error('repo not found')
+      const ok = removeRepoForUser(userId, repo.id)
+      return { ok }
     }
     case 'listExtensions':
       return getUserExtensions(userId)

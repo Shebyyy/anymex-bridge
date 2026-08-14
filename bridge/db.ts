@@ -111,6 +111,20 @@ export function installExtensionForUser(userId: string, extId: number): boolean 
   } catch { return false }
 }
 
+export function uninstallExtensionForUser(userId: string, extId: number): boolean {
+  try {
+    db.run('DELETE FROM user_extensions WHERE user_id = ? AND ext_id = ?', [userId, extId])
+    return true
+  } catch { return false }
+}
+
+export function removeRepoForUser(userId: string, repoId: number): boolean {
+  try {
+    db.run('DELETE FROM user_repos WHERE user_id = ? AND repo_id = ?', [userId, repoId])
+    return true
+  } catch { return false }
+}
+
 export function getUserExtensions(userId: string) {
   return db.query(`
     SELECT e.* FROM extensions e
@@ -133,6 +147,10 @@ export function getAllUsers() {
 
 export function markRepoFetched(repoId: number) {
   db.run("UPDATE repos SET last_fetched = datetime('now') WHERE id = ?", [repoId])
+}
+
+export function getRepoByUrl(url: string) {
+  return db.query('SELECT id, url, type, name FROM repos WHERE url = ?').get(url) as any || null
 }
 
 export function getStats() {
