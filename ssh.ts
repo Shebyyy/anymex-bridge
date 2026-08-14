@@ -10,7 +10,7 @@ import { installExtension, downloadExtension } from './extensions.js'
 import { runUpdateNow } from './auto-update.js'
 
 const SSH_PORT = 3022
-const HTTP_PORT = 8081
+const HTTP_PORT = 8082
 
 const HOST_KEY_DIR = join(import.meta.dir, 'data')
 const HOST_KEY_PATH = join(HOST_KEY_DIR, 'host_key')

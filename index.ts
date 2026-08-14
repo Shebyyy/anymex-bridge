@@ -22,7 +22,7 @@ process.stdin.resume()
 
 async function main() {
   console.log('=== AnymeX Bridge Server v2.1 ===')
-  console.log('SSH: port 3022 | HTTP: port 8081')
+  console.log('SSH: port 3022 | HTTP: port 8082')
 
   // Init DB
   initSchema()
