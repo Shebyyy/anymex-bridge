@@ -49,7 +49,7 @@ jobs:
             # Install deps
             echo "[4/6] Installing dependencies..."
             cd /root/anymex-bridge
-            bun install
+            /root/.bun/bin/bun install
             echo "OK: deps installed"
 
             # Kill old process
