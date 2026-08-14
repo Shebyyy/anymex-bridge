@@ -1,14 +1,17 @@
 import { createServer as createHttpServer } from 'node:http'
-import { readFileSync } from 'node:fs'
-import { join } from 'node:path'
-import { authenticateUser, createUser, getAllUsers, db, getUserInstalled, addUserInstalled, removeUserInstalled, getUserInstalledPkgs, countOtherUsersWithPkg } from './db.js'
-import { isJarReady, invokeJar, invokeJarOnce, getJarPath, startSidecar } from './jar.js'
+import { readFileSync, existsSync, mkdirSync, writeFileSync, unlinkSync, rmSync, readdirSync, statSync } from 'node:fs'
+import { join, dirname } from 'node:path'
+import { execSync } from 'node:child_process'
+import { authenticateUser, createUser, getAllUsers, getUserById, db, getUserInstalled, addUserInstalled, removeUserInstalled, getUserInstalledPkgs, countOtherUsersWithPkg, banUser, changePassword, editUsername, deleteAllUsers, deleteUserExtensions, deleteExtensionGlobally, getAllInstalledExtensions, getPkgUsers, clearDatabase } from './db.js'
+import { isJarReady, invokeJar, invokeJarOnce, getJarPath, startSidecar, stopSidecar } from './jar.js'
 import { runUpdateNow } from './auto-update.js'
-import { existsSync, mkdirSync, writeFileSync, unlinkSync } from 'node:fs'
 
 const ADMIN_KEY = process.env.ADMIN_KEY || 'anymex-admin-2024'
 let adminTokens = new Set<string>()
 const EXT_DIR = join(import.meta.dir, 'extensions')
+const JAR_CACHE_DIR = join(import.meta.dir, 'jar-cache')
+const DATA_DIR = join(import.meta.dir, 'data')
+const LOG_FILE = join(DATA_DIR, 'bridge.log')
 
 const SSH_PORT = 3022
 const HTTP_PORT = 8082
@@ -54,22 +57,26 @@ export function startHttpServer() {
       if (url.pathname.startsWith('/admin/')) {
         if (!checkAdmin(req)) { res.writeHead(401); res.end(JSON.stringify({ error: 'unauthorized' })); return }
 
+        // ── Stats ──
         if (url.pathname === '/admin/stats' && req.method === 'GET') {
           const users = getAllUsers()
           const userDetails = users.map(u => ({
-            id: u.id, username: u.username,
+            id: u.id, username: u.username, banned: !!u.banned,
             extensions: (db.query('SELECT COUNT(*) as c FROM user_installed WHERE user_id = ?').get(u.id) as any)?.c ?? 0
           }))
           const totalInstalls = (db.query('SELECT COUNT(*) as c FROM user_installed').get() as any)?.c ?? 0
-          res.end(JSON.stringify({ users: userDetails, totalUsers: users.length, installs: totalInstalls, jarReady: isJarReady() }))
+          const bannedCount = users.filter(u => u.banned).length
+          res.end(JSON.stringify({ users: userDetails, totalUsers: users.length, installs: totalInstalls, jarReady: isJarReady(), bannedCount }))
           return
         }
 
+        // ── List users ──
         if (url.pathname === '/admin/users' && req.method === 'GET') {
           res.end(JSON.stringify(getAllUsers()))
           return
         }
 
+        // ── Create user ──
         if (url.pathname === '/admin/createUser' && req.method === 'POST') {
           const body = await readBody(req)
           const { username, password } = JSON.parse(body)
@@ -77,11 +84,40 @@ export function startHttpServer() {
           return
         }
 
+        // ── Ban / unban user ──
+        if (url.pathname === '/admin/banUser' && req.method === 'POST') {
+          const body = await readBody(req)
+          const { userId, banned } = JSON.parse(body)
+          banUser(userId, !!banned)
+          res.end(JSON.stringify({ ok: true }))
+          return
+        }
+
+        // ── Change password ──
+        if (url.pathname === '/admin/changePassword' && req.method === 'POST') {
+          const body = await readBody(req)
+          const { userId, password } = JSON.parse(body)
+          if (!password || password.length < 4) { res.writeHead(400); res.end(JSON.stringify({ ok: false, error: 'password min 4 chars' })); return }
+          changePassword(userId, password)
+          res.end(JSON.stringify({ ok: true }))
+          return
+        }
+
+        // ── Edit username ──
+        if (url.pathname === '/admin/editUsername' && req.method === 'POST') {
+          const body = await readBody(req)
+          const { userId, username } = JSON.parse(body)
+          if (!username || username.length < 3) { res.writeHead(400); res.end(JSON.stringify({ ok: false, error: 'username min 3 chars' })); return }
+          const result = editUsername(userId, username)
+          res.end(JSON.stringify(result))
+          return
+        }
+
         // ── GET: user detail ──
         const userDetail = url.pathname.match(/^\/admin\/user\/([\w-]+)$/)
         if (userDetail && req.method === 'GET') {
           const uid = userDetail[1]
-          const user = db.query('SELECT id, username, created FROM users WHERE id = ?').get(uid) as any
+          const user = getUserById(uid)
           if (!user) { res.writeHead(404); res.end(JSON.stringify({ error: 'user not found' })); return }
           const installed = getUserInstalled(uid)
           res.end(JSON.stringify({ ...user, installedExtensions: installed }))
@@ -99,7 +135,93 @@ export function startHttpServer() {
           return
         }
 
-        // ── POST: force JAR update ──
+        // ── Delete all extensions for a user ──
+        if (url.pathname === '/admin/userExtensions' && req.method === 'DELETE') {
+          const body = await readBody(req)
+          const { userId } = JSON.parse(body)
+          // Get their packages first to check if JARs should be deleted
+          const pkgs = getUserInstalled(userId)
+          deleteUserExtensions(userId)
+          // Delete JAR files that no other user has
+          for (const p of pkgs) {
+            if (countOtherUsersWithPkg(userId, p.pkg_name) === 0) {
+              const typeFolder = p.type === 'cloudstream' ? 'CloudStream' : p.type === 'kotatsu' ? 'Kotatsu' : 'Aniyomi'
+              try { unlinkSync(join(EXT_DIR, typeFolder, `${p.pkg_name}.jar`)) } catch {}
+            }
+          }
+          res.end(JSON.stringify({ ok: true, deleted: pkgs.length }))
+          return
+        }
+
+        // ── Delete extension globally ──
+        const delExt = url.pathname.match(/^\/admin\/extension\/(.+)$/)
+        if (delExt && req.method === 'DELETE') {
+          const pkgName = decodeURIComponent(delExt[1])
+          deleteExtensionGlobally(pkgName)
+          // Delete JAR from all type folders
+          for (const folder of ['Aniyomi', 'CloudStream', 'Kotatsu']) {
+            try { unlinkSync(join(EXT_DIR, folder, `${pkgName}.jar`)) } catch {}
+          }
+          res.end(JSON.stringify({ ok: true }))
+          return
+        }
+
+        // ── View all extensions ──
+        if (url.pathname === '/admin/allExtensions' && req.method === 'GET') {
+          const extensions = getAllInstalledExtensions()
+          // Also list JAR files on disk
+          const diskFiles: any[] = []
+          for (const folder of ['Aniyomi', 'CloudStream', 'Kotatsu']) {
+            const dir = join(EXT_DIR, folder)
+            if (!existsSync(dir)) continue
+            for (const f of readdirSync(dir)) {
+              if (!f.endsWith('.jar')) continue
+              const pkgName = f.replace('.jar', '')
+              const stat = statSync(join(dir, f))
+              diskFiles.push({ pkgName, type: folder.toLowerCase(), folder, size: stat.size, sizeMB: (stat.size / 1024 / 1024).toFixed(2) })
+            }
+          }
+          res.end(JSON.stringify({ extensions, diskFiles }))
+          return
+        }
+
+        // ── Purge orphaned JARs ──
+        if (url.pathname === '/admin/purgeOrphans' && req.method === 'POST') {
+          // Get all installed pkg names
+          const installed = db.query('SELECT DISTINCT pkg_name FROM user_installed').all() as any[]
+          const installedSet = new Set(installed.map(r => r.pkg_name))
+          let purged = 0
+          for (const folder of ['Aniyomi', 'CloudStream', 'Kotatsu']) {
+            const dir = join(EXT_DIR, folder)
+            if (!existsSync(dir)) continue
+            for (const f of readdirSync(dir)) {
+              if (!f.endsWith('.jar')) continue
+              const pkgName = f.replace('.jar', '')
+              if (!installedSet.has(pkgName)) {
+                try { unlinkSync(join(dir, f)); purged++ } catch {}
+              }
+            }
+          }
+          res.end(JSON.stringify({ ok: true, purged }))
+          return
+        }
+
+        // ── Get extension users ──
+        const extUsers = url.pathname.match(/^\/admin\/extensionUsers\/(.+)$/)
+        if (extUsers && req.method === 'GET') {
+          const pkgName = decodeURIComponent(extUsers[1])
+          res.end(JSON.stringify(getPkgUsers(pkgName)))
+          return
+        }
+
+        // ── Delete all users ──
+        if (url.pathname === '/admin/allUsers' && req.method === 'DELETE') {
+          deleteAllUsers()
+          res.end(JSON.stringify({ ok: true }))
+          return
+        }
+
+        // ── Force JAR update ──
         if (url.pathname === '/admin/forceUpdate' && req.method === 'POST') {
           const t0 = Date.now()
           await runUpdateNow()
@@ -107,9 +229,8 @@ export function startHttpServer() {
           return
         }
 
-        // ── GET: JAR status ──
+        // ── JAR status ──
         if (url.pathname === '/admin/jarStatus' && req.method === 'GET') {
-          const { statSync } = await import('node:fs')
           let fileSize = 0
           try { fileSize = statSync(getJarPath()).size } catch {}
           res.end(JSON.stringify({
@@ -118,6 +239,51 @@ export function startHttpServer() {
             fileSize,
             fileSizeMB: (fileSize / 1024 / 1024).toFixed(2)
           }))
+          return
+        }
+
+        // ── View logs ──
+        if (url.pathname === '/admin/logs' && req.method === 'GET') {
+          const lines = parseInt(url.searchParams.get('lines') || '100')
+          let log = ''
+          try {
+            if (existsSync(LOG_FILE)) {
+              const content = readFileSync(LOG_FILE, 'utf-8')
+              log = content.split('\n').slice(-lines).join('\n')
+            }
+          } catch {}
+          res.end(JSON.stringify({ log }))
+          return
+        }
+
+        // ── Restart server ──
+        if (url.pathname === '/admin/restart' && req.method === 'POST') {
+          res.end(JSON.stringify({ ok: true, message: 'restarting' }))
+          setTimeout(() => process.exit(0), 500)
+          return
+        }
+
+        // ── Clear database ──
+        if (url.pathname === '/admin/database' && req.method === 'DELETE') {
+          clearDatabase()
+          res.end(JSON.stringify({ ok: true }))
+          return
+        }
+
+        // ── Shutdown server ──
+        if (url.pathname === '/admin/shutdown' && req.method === 'POST') {
+          res.end(JSON.stringify({ ok: true, message: 'shutting down' }))
+          setTimeout(() => process.exit(0), 500)
+          return
+        }
+
+        // ── Factory reset ──
+        if (url.pathname === '/admin/factoryReset' && req.method === 'POST') {
+          clearDatabase()
+          try { rmSync(EXT_DIR, { recursive: true, force: true }) } catch {}
+          try { rmSync(JAR_CACHE_DIR, { recursive: true, force: true }) } catch {}
+          res.end(JSON.stringify({ ok: true, message: 'factory reset done, server will restart' }))
+          setTimeout(() => process.exit(0), 500)
           return
         }
 
@@ -145,6 +311,7 @@ export function startHttpServer() {
         const { username, password } = JSON.parse(body)
         const user = authenticateUser(username, password)
         if (!user) { res.writeHead(401); res.end(JSON.stringify({ ok: false, error: 'invalid credentials' })); return }
+        if (user.banned) { res.writeHead(403); res.end(JSON.stringify({ ok: false, error: 'account banned' })); return }
         res.end(JSON.stringify({ ok: true, user }))
         return
       }
@@ -156,6 +323,10 @@ export function startHttpServer() {
         const user = authenticateUser(username, password)
         if (!user) {
           res.end(JSON.stringify({ id: id || '0', status: 'error', error: 'invalid credentials' }))
+          return
+        }
+        if (user.banned) {
+          res.end(JSON.stringify({ id: id || '0', status: 'error', error: 'account banned' }))
           return
         }
         try {
@@ -199,7 +370,6 @@ function readBody(req: any): Promise<string> {
 import { Server } from 'ssh2'
 import { generateKeyPairSync } from 'node:crypto'
 
-const DATA_DIR = join(import.meta.dir, 'data')
 const HOST_KEY_PATH = join(DATA_DIR, 'host_key')
 let sshServer: InstanceType<typeof Server> | null = null
 
@@ -230,7 +400,7 @@ export function startSshServer() {
       client.on('authentication', (ctx) => {
         if (ctx.method === 'password') {
           const user = authenticateUser(ctx.username, ctx.password)
-          if (user) {
+          if (user && !user.banned) {
             sshUser = user.username
             sshUserId = user.id
             client.on('ready', () => console.log(`[ssh] User '${sshUser}' connected`))
@@ -247,7 +417,6 @@ export function startSshServer() {
         client.on('session', (accept) => {
           const session = accept()
 
-          // ssh2 v1.17.0: (acceptExec, rejectExec, info)
           session.on('exec', (...args: any[]) => {
             const acceptExec = args[0]
             const execInfo = args.length === 3 ? args[2] : args[1]

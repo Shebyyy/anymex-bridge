@@ -32,8 +32,8 @@ header h1 span{color:#f97316}
 #headerStats{color:#71717a;font-size:12px}
 
 /* Tabs */
-.tabs{display:flex;gap:2px;padding:12px 24px 0;border-bottom:1px solid #27272a}
-.tab{padding:8px 16px;background:none;border:none;color:#71717a;font-size:13px;font-weight:500;cursor:pointer;border-radius:8px 8px 0 0;transition:all .15s}
+.tabs{display:flex;gap:2px;padding:12px 24px 0;border-bottom:1px solid #27272a;overflow-x:auto}
+.tab{padding:8px 16px;background:none;border:none;color:#71717a;font-size:13px;font-weight:500;cursor:pointer;border-radius:8px 8px 0 0;transition:all .15s;white-space:nowrap}
 .tab:hover{color:#a1a1aa}
 .tab.active{color:#f97316;background:#18181b}
 
@@ -43,21 +43,23 @@ header h1 span{color:#f97316}
 .panel.active{display:block}
 
 /* Cards */
-.card{background:#18181b;border:1px solid #27272a;border-radius:10px;padding:16px 20px}
+.card{background:#18181b;border:1px solid #27272a;border-radius:10px;padding:16px 20px;margin-bottom:16px}
 .card h3{font-size:13px;color:#71717a;margin-bottom:10px;text-transform:uppercase;letter-spacing:.5px}
 
 /* Stats grid */
-.stats-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:12px;margin-bottom:20px}
+.stats-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:12px;margin-bottom:20px}
 .stat-card{background:#18181b;border:1px solid #27272a;border-radius:10px;padding:16px 20px}
 .stat-card .label{font-size:12px;color:#71717a;margin-bottom:4px}
 .stat-card .value{font-size:24px;font-weight:700}
 .stat-card .value.orange{color:#f97316}
 .stat-card .value.green{color:#22c55e}
+.stat-card .value.red{color:#ef4444}
 
 /* Table */
-.toolbar{display:flex;align-items:center;gap:10px;margin-bottom:12px}
-.toolbar input{flex:1;max-width:280px;padding:7px 12px;background:#0a0a0a;border:1px solid #27272a;border-radius:8px;color:#e4e4e7;font-size:13px;outline:none}
+.toolbar{display:flex;align-items:center;gap:10px;margin-bottom:12px;flex-wrap:wrap}
+.toolbar input{flex:1;min-width:160px;max-width:320px;padding:7px 12px;background:#0a0a0a;border:1px solid #27272a;border-radius:8px;color:#e4e4e7;font-size:13px;outline:none}
 .toolbar input:focus{border-color:#f97316}
+.toolbar-right{margin-left:auto;display:flex;gap:8px}
 table{width:100%;border-collapse:collapse}
 th{text-align:left;font-size:11px;text-transform:uppercase;letter-spacing:.5px;color:#71717a;padding:8px 12px;border-bottom:1px solid #27272a}
 td{padding:8px 12px;border-bottom:1px solid #1c1c1f;font-size:13px}
@@ -70,17 +72,20 @@ tr:hover td{background:#18181b}
 .btn-ghost{background:#27272a;color:#a1a1aa}.btn-ghost:hover{background:#3f3f46}
 .btn-danger{background:#ef444420;color:#ef4444}.btn-danger:hover{background:#ef444440}
 .btn-success{background:#22c55e20;color:#22c55e}.btn-success:hover{background:#22c55e40}
+.btn-red{background:#ef4444;color:#fff}.btn-red:hover{background:#dc2626}
+.btn-yellow{background:#eab30820;color:#eab308}.btn-yellow:hover{background:#eab30840}
 
 /* Badge */
 .badge{display:inline-block;padding:2px 8px;border-radius:4px;font-size:11px;font-weight:600}
 .badge.aniyomi{background:#8b5cf620;color:#8b5cf6}
 .badge.cloudstream{background:#06b6d420;color:#06b6d4}
 .badge.kotatsu{background:#ec489920;color:#ec4899}
+.badge.banned{background:#ef444420;color:#ef4444}
 
 /* Modal */
 .modal-bg{position:fixed;inset:0;background:#0008;z-index:100;display:flex;align-items:center;justify-content:center}
 .modal-bg.hidden{display:none}
-.modal{background:#18181b;border:1px solid #27272a;border-radius:12px;padding:24px;width:400px;max-width:90vw}
+.modal{background:#18181b;border:1px solid #27272a;border-radius:12px;padding:24px;width:420px;max-width:90vw;max-height:80vh;overflow-y:auto}
 .modal h2{font-size:16px;margin-bottom:16px}
 .modal label{display:block;font-size:12px;color:#71717a;margin-bottom:4px;margin-top:12px}
 .modal label:first-of-type{margin-top:0}
@@ -92,11 +97,20 @@ tr:hover td{background:#18181b}
 .detail-section{margin-bottom:20px}
 .detail-section h3{font-size:14px;font-weight:600;margin-bottom:8px;padding-bottom:6px;border-bottom:1px solid #27272a}
 
-/* JAR panel */n.jar-info{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:16px}
+/* JAR panel */
+.jar-info{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:16px}
 .jar-info .item{background:#0a0a0a;border-radius:8px;padding:12px}
 .jar-info .item .k{font-size:11px;color:#71717a;text-transform:uppercase;letter-spacing:.5px}
 .jar-info .item .v{font-size:14px;margin-top:2px}
-.terminal{background:#0a0a0a;border:1px solid #27272a;border-radius:10px;padding:12px;font-family:'SF Mono',Monaco,Consolas,monospace;font-size:12px;line-height:1.6;max-height:400px;overflow-y:auto;white-space:pre-wrap;word-break:break-all;color:#a1a1aa}
+.terminal{background:#0a0a0a;border:1px solid #27272a;border-radius:10px;padding:12px;font-family:'SF Mono',Monaco,Consolas,monospace;font-size:12px;line-height:1.6;max-height:500px;overflow-y:auto;white-space:pre-wrap;word-break:break-all;color:#a1a1aa}
+
+/* Danger zone */
+.danger-zone{border:1px solid #ef444440;border-radius:10px;padding:20px}
+.danger-zone h3{color:#ef4444;margin-bottom:12px;font-size:14px}
+.danger-row{display:flex;align-items:center;justify-content:space-between;padding:8px 0}
+.danger-row:not(:last-child){border-bottom:1px solid #27272a}
+.danger-row .info .title{font-size:13px;font-weight:500}
+.danger-row .info .desc{font-size:11px;color:#71717a;margin-top:2px}
 
 /* Toast */
 #toast{position:fixed;bottom:20px;right:20px;z-index:200;display:flex;flex-direction:column;gap:8px}
@@ -106,13 +120,11 @@ tr:hover td{background:#18181b}
 .toast.info{background:#27272a;color:#e4e4e7}
 @keyframes slideIn{from{transform:translateX(100%);opacity:0}to{transform:translateX(0);opacity:1}}
 
-/* Scrollbar */
 ::-webkit-scrollbar{width:6px}::-webkit-scrollbar-track{background:transparent}::-webkit-scrollbar-thumb{background:#27272a;border-radius:3px}
 </style>
 </head>
 <body>
 
-<!-- Login -->
 <div id="loginScreen">
   <div class="login-box">
     <h1>Bridge <span>Admin</span></h1>
@@ -123,7 +135,6 @@ tr:hover td{background:#18181b}
   </div>
 </div>
 
-<!-- App -->
 <div id="app">
   <header>
     <h1>Bridge <span>Admin</span></h1>
@@ -136,7 +147,9 @@ tr:hover td{background:#18181b}
   <nav class="tabs">
     <button class="tab active" onclick="switchTab('dashboard',this)">Dashboard</button>
     <button class="tab" onclick="switchTab('users',this)">Users</button>
+    <button class="tab" onclick="switchTab('extensions',this)">Extensions</button>
     <button class="tab" onclick="switchTab('jar',this)">JAR</button>
+    <button class="tab" onclick="switchTab('server',this)">Server</button>
   </nav>
 
   <main class="panels">
@@ -145,7 +158,7 @@ tr:hover td{background:#18181b}
       <div class="stats-grid" id="statsGrid"></div>
       <div class="card">
         <h3>Recent Users</h3>
-        <table><thead><tr><th>Username</th><th>Joined</th><th>Extensions</th></tr></thead>
+        <table><thead><tr><th>Username</th><th>Status</th><th>Joined</th><th>Extensions</th><th>Actions</th></tr></thead>
         <tbody id="dashUsers"></tbody></table>
       </div>
     </div>
@@ -156,7 +169,17 @@ tr:hover td{background:#18181b}
         <input placeholder="Search users..." oninput="filterTable('usersBody',this.value)">
         <button class="btn-sm btn-primary" onclick="openModal('createUser')">+ Create User</button>
       </div>
-      <table><thead><tr><th>Username</th><th>ID</th><th>Joined</th><th>Extensions</th><th>Actions</th></tr></thead><tbody id="usersBody"></tbody></table>
+      <table><thead><tr><th>Username</th><th>Status</th><th>ID</th><th>Joined</th><th>Extensions</th><th>Actions</th></tr></thead><tbody id="usersBody"></tbody></table>
+    </div>
+
+    <!-- Extensions -->
+    <div class="panel" id="panel-extensions">
+      <div class="toolbar">
+        <input placeholder="Search extensions..." oninput="filterTable('extsBody',this.value)">
+        <button class="btn-sm btn-ghost" onclick="loadExtensions()">Refresh</button>
+        <button class="btn-sm btn-yellow" onclick="purgeOrphans()">Purge Orphans</button>
+      </div>
+      <table><thead><tr><th>Package</th><th>Name</th><th>Type</th><th>Users</th><th>On Disk</th><th>Actions</th></tr></thead><tbody id="extsBody"></tbody></table>
     </div>
 
     <!-- JAR -->
@@ -167,31 +190,71 @@ tr:hover td{background:#18181b}
         <button class="btn-sm btn-ghost" onclick="loadJarStatus()">Refresh</button>
       </div>
     </div>
+
+    <!-- Server -->
+    <div class="panel" id="panel-server">
+      <div class="card">
+        <h3>Server Logs</h3>
+        <div class="toolbar">
+          <select id="logLines" style="background:#0a0a0a;border:1px solid #27272a;border-radius:8px;color:#e4e4e7;padding:5px 10px;font-size:12px">
+            <option value="50">Last 50 lines</option>
+            <option value="100" selected>Last 100 lines</option>
+            <option value="500">Last 500 lines</option>
+          </select>
+          <button class="btn-sm btn-ghost" onclick="loadLogs()">Refresh</button>
+        </div>
+        <div class="terminal" id="logOutput">Loading...</div>
+      </div>
+      <div class="danger-zone">
+        <h3>Danger Zone</h3>
+        <div class="danger-row">
+          <div class="info"><div class="title">Restart Server</div><div class="desc">Gracefully restart the bridge process</div></div>
+          <button class="btn-sm btn-yellow" onclick="doAction('restart')">Restart</button>
+        </div>
+        <div class="danger-row">
+          <div class="info"><div class="title">Clear Database</div><div class="desc">Delete all users and install records. Extensions on disk are kept.</div></div>
+          <button class="btn-sm btn-danger" onclick="doAction('database')">Clear DB</button>
+        </div>
+        <div class="danger-row">
+          <div class="info"><div class="title">Delete All Users</div><div class="desc">Remove every user and their install records from the database.</div></div>
+          <button class="btn-sm btn-danger" onclick="doAction('allUsers')">Delete All</button>
+        </div>
+        <div class="danger-row">
+          <div class="info"><div class="title">Shutdown Server</div><div class="desc">Stop the bridge process entirely.</div></div>
+          <button class="btn-sm btn-red" onclick="doAction('shutdown')">Shutdown</button>
+        </div>
+        <div class="danger-row">
+          <div class="info"><div class="title">Factory Reset</div><div class="desc">Delete database, all extensions, and JAR cache. Server restarts clean.</div></div>
+          <button class="btn-sm btn-red" onclick="doAction('factoryReset')">Factory Reset</button>
+        </div>
+      </div>
+    </div>
   </main>
 </div>
 
-<!-- Modal -->
 <div class="modal-bg hidden" id="modalBg" onclick="if(event.target===this)closeModal()"><div class="modal" id="modal"></div></div>
-
-<!-- Toast -->
 <div id="toast"></div>
 
 <script>
-let token = '';
-window._users = [];
+let token='';
+window._users=[];
+window._allExtensions=[];
+window._diskFiles=[];
 
 function esc(s){return s==null?'':String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;')}
 function fmtDate(d){if(!d)return'-';try{return new Date(d).toLocaleDateString('en-US',{month:'short',day:'numeric',year:'numeric'})}catch{return d}}
+function fmtSize(mb){return mb?mb+' MB':'-'}
 
 function toast(msg,type='info'){const el=document.getElementById('toast'),t=document.createElement('div');t.className='toast '+type;t.textContent=msg;el.appendChild(t);setTimeout(()=>t.remove(),3500)}
 
 async function api(path,opts={}){
-  const res=await fetch(path,{...opts,headers:{'Content-Type':'application/json','Authorization':'Bearer '+token,...(opts.headers||{})}});
-  return res.json();
+  const r=await fetch(path,{...opts,headers:{'Content-Type':'application/json','Authorization':'Bearer '+token,...(opts.headers||{})}});
+  return r.json();
 }
 async function apiPost(path,body){return api(path,{method:'POST',body:JSON.stringify(body)})}
+async function apiDelete(path,body){return api(path,{method:'DELETE',body:JSON.stringify(body)})}
 
-// ── Login ──
+// Login
 async function doLogin(){
   const key=document.getElementById('loginKey').value.trim();
   if(!key)return;
@@ -200,28 +263,37 @@ async function doLogin(){
   else{const e=document.getElementById('loginError');e.textContent='Invalid key';e.style.display='block'}
 }
 
-// ── Tabs ──
+// Tabs
 function switchTab(name,btn){
   document.querySelectorAll('.tab').forEach(t=>t.classList.remove('active'));
   document.querySelectorAll('.panel').forEach(p=>p.classList.remove('active'));
   btn.classList.add('active');
   document.getElementById('panel-'+name).classList.add('active');
+  if(name==='extensions')loadExtensions();
+  if(name==='server')loadLogs();
 }
 
-// ── Modal ──
+// Modal
 function openModal(type,data={}){
   const m=document.getElementById('modal'),bg=document.getElementById('modalBg');
   if(type==='createUser'){
     m.innerHTML=`<h2>Create User</h2><label>Username</label><input id="m_username" placeholder="min 3 chars"><label>Password</label><input id="m_password" type="password" placeholder="min 4 chars"><div class="modal-actions"><button class="btn-sm btn-ghost" onclick="closeModal()">Cancel</button><button class="btn-sm btn-primary" onclick="doCreateUser()">Create</button></div>`;
+  } else if(type==='changePassword'){
+    m.innerHTML=`<h2>Change Password</h2><p style="color:#71717a;font-size:12px;margin-bottom:12px">User: ${esc(data.username)}</p><label>New Password</label><input id="m_newpass" type="password" placeholder="min 4 chars"><div class="modal-actions"><button class="btn-sm btn-ghost" onclick="closeModal()">Cancel</button><button class="btn-sm btn-primary" onclick="doChangePassword('${data.id}')">Save</button></div>`;
+  } else if(type==='editUsername'){
+    m.innerHTML=`<h2>Edit Username</h2><p style="color:#71717a;font-size:12px;margin-bottom:12px">ID: ${esc(data.id)}</p><label>Username</label><input id="m_newname" value="${esc(data.username)}" placeholder="min 3 chars"><div class="modal-actions"><button class="btn-sm btn-ghost" onclick="closeModal()">Cancel</button><button class="btn-sm btn-primary" onclick="doEditUsername('${data.id}')">Save</button></div>`;
   } else if(type==='userDetail'){
     const exts=data.installedExtensions||[];
-    m.innerHTML=`<h2>${esc(data.username)}</h2><p style="color:#71717a;font-size:12px;margin-bottom:12px">ID: ${esc(data.id)} · Joined: ${fmtDate(data.created)}</p><div class="detail-section"><h3>Installed Extensions (${exts.length})</h3><table><thead><tr><th>Name</th><th>Package</th><th>Type</th><th>Version</th></tr></thead><tbody>${exts.map(e=>`<tr><td>${esc(e.name||e.pkg_name)}</td><td style="font-family:monospace;font-size:11px">${esc(e.pkg_name)}</td><td>${typeBadge(e.type)}</td><td>${esc(e.version)}</td></tr>`).join('')||'<tr><td colspan="4" class="empty">No extensions installed</td></tr>'}</tbody></table></div><div class="modal-actions"><button class="btn-sm btn-ghost" onclick="closeModal()">Close</button></div>`;
+    const banned=!!data.banned;
+    m.innerHTML=`<h2>${esc(data.username)} ${banned?'<span class="badge banned">BANNED</span>':''}</h2><p style="color:#71717a;font-size:12px;margin-bottom:12px">ID: ${esc(data.id)} · Joined: ${fmtDate(data.created)}</p><div class="detail-section"><h3>Installed Extensions (${exts.length})</h3><table><thead><tr><th>Name</th><th>Package</th><th>Type</th><th>Version</th><th>Action</th></tr></thead><tbody>${exts.map(e=>`<tr><td>${esc(e.name||e.pkg_name)}</td><td style="font-family:monospace;font-size:11px">${esc(e.pkg_name)}</td><td>${typeBadge(e.type)}</td><td>${esc(e.version)}</td><td><button class="btn-sm btn-danger" onclick="doDeleteExtFromUser('${data.id}','${esc(e.pkg_name)}')">Remove</button></td></tr>`).join('')||'<tr><td colspan="5" class="empty">No extensions</td></tr>'}</tbody></table></div><div class="modal-actions"><button class="btn-sm btn-ghost" onclick="closeModal()">Close</button></div>`;
+  } else if(type==='extUsers'){
+    m.innerHTML=`<h2>${esc(data.pkgName)}</h2><p style="color:#71717a;font-size:12px;margin-bottom:12px">${typeBadge(data.type)} · ${data.install_count} users</p><table><thead><tr><th>User</th><th>Type</th><th>Version</th></tr></thead><tbody>${(data.usersList||[]).map(u=>`<tr><td>${esc(u.username)}</td><td>${typeBadge(u.type)}</td><td>${esc(u.version)}</td></tr>`).join('')||'<tr><td colspan="3" class="empty">No users</td></tr>'}</tbody></table><div class="modal-actions"><button class="btn-sm btn-ghost" onclick="closeModal()">Close</button></div>`;
   }
   bg.classList.remove('hidden');
 }
 function closeModal(){document.getElementById('modalBg').classList.add('hidden')}
 
-// ── Actions ──
+// Actions
 async function doCreateUser(){
   const u=document.getElementById('m_username').value.trim();
   const p=document.getElementById('m_password').value;
@@ -230,8 +302,27 @@ async function doCreateUser(){
   if(r.ok){toast('User created','success');closeModal();loadAll()}else toast(r.error||'Failed','error');
 }
 
+async function doBanToggle(id,banned){
+  const r=await apiPost('/admin/banUser',{userId:id,banned:!banned});
+  if(r.ok){toast(banned?'Unbanned':'Banned','success');loadAll()}else toast('Failed','error');
+}
+
+async function doChangePassword(id){
+  const p=document.getElementById('m_newpass').value;
+  if(!p||p.length<4)return toast('Password min 4 chars','error');
+  const r=await apiPost('/admin/changePassword',{userId:id,password:p});
+  if(r.ok){toast('Password changed','success');closeModal()}else toast(r.error||'Failed','error');
+}
+
+async function doEditUsername(id){
+  const n=document.getElementById('m_newname').value.trim();
+  if(!n||n.length<3)return toast('Username min 3 chars','error');
+  const r=await apiPost('/admin/editUsername',{userId:id,username:n});
+  if(r.ok){toast('Username updated','success');closeModal();loadAll()}else toast(r.error||'Failed','error');
+}
+
 function deleteUser(id,name){
-  if(!confirm(`Delete user "${name}"? This will remove all their install records.`))return;
+  if(!confirm(`Delete user "${name}"? This removes all their install records.`))return;
   api('/admin/user/'+id,{method:'DELETE'}).then(r=>{if(r.ok){toast('User deleted','success');loadAll()}else toast(r.error||'Failed','error')});
 }
 
@@ -242,6 +333,25 @@ async function loadUserDetail(id){
   openModal('userDetail',r);
 }
 
+async function doDeleteAllExtForUser(id,username){
+  if(!confirm(`Delete ALL extensions for "${username}"? Orphaned JARs will be deleted from disk.`))return;
+  const r=await apiDelete('/admin/userExtensions',{userId:id});
+  if(r.ok){toast(`Deleted ${r.deleted} extensions`,'success');loadAll()}else toast('Failed','error');
+}
+
+async function doDeleteExtFromUser(userId,pkgName){
+  const r=await fetch('/admin/extension/'+encodeURIComponent(pkgName),{method:'DELETE',headers:{'Content-Type':'application/json','Authorization':'Bearer '+token}});
+  const res=await r.json();
+  if(res.ok){toast('Extension removed globally','success');loadAll();loadExtensions()}else toast('Failed','error');
+}
+
+async function deleteExtGlobal(pkgName,name){
+  if(!confirm(`Delete extension "${name}" (${pkgName}) from ALL users? JAR file will be deleted.`))return;
+  const r=await fetch('/admin/extension/'+encodeURIComponent(pkgName),{method:'DELETE',headers:{'Content-Type':'application/json','Authorization':'Bearer '+token}});
+  const res=await r.json();
+  if(res.ok){toast('Deleted globally','success');loadExtensions()}else toast('Failed','error');
+}
+
 function filterTable(bodyId,q){
   const rows=document.querySelectorAll('#'+bodyId+' tr');
   const lower=q.toLowerCase();
@@ -250,7 +360,35 @@ function filterTable(bodyId,q){
 
 function typeBadge(t){return t?`<span class="badge ${t}">${t}</span>`:'-'}
 
-// ── JAR ──
+// Extensions tab
+async function loadExtensions(){
+  const r=await api('/admin/allExtensions');
+  window._allExtensions=r.extensions||[];
+  window._diskFiles=r.diskFiles||[];
+  renderExtensions();
+}
+
+function renderExtensions(){
+  const exts=window._allExtensions;
+  const disk=window._diskFiles;
+  document.getElementById('extsBody').innerHTML=exts.map(e=>{
+    const onDisk=disk.find(d=>d.pkgName===e.pkg_name);
+    return `<tr><td style="font-family:monospace;font-size:11px" title="${esc(e.pkg_name)}">${esc(e.pkg_name)}</td><td>${esc(e.name)}</td><td>${typeBadge(e.type)}</td><td><span style="color:#f97316;font-weight:600">${e.install_count}</span> <button class="btn-sm btn-ghost" style="padding:2px 6px;font-size:10px" onclick="showExtUsers('${esc(e.pkg_name)}',${e.install_count},'${e.type}')">who</button></td><td>${onDisk?fmtSize(onDisk.sizeMB):'<span style="color:#ef4444">No</span>'}</td><td><button class="btn-sm btn-danger" onclick="deleteExtGlobal('${esc(e.pkg_name)}','${esc(e.name||e.pkg_name)}')">Delete</button></td></tr>`;
+  }).join('')||'<tr><td colspan="6" class="empty">No extensions installed</td></tr>';
+}
+
+async function showExtUsers(pkgName,count,type){
+  const users=await api('/admin/extensionUsers/'+encodeURIComponent(pkgName));
+  openModal('extUsers',{pkgName,type,install_count:count,usersList:users});
+}
+
+async function purgeOrphans(){
+  if(!confirm('Delete extension JARs on disk that no user has installed?'))return;
+  const r=await apiPost('/admin/purgeOrphans',{});
+  if(r.ok){toast(`Purged ${r.purged} orphaned files`,'success');loadExtensions()}else toast('Failed','error');
+}
+
+// JAR
 async function loadJarStatus(){
   const r=await api('/admin/jarStatus');
   document.getElementById('jarInfo').innerHTML=`
@@ -269,37 +407,61 @@ async function forceUpdate(){
   if(r.ok){toast(`Updated in ${r.elapsed}ms`,'success');loadJarStatus()}else toast('Failed','error');
 }
 
-// ── Load All ──
+// Server
+async function loadLogs(){
+  const lines=document.getElementById('logLines').value;
+  const r=await api('/admin/logs?lines='+lines);
+  document.getElementById('logOutput').textContent=r.log||'No logs available.';
+}
+
+async function doAction(action){
+  const confirms={
+    restart:'Restart the server?',
+    database:'Clear the entire database? All users and installs will be deleted.',
+    allUsers:'Delete ALL users and their install records?',
+    shutdown:'Shutdown the server? It will need to be restarted manually.',
+    factoryReset:'FACTORY RESET? This deletes everything: database, extensions, JAR cache. The server restarts clean.'
+  };
+  if(!confirm(confirms[action]))return;
+  if(action==='database'){
+    const r=await api('/admin/database',{method:'DELETE'});
+    if(r.ok){toast('Database cleared','success');loadAll()}else toast('Failed','error');
+  } else if(action==='allUsers'){
+    const r=await api('/admin/allUsers',{method:'DELETE'});
+    if(r.ok){toast('All users deleted','success');loadAll()}else toast('Failed','error');
+  } else if(action==='restart'){
+    const r=await apiPost('/admin/restart',{});
+    if(r.ok){toast('Server restarting...','success');setTimeout(()=>location.reload(),5000)}
+  } else if(action==='shutdown'){
+    const r=await apiPost('/admin/shutdown',{});
+    if(r.ok){toast('Server shutting down...','success');setTimeout(()=>location.reload(),5000)}
+  } else if(action==='factoryReset'){
+    const r=await apiPost('/admin/factoryReset',{});
+    if(r.ok){toast('Factory reset done','success');setTimeout(()=>location.reload(),5000)}
+  }
+}
+
+// Load All
 async function loadAll(){
   try{
     const [stats,users]=await Promise.all([api('/admin/stats'),api('/admin/users')]);
     window._users=users;
-
-    // Header
     document.getElementById('headerStats').textContent=`${stats.totalUsers} users · ${stats.installs} installs`;
 
-    // Dashboard stats
     const userDetails=stats.users||[];
     document.getElementById('statsGrid').innerHTML=
-      [['Users',stats.totalUsers,''],['Installs',stats.installs,'orange'],['JAR',stats.jarReady?'Online':'Offline',stats.jarReady?'green':'']].map(([l,v,c])=>
+      [['Users',stats.totalUsers,''],['Installs',stats.installs,'orange'],['JAR',stats.jarReady?'Online':'Offline',stats.jarReady?'green':'red'],['Banned',stats.bannedCount||0,'red']].map(([l,v,c])=>
         `<div class="stat-card"><div class="label">${l}</div><div class="value ${c}">${v}</div></div>`
       ).join('');
 
-    // Dashboard users table
-    document.getElementById('dashUsers').innerHTML=users.map(u=>{
-      const uc=userDetails.find(x=>x.id===u.id)||{extensions:0};
-      return `<tr><td>${esc(u.username)}</td><td>${fmtDate(u.created)}</td><td>${uc.extensions||0}</td><td><button class="btn-sm btn-ghost" onclick="loadUserDetail('${u.id}')">Detail</button></td></tr>`;
-    }).join('')||'<tr><td colspan="4" class="empty">No users</td></tr>';
+    function userRow(u,extra=''){
+      return `<tr><td>${esc(u.username)} ${u.banned?'<span class="badge banned">BANNED</span>':''}</td><td>${u.banned?'<span style="color:#ef4444">Banned</span>':'<span style="color:#22c55e">Active</span>'}</td><td style="font-family:monospace;font-size:11px;max-width:120px;overflow:hidden;text-overflow:ellipsis" title="${esc(u.id)}">${esc(u.id)}</td><td>${fmtDate(u.created)}</td><td>${u.extensions||0}</td><td><button class="btn-sm btn-ghost" onclick="loadUserDetail('${u.id}')">Detail</button><button class="btn-sm btn-yellow" onclick="doBanToggle('${u.id}',${!!u.banned})" title="${u.banned?'Unban':'Ban'}">${u.banned?'Unban':'Ban'}</button><button class="btn-sm btn-danger" onclick="doDeleteAllExtForUser('${u.id}','${esc(u.username)}')" title="Delete all extensions">Ext</button><button class="btn-sm btn-danger" onclick="deleteUser('${u.id}','${esc(u.username)}')">Del</button></td></tr>`;
+    }
 
-    // Users table
-    document.getElementById('usersBody').innerHTML=users.map(u=>{
-      const uc=userDetails.find(x=>x.id===u.id)||{extensions:0};
-      return `<tr><td>${esc(u.username)}</td><td style="font-family:monospace;font-size:11px;max-width:120px;overflow:hidden;text-overflow:ellipsis" title="${esc(u.id)}">${esc(u.id)}</td><td>${fmtDate(u.created)}</td><td>${uc.extensions||0}</td><td><button class="btn-sm btn-ghost" onclick="loadUserDetail('${u.id}')">Detail</button><button class="btn-sm btn-danger" onclick="deleteUser('${u.id}','${esc(u.username)}')">Del</button></td></tr>`;
-    }).join('')||'<tr><td colspan="5" class="empty">No users</td></tr>';
+    document.getElementById('dashUsers').innerHTML=userDetail.map(u=>{const uc=userDetails.find(x=>x.id===u.id)||{extensions:0};return userRow({...u,extensions:uc.extensions})}).join('')||'<tr><td colspan="5" class="empty">No users</td></tr>';
+    document.getElementById('usersBody').innerHTML=users.map(u=>{const uc=userDetails.find(x=>x.id===u.id)||{extensions:0};return userRow({...u,extensions:uc.extensions})}).join('')||'<tr><td colspan="6" class="empty">No users</td></tr>';
 
-    // JAR
     loadJarStatus();
-
   }catch(e){console.error(e);toast('Failed to load data','error')}
 }
 </script>
