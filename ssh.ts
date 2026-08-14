@@ -1,10 +1,12 @@
 import { createServer as createHttpServer } from 'node:http'
 import { readFileSync, writeFileSync } from 'node:fs'
 import { generateKeyPairSync } from 'node:crypto'
-import { join, dirname, basename } from 'node:path'
+import { join } from 'node:path'
 import { Server as SshServer } from 'ssh2'
-import { authenticateUser, db } from './db.js'
-import { isJarReady, invokeJar, invokeJarOnce, cancelJarRequest } from './jar.js'
+import { authenticateUser, createUser, getUserExtensions, db } from './db.js'
+import { isJarReady, invokeJar, invokeJarOnce } from './jar.js'
+import { addRepo } from './repos.js'
+import { installExtension, downloadExtension } from './extensions.js'
 import { runUpdateNow } from './auto-update.js'
 
 const SSH_PORT = 3022
@@ -12,11 +14,6 @@ const HTTP_PORT = 8082
 
 const HOST_KEY_DIR = join(import.meta.dir, 'data')
 const HOST_KEY_PATH = join(HOST_KEY_DIR, 'host_key')
-
-// Server-side extension directories
-const EXT_ANIYOMI_DIR = join(import.meta.dir, 'extensions', 'Aniyomi')
-const EXT_CS_DIR = join(import.meta.dir, 'extensions', 'CloudStream')
-const EXT_KOTATSU_DIR = join(import.meta.dir, 'extensions', 'Kotatsu')
 
 function getHostKey(): Buffer {
   try { return readFileSync(HOST_KEY_PATH) } catch {}
@@ -26,8 +23,7 @@ function getHostKey(): Buffer {
   return Buffer.from(key.privateKey)
 }
 
-// ─── HTTP Server (admin-only: health + user management) ──────
-// The AnymeX app NEVER uses HTTP. It only speaks the SSH bridge protocol.
+// ─── HTTP Server (registration + data endpoints) ──────────
 
 export function startHttpServer() {
   const server = createHttpServer(async (req, res) => {
@@ -35,7 +31,7 @@ export function startHttpServer() {
     res.setHeader('Content-Type', 'application/json')
 
     try {
-      if (url.pathname === '/health' && req.method === 'GET') {
+      if (url.pathname === '/health') {
         const stats = db.query(`SELECT (SELECT COUNT(*) FROM users) as users, (SELECT COUNT(*) FROM extensions) as extensions, (SELECT COUNT(*) FROM user_extensions) as installs`).get() as any
         res.end(JSON.stringify({ ...stats, jarReady: isJarReady() }))
         return
@@ -49,21 +45,27 @@ export function startHttpServer() {
           res.end(JSON.stringify({ ok: false, error: 'username min 3 chars, password min 4 chars' }))
           return
         }
-        const existing = db.query('SELECT id FROM users WHERE username = ?').get(username)
-        if (existing) {
-          res.end(JSON.stringify({ ok: false, error: 'username already exists' }))
-          return
-        }
-        const id = crypto.randomUUID()
-        db.run('INSERT INTO users (id, username, password) VALUES (?, ?, ?)', [id, username, password])
-        res.end(JSON.stringify({ ok: true, user: { id, username } }))
+        res.end(JSON.stringify(createUser(username, password)))
         return
       }
 
-      if (url.pathname === '/forceUpdate' && req.method === 'POST') {
-        console.log('[http] Force update triggered')
-        await runUpdateNow()
-        res.end(JSON.stringify({ ok: true }))
+      if (url.pathname === '/addRepo' && req.method === 'POST') {
+        const body = await readBody(req)
+        const { username, password, url: repoUrl, type } = JSON.parse(body)
+        const user = authenticateUser(username, password)
+        if (!user) { res.writeHead(401); res.end(JSON.stringify({ ok: false, error: 'invalid credentials' })); return }
+        if (!repoUrl) { res.writeHead(400); res.end(JSON.stringify({ ok: false, error: 'url required' })); return }
+        res.end(JSON.stringify(await addRepo(user.id, repoUrl, type)))
+        return
+      }
+
+      if (url.pathname === '/installExtension' && req.method === 'POST') {
+        const body = await readBody(req)
+        const { username, password, extId } = JSON.parse(body)
+        const user = authenticateUser(username, password)
+        if (!user) { res.writeHead(401); res.end(JSON.stringify({ ok: false, error: 'invalid credentials' })); return }
+        if (!extId) { res.writeHead(400); res.end(JSON.stringify({ ok: false, error: 'extId required' })); return }
+        res.end(JSON.stringify(await installExtension(user.id, Number(extId))))
         return
       }
 
@@ -75,7 +77,7 @@ export function startHttpServer() {
     }
   })
 
-  server.listen(HTTP_PORT, () => console.log(`[http] Admin on ${HTTP_PORT}`))
+  server.listen(HTTP_PORT, () => console.log(`[http] Listening on ${HTTP_PORT}`))
 }
 
 function readBody(req: any): Promise<string> {
@@ -87,21 +89,7 @@ function readBody(req: any): Promise<string> {
   })
 }
 
-// ─── SSH Server ─────────────────────────────────────────────
-// Transparent proxy to the JAR sidecar.
-//
-// Protocol — matches SidecarBridge.dart EXACTLY:
-//
-//   App sends via SSH exec:
-//     {"method":"getPopular","args":{"sourceId":"...","isAnime":true,"page":1},"id":"42"}
-//
-//   Server responds:
-//     Success: {"id":"42","data":{...}}
-//     Error:   {"id":"42","status":"error","data":"some error"}
-//
-//   Note: NO "status":"ok" on success. The Dart SidecarBridge only
-//   checks for status === 'partial' | 'completed' | 'error'.
-//   Absent status means normal completion (completer resolves with data).
+// ─── SSH Server ────────────────────────────────────────────
 
 export function startSshServer() {
   const hostKey = getHostKey()
@@ -111,12 +99,13 @@ export function startSshServer() {
   })
 
   sshServer.on('connection', (client) => {
+    let userId: string | null = null
     let username: string | null = null
 
     client.on('authentication', (ctx) => {
       if (ctx.method === 'password') {
         const user = authenticateUser(ctx.username, ctx.password as string)
-        if (user) { username = user.username; ctx.accept() }
+        if (user) { userId = user.id; username = user.username; ctx.accept() }
         else ctx.reject()
       } else ctx.reject()
     })
@@ -132,49 +121,23 @@ export function startSshServer() {
           const raw = (info.command || '').trim()
 
           if (!raw) {
-            channel.write(JSON.stringify({ id: '0', status: 'error', data: 'empty command' }) + '\n')
+            channel.write(JSON.stringify({ id: '0', status: 'error', error: 'empty command' }) + '\n')
             channel.close(); return
           }
 
-          let msg: any
           try {
-            msg = JSON.parse(raw)
+            const msg = JSON.parse(raw)
+            handleMethod(userId!, username!, msg).then(result => {
+              channel.write(JSON.stringify({ id: msg.id || '0', status: 'ok', data: result }) + '\n')
+              channel.close()
+            }).catch(e => {
+              channel.write(JSON.stringify({ id: msg.id || '0', status: 'error', error: e.message }) + '\n')
+              channel.close()
+            })
           } catch {
-            channel.write(JSON.stringify({ id: '0', status: 'error', data: 'invalid JSON' }) + '\n')
-            channel.close(); return
-          }
-
-          const id = msg.id?.toString() || '0'
-          const method = msg.method
-          const args = msg.args || {}
-
-          if (!method) {
-            channel.write(JSON.stringify({ id, status: 'error', data: 'method required' }) + '\n')
-            channel.close(); return
-          }
-
-          // Handle cancel — forward to JAR and respond
-          if (method === 'cancel') {
-            const cancelId = args.id || id
-            cancelJarRequest(cancelId)
-            channel.write(JSON.stringify({ id: cancelId, data: true }) + '\n')
+            channel.write(JSON.stringify({ id: '0', status: 'error', error: 'invalid JSON' }) + '\n')
             channel.close()
-            return
           }
-
-          // Patch args with server-side paths
-          const patchedArgs = patchArgs(method, args)
-
-          // Forward ALL methods to JAR sidecar (transparent proxy)
-          callJar(method, patchedArgs, id).then(data => {
-            // Success: { id, data } — NO status field
-            channel.write(JSON.stringify({ id, data }) + '\n')
-            channel.close()
-          }).catch(e => {
-            // Error: { id, status: "error", data: errorMsg }
-            channel.write(JSON.stringify({ id, status: 'error', data: e.message || String(e) }) + '\n')
-            channel.close()
-          })
         })
       })
     })
@@ -185,38 +148,55 @@ export function startSshServer() {
   sshServer.listen(SSH_PORT, '0.0.0.0', () => console.log(`[ssh] Listening on port ${SSH_PORT}`))
 }
 
-// ─── Call JAR (passes client's ID through for cancel support) ──
+// ─── Method Router ─────────────────────────────────────────
 
-async function callJar(method: string, args: Record<string, any>, clientRequestId: string): Promise<any> {
-  if (isJarReady()) {
-    return await invokeJar(method, args, { clientRequestId })
+async function handleMethod(userId: string, username: string, msg: any): Promise<any> {
+  const { method, args } = msg
+
+  switch (method) {
+    case 'addRepo': {
+      const { url, type } = args || {}
+      if (!url) throw new Error('url required')
+      return addRepo(userId, url, type)
+    }
+    case 'installExtension': {
+      const { extId } = args || {}
+      if (!extId) throw new Error('extId required')
+      return installExtension(userId, Number(extId))
+    }
+    case 'listExtensions':
+      return getUserExtensions(userId)
+    case 'downloadExtension': {
+      const { extId } = args || {}
+      if (!extId) throw new Error('extId required')
+      return downloadExtension(Number(extId))
+    }
+    case 'forceUpdate': {
+      // Manual trigger — re-fetch all repos & re-download changed plugins
+      console.log(`[ssh] User '${username}' triggered force update`)
+      await runUpdateNow()
+      return { ok: true, message: 'Update cycle complete' }
+    }
+    case 'getExtensions': {
+      const { type, query } = args || {}
+      let sql = 'SELECT id, name, pkg, type, version, icon_url, lang, is_nsfw, extra FROM extensions'
+      const params: any[] = []
+      if (type) { sql += ' WHERE type = ?'; params.push(type) }
+      if (query) { sql += (params.length ? ' AND' : ' WHERE') + ' name LIKE ?'; params.push(`%${query}%`) }
+      sql += ' ORDER BY name'
+      return db.prepare(sql).all(...params)
+    }
+    case 'getRepos':
+      return db.query(`SELECT r.id, r.url, r.type, r.name, r.last_fetched FROM repos r JOIN user_repos ur ON r.id = ur.repo_id WHERE ur.user_id = ?`).all(userId)
+    case 'health':
+      return { status: 'ok', user: username, jarReady: isJarReady() }
+    default:
+      // Forward to JAR sidecar or one-shot fallback
+      try {
+        if (isJarReady()) return await invokeJar(method, args || {})
+        return await invokeJarOnce(method, args || {})
+      } catch (e: any) {
+        throw new Error(`${method}: ${e.message}`)
+      }
   }
-  return await invokeJarOnce(method, args)
-}
-
-// ─── Path Patching ───────────────────────────────────────────
-// The app sends folder paths that point to the iOS device filesystem.
-// On the server, redirect to the SERVER's extension directories.
-
-function patchArgs(method: string, args: Record<string, any>): Record<string, any> {
-  const patched = { ...args }
-
-  if (method === 'loadExtensions') {
-    patched.folderPath = EXT_ANIYOMI_DIR
-  }
-
-  if (method === 'csLoadExtensions') {
-    patched.folderPath = EXT_CS_DIR
-  }
-
-  if (method === 'kotatsuLoadExtensions') {
-    patched.folderPath = EXT_KOTATSU_DIR
-  }
-
-  if (method === 'convertApk' && patched.apkPath) {
-    patched.outJarPath = patched.outJarPath ||
-      join(dirname(patched.apkPath), basename(patched.apkPath).replace(/\.apk$/i, '.jar'))
-  }
-
-  return patched
 }

@@ -4,6 +4,7 @@ import { startSshServer, startHttpServer } from './ssh.js'
 import { startAutoUpdate, stopAutoUpdate } from './auto-update.js'
 
 const JAR_UPDATE_INTERVAL = 6 * 60 * 60 * 1000 // 6 hours
+const EXT_UPDATE_INTERVAL = 6 * 60 * 60 * 1000 // 6 hours
 
 // ── Crash protection ────────────────────────────────────────
 process.on('uncaughtException', (err) => {
@@ -20,14 +21,14 @@ process.on('SIGHUP', () => {})
 process.stdin.resume()
 
 async function main() {
-  console.log('=== AnymeX Bridge Server v2.2 ===')
+  console.log('=== AnymeX Bridge Server v2.1 ===')
   console.log('SSH: port 3022 | HTTP: port 8082')
 
-  // Init DB (used for SSH user auth only)
+  // Init DB
   initSchema()
   console.log('[db] Schema initialized')
 
-  // Start servers
+  // Start servers first (so management methods work immediately)
   startHttpServer()
   startSshServer()
 
@@ -45,10 +46,11 @@ async function main() {
     }
   } else {
     console.warn(`[jar] Not available: ${jarResult.error}`)
+    console.warn('[jar] Management methods work. Extension methods require JAR.')
   }
 
   // Auto-update extension plugins every 6h
-  startAutoUpdate(JAR_UPDATE_INTERVAL)
+  startAutoUpdate(EXT_UPDATE_INTERVAL)
 
   // Auto-update JAR every 6h
   setInterval(async () => {
