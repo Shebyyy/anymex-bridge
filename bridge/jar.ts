@@ -48,8 +48,8 @@ export async function checkOrDownloadJar(): Promise<{ ok: boolean; error?: strin
 // ─── Persistent Sidecar Process ────────────────────────────
 // Matches the Dart SidecarBridge.dart protocol exactly:
 //   stdin:  {"method":"...","args":{...},"id":"..."}\n
-//   stderr: JSON responses + log lines (JAR redirects stdout to stderr)
-//   stdout: (unused - JAR says it redirects to stderr for IPC safety)
+//   stderr: JSON responses + log lines
+//   stdout: JSON responses
 
 export async function startSidecar(): Promise<{ ok: boolean; error?: string }> {
   if (!existsSync(JAR_PATH)) {
@@ -78,7 +78,6 @@ export async function startSidecar(): Promise<{ ok: boolean; error?: string }> {
       }
     }, 10000)
 
-    // Line buffers to handle chunked TCP output
     let stderrBuf = ''
     let stdoutBuf = ''
 
@@ -92,7 +91,12 @@ export async function startSidecar(): Promise<{ ok: boolean; error?: string }> {
           const c = _completers.get(id)!
           clearTimeout(c.timer)
           _completers.delete(id)
-          c.resolve(data)
+          // Check for error status
+          if (resp.status === 'error') {
+            c.reject(new Error(typeof data === 'string' ? data : JSON.stringify(data)))
+          } else {
+            c.resolve(data)
+          }
           return true
         }
         return false
@@ -104,10 +108,9 @@ export async function startSidecar(): Promise<{ ok: boolean; error?: string }> {
     proc.stderr.on('data', (chunk: Buffer) => {
       stderrBuf += chunk.toString()
       const lines = stderrBuf.split('\n')
-      stderrBuf = lines.pop() || '' // keep incomplete last line
+      stderrBuf = lines.pop() || ''
       for (const line of lines) {
         if (tryHandleJson(line)) continue
-        // Not a matched response — it's a log line
         console.log('[sidecar]', line.trimEnd())
         if (line.includes('AnymeX Sidecar Process Started') && !started) {
           started = true
@@ -133,7 +136,7 @@ export async function startSidecar(): Promise<{ ok: boolean; error?: string }> {
       console.log(`[sidecar] Process exited with code ${code}`)
       jarReady = false
       _process = null
-      for (const [id, c] of _completers) {
+      for (const [, c] of _completers) {
         clearTimeout(c.timer)
         c.reject(new Error(`Sidecar process exited (code ${code})`))
       }
@@ -162,14 +165,21 @@ export function stopSidecar() {
 }
 
 // ─── Invoke Method (persistent process) ────────────────────
+// If clientRequestId is provided, it's used as the JAR request ID
+// so that cancel requests from the client can match.
 
-export function invokeJar(method: string, args: Record<string, any>, timeoutMs = 60000): Promise<any> {
+export function invokeJar(method: string, args: Record<string, any>, options?: {
+  timeoutMs?: number
+  clientRequestId?: string
+}): Promise<any> {
+  const timeoutMs = options?.timeoutMs || 60000
+  const id = options?.clientRequestId || String(++_reqId)
+
   return new Promise((resolve, reject) => {
     if (!isJarReady() || !_process) {
       return reject(new Error('Sidecar process not running'))
     }
 
-    const id = String(++_reqId)
     const timer = setTimeout(() => {
       _completers.delete(id)
       try {
@@ -183,6 +193,22 @@ export function invokeJar(method: string, args: Record<string, any>, timeoutMs =
     const request = JSON.stringify({ method, args, id })
     _process.stdin!.write(request + '\n')
   })
+}
+
+// ─── Cancel a pending request on the sidecar ──────────────
+
+export function cancelJarRequest(id: string): boolean {
+  const c = _completers.get(id)
+  if (c) {
+    clearTimeout(c.timer)
+    _completers.delete(id)
+    c.reject(new Error('Request cancelled'))
+  }
+  if (_process && !_process.killed) {
+    _process.stdin?.write(JSON.stringify({ method: 'cancel', args: { id } }) + '\n')
+    return true
+  }
+  return false
 }
 
 // ─── Fallback: spawn per-request (if sidecar not started) ─
@@ -205,6 +231,7 @@ export function invokeJarOnce(method: string, args: Record<string, any>, timeout
     ], { stdio: ['pipe', 'pipe', 'pipe'] })
 
     let stdout = ''
+    let stderr = ''
     const timer = setTimeout(() => {
       proc.kill()
       reject(new Error(`One-shot JAR timeout (${timeoutMs}ms) for: ${method}`))
@@ -219,22 +246,53 @@ export function invokeJarOnce(method: string, args: Record<string, any>, timeout
           if (resp.id === id) {
             clearTimeout(timer)
             proc.kill()
-            resolve(resp.data)
+            if (resp.status === 'error') {
+              reject(new Error(typeof resp.data === 'string' ? resp.data : JSON.stringify(resp.data)))
+            } else {
+              resolve(resp.data)
+            }
             return
           }
         } catch {}
       }
     })
 
-    proc.stderr.on('data', (c: Buffer) => console.error('[jar stderr]', c.toString()))
-
-    proc.on('close', () => {
-      clearTimeout(timer)
-      for (const line of stdout.split('\n')) {
+    proc.stderr.on('data', (c: Buffer) => {
+      stderr += c.toString()
+      // Also try parsing stderr for responses (JAR may redirect)
+      for (const line of stderr.split('\n')) {
         if (!line.trim()) continue
         try {
           const resp = JSON.parse(line)
-          if (resp.id === id) { resolve(resp.data); return }
+          if (resp.id === id && resp.data !== undefined) {
+            clearTimeout(timer)
+            proc.kill()
+            if (resp.status === 'error') {
+              reject(new Error(typeof resp.data === 'string' ? resp.data : JSON.stringify(resp.data)))
+            } else {
+              resolve(resp.data)
+            }
+            return
+          }
+        } catch {}
+      }
+    })
+
+    proc.on('close', () => {
+      clearTimeout(timer)
+      // Final scan of all output
+      for (const line of (stdout + '\n' + stderr).split('\n')) {
+        if (!line.trim()) continue
+        try {
+          const resp = JSON.parse(line)
+          if (resp.id === id) {
+            if (resp.status === 'error') {
+              reject(new Error(typeof resp.data === 'string' ? resp.data : JSON.stringify(resp.data)))
+            } else {
+              resolve(resp.data)
+            }
+            return
+          }
         } catch {}
       }
       reject(new Error(`JAR exited, no response for ${method}`))
