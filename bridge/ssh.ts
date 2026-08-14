@@ -4,13 +4,15 @@ import { generateKeyPairSync } from 'node:crypto'
 import { join } from 'node:path'
 import { Server as SshServer } from 'ssh2'
 import { authenticateUser, createUser, getUserExtensions, getUserAvailableExtensions, uninstallExtensionForUser, removeRepoForUser, getRepoByUrl, db, getAllUsers, getStats, getUserRepos, addRepoForUser, getExtension } from './db.js'
-import { isJarReady, invokeJar, invokeJarOnce, getJarPath } from './jar.js'
+import { isJarReady, invokeJar, invokeJarOnce, getJarPath, startSidecar } from './jar.js'
 import { addRepo, refreshRepo, getAllRepos } from './repos.js'
 import { installExtension, downloadExtension } from './extensions.js'
 import { runUpdateNow } from './auto-update.js'
 
 const ADMIN_KEY = process.env.ADMIN_KEY || 'anymex-admin-2024'
 let adminTokens = new Set<string>()
+let _loadedSources: any[] = []
+const EXT_DIR = join(import.meta.dir, 'extensions')
 
 const SSH_PORT = 3022
 const HTTP_PORT = 8082
@@ -147,6 +149,51 @@ export function startHttpServer() {
           const t0 = Date.now()
           await runUpdateNow()
           res.end(JSON.stringify({ ok: true, elapsed: Date.now() - t0 }))
+          return
+        }
+
+        // ── POST: load extensions into JAR and get source list ──
+        if (url.pathname === '/admin/loadExtensions' && req.method === 'POST') {
+          try {
+            // Ensure sidecar is running
+            if (!isJarReady()) {
+              const started = await startSidecar()
+              if (!started.ok) {
+                res.end(JSON.stringify({ ok: false, error: started.error }))
+                return
+              }
+            }
+            const result = await invokeJar('loadExtensions', { folderPath: EXT_DIR }, 120000)
+            if (Array.isArray(result)) {
+              _loadedSources = result.map((s: any) => ({
+                id: s.id,
+                name: s.name,
+                type: s.type || (s.pkg?.includes('manga') ? 'aniyomi-manga' : 'aniyomi-anime'),
+                lang: s.lang || '',
+                pkg: s.pkg || '',
+              }))
+              console.log(`[admin] Loaded ${_loadedSources.length} sources`)
+            } else {
+              _loadedSources = []
+              console.log('[admin] loadExtensions returned non-array:', typeof result)
+            }
+            res.end(JSON.stringify({ ok: true, sources: _loadedSources, total: _loadedSources.length }))
+          } catch (e: any) {
+            res.end(JSON.stringify({ ok: false, error: e.message }))
+          }
+          return
+        }
+
+        // ── GET: cached sources ──
+        if (url.pathname === '/admin/sources' && req.method === 'GET') {
+          res.end(JSON.stringify({ sources: _loadedSources, total: _loadedSources.length }))
+          return
+        }
+
+        // ── GET: downloaded extensions (have file_path) ──
+        if (url.pathname === '/admin/downloadedExtensions' && req.method === 'GET') {
+          const exts = db.query(`SELECT id, name, type, version, pkg, file_path FROM extensions WHERE file_path IS NOT NULL AND file_path != '' ORDER BY name`).all() as any[]
+          res.end(JSON.stringify(exts))
           return
         }
 

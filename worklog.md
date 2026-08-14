@@ -99,4 +99,18 @@ Stage Summary:
 - Type mapping fixed: server types (aniyomi-anime, aniyomi-manga, cloudstream, kotatsu) correctly mapped to Source subclasses
 - Server query fixed: LIKE matching allows client 'anime'/'manga' filters to match 'aniyomi-anime'/'aniyomi-manga'
 - Stream method fallback: instead of returning empty stream, now does a single invoke and emits result
-- Files changed: ServerBridge.dart (rewritten), ssh.ts (1 line fix)
+- Files changed: ServerBridge.dart (rewritten), ssh.ts (1 line fix)---
+Task ID: 1
+Agent: main
+Task: Fix iOS gray screen + Admin panel method dropdown & extension selector
+
+Work Log:
+- Verified iOS gray screen fix already pushed in commit 4297339c (nullable KV reads)
+- Added /admin/loadExtensions, /admin/sources, /admin/downloadedExtensions endpoints to ssh.ts
+- Rewrote admin.html Terminal section with method dropdown, source selector, auto-fill args
+- Committed and pushed to beta branch
+
+Stage Summary:
+- iOS gray screen: already fixed, needs app rebuild
+- Admin panel: now has method dropdown (loadExtensions, search, getPopular, getLatest, getDetail, getFilterList, getVideoList, convertApk), source/extension selector, auto-fill args, source count badge
+

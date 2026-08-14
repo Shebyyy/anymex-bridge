@@ -29,6 +29,7 @@ header h1 span{color:#f97316}
 .header-right .jar-badge{padding:3px 10px;border-radius:20px;font-size:11px;font-weight:600}
 .header-right .jar-badge.on{background:#22c55e20;color:#22c55e}
 .header-right .jar-badge.off{background:#ef444420;color:#ef4444}
+.header-right .src-badge{padding:3px 10px;border-radius:20px;font-size:11px;font-weight:600;background:#3b82f620;color:#60a5fa}
 .btn-logout{padding:6px 12px;background:transparent;border:1px solid #27272a;border-radius:6px;color:#a1a1aa;font-size:12px;cursor:pointer}
 .btn-logout:hover{border-color:#ef4444;color:#ef4444}
 
@@ -87,14 +88,17 @@ tbody td:first-child{color:#e4e4e7;font-weight:500}
 
 /* Terminal */
 .terminal{background:#0c0c0c;border:1px solid #27272a;border-radius:10px;padding:16px 24px 24px}
-.terminal .input-row{display:flex;gap:8px;margin-bottom:12px;align-items:flex-end;flex-wrap:wrap}
-.terminal .input-row label{font-size:11px;color:#71717a;margin-bottom:0;white-space:nowrap}
-.terminal .input-row input{flex:1;min-width:120px;padding:7px 12px;background:#0a0a0a;border:1px solid #27272a;border-radius:6px;color:#e4e4e7;font-size:12px;outline:none;font-family:monospace}
-.terminal .input-row input:focus{border-color:#f97316}
+.terminal .input-row{display:flex;gap:8px;margin-bottom:12px;align-items:center;flex-wrap:wrap}
+.terminal .input-row label{font-size:11px;color:#71717a;white-space:nowrap;min-width:80px}
+.terminal .input-row input,.terminal .input-row select{flex:1;min-width:120px;padding:7px 12px;background:#0a0a0a;border:1px solid #27272a;border-radius:6px;color:#e4e4e7;font-size:12px;outline:none;font-family:monospace}
+.terminal .input-row input:focus,.terminal .input-row select:focus{border-color:#f97316}
+.terminal .input-row select{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;cursor:pointer}
 .terminal textarea{width:100%;min-height:280px;background:#0c0c0c;border:1px solid #1c1c1f;border-radius:8px;color:#a1a1aa;font-family:monospace;font-size:12px;padding:12px;resize:vertical;outline:none}
 .output-meta{display:flex;gap:12px;margin-top:8px;font-size:11px;color:#52525b}
 .output-meta .ok{color:#22c55e}
 .output-meta .err{color:#ef4444}
+.terminal .section-label{font-size:12px;color:#52525b;text-transform:uppercase;letter-spacing:.5px;margin:16px 0 8px;padding-bottom:6px;border-bottom:1px solid #1c1c1f}
+.terminal .section-label:first-child{margin-top:0}
 
 /* Panel / empty */
 .panel{display:none}
@@ -120,6 +124,7 @@ tbody td:first-child{color:#e4e4e7;font-weight:500}
   nav{padding:12px 16px 0}
   .content{padding:0 16px 16px}
   .stats{padding:16px}
+  .terminal .input-row label{min-width:60px}
 }
 </style>
 </head>
@@ -140,6 +145,7 @@ tbody td:first-child{color:#e4e4e7;font-weight:500}
     <h1><span>Bridge</span> Admin</h1>
     <div class="header-right">
       <span class="jar-badge off" id="jarBadge">JAR</span>
+      <span class="src-badge" id="srcBadge" style="display:none">0 sources</span>
       <span id="headerStats" style="color:#71717a;font-size:13px"></span>
       <button class="btn-logout" onclick="logout()">Logout</button>
     </div>
@@ -210,21 +216,51 @@ tbody td:first-child{color:#e4e4e7;font-weight:500}
   <div class="panel" id="panel-terminal">
     <div class="content">
       <div class="terminal">
+        <div class="section-label">JAR Method Testing</div>
         <div class="input-row">
           <label>Method</label>
-          <input id="invokeMethod" placeholder="e.g. getPopular" value="getPopular">
+          <select id="invokeMethod" onchange="onMethodChange()">
+            <option value="loadExtensions">loadExtensions</option>
+            <option value="search">search</option>
+            <option value="getPopular">getPopular</option>
+            <option value="getLatest">getLatest</option>
+            <option value="getDetail">getDetail</option>
+            <option value="getFilterList">getFilterList</option>
+            <option value="getVideoList">getVideoList</option>
+            <option value="convertApk">convertApk</option>
+            <option value="">── custom ──</option>
+          </select>
+        </div>
+        <div class="input-row" id="customMethodRow" style="display:none">
+          <label>Custom</label>
+          <input id="customMethod" placeholder="method name">
+        </div>
+        <div class="input-row">
+          <label>Source</label>
+          <select id="invokeSource" onchange="onSourceChange()">
+            <option value="">-- Load sources first --</option>
+          </select>
+          <button class="btn-sm btn-ghost" onclick="doLoadSources()" style="flex:none">Load Sources</button>
+        </div>
+        <div class="input-row">
+          <label>Type</label>
+          <select id="invokeType">
+            <option value="true">Anime</option>
+            <option value="false">Manga</option>
+          </select>
         </div>
         <div class="input-row">
           <label>Args (JSON)</label>
-          <input id="invokeArgs" placeholder='{"sourceId":"..."}' value='{}'>
-          <button class="btn-sm btn-primary" onclick="runInvoke()" style="margin-left:4px;height:36px">Run</button>
+          <input id="invokeArgs" placeholder='{"page":1}' value='{}'>
         </div>
         <div class="input-row">
           <label>Timeout (s)</label>
-          <input id="invokeTimeout" type="number" value="30" style="max-width:80px">
-          <button class="btn-sm btn-ghost" onclick="runForceUpdate()">Force Update All Repos</button>
+          <input id="invokeTimeout" type="number" value="60" style="max-width:80px;flex:none">
+          <button class="btn-sm btn-primary" onclick="runInvoke()" style="margin-left:4px;height:36px">▶ Run</button>
+          <button class="btn-sm btn-ghost" onclick="runForceUpdate()">Force Update</button>
           <button class="btn-sm btn-ghost" onclick="runJarStatus()">JAR Status</button>
         </div>
+        <div class="section-label">Output</div>
         <textarea id="outputArea" readonly placeholder="Output will appear here..."></textarea>
         <div class="output-meta" id="outputMeta"></div>
       </div>
@@ -241,6 +277,7 @@ tbody td:first-child{color:#e4e4e7;font-weight:500}
 
 <script>
 let token=localStorage.getItem('bridge_admin_token')||'';
+let _sources=[];
 const keyInput=document.getElementById('keyInput');
 keyInput.addEventListener('keydown',e=>{if(e.key==='Enter')login()});
 
@@ -266,7 +303,7 @@ async function login(){
   }catch(e){toast('Connection failed','error')}
 }
 function logout(){token='';localStorage.removeItem('bridge_admin_token');document.getElementById('app').style.display='none';document.getElementById('loginScreen').style.display='flex';keyInput.value=''}
-function showApp(){document.getElementById('loginScreen').style.display='none';document.getElementById('app').style.display='block';loadAll();loadJarStatus()}
+function showApp(){document.getElementById('loginScreen').style.display='none';document.getElementById('app').style.display='block';loadAll();loadJarStatus();loadCachedSources()}
 
 // ── Tabs ──
 function switchTab(name,btn){document.querySelectorAll('.tab').forEach(t=>t.classList.remove('active'));document.querySelectorAll('.panel').forEach(p=>p.classList.remove('active'));btn.classList.add('active');document.getElementById('panel-'+name).classList.add('active')}
@@ -350,11 +387,129 @@ async function deleteExtension(id,name){
   if(r.ok){toast('Deleted','success');loadAll()}else toast(r.error||'Failed','error');
 }
 
-// ── Terminal ──
+// ── Terminal: Sources ──
+async function doLoadSources(){
+  const out=document.getElementById('outputArea');
+  out.value='Loading extensions into JAR... (may take a minute)\n';
+  document.getElementById('outputMeta').innerHTML='';
+  try{
+    const r=await apiPost('/admin/loadExtensions',{});
+    if(r.ok){
+      _sources=r.sources||[];
+      populateSourceDropdown();
+      out.value+=`Loaded ${r.total} sources:\n`;
+      _sources.forEach(s=>{out.value+=`  [${s.type}] ${s.name} (id: ${s.id})\n`});
+      toast(`Loaded ${r.total} sources`,'success');
+    }else{
+      out.value+='ERROR: '+r.error+'\n';
+      toast(r.error||'Failed','error');
+    }
+  }catch(e){out.value+='EXCEPTION: '+e.message+'\n'}
+  updateSrcBadge();
+}
+
+function loadCachedSources(){
+  api('/admin/sources').then(r=>{
+    _sources=r.sources||[];
+    populateSourceDropdown();
+    updateSrcBadge();
+  }).catch(()=>{});
+}
+
+function populateSourceDropdown(){
+  const sel=document.getElementById('invokeSource');
+  if(!_sources.length){
+    sel.innerHTML='<option value="">-- No sources loaded --</option>';
+    return;
+  }
+  // Group by type
+  const grouped={};
+  _sources.forEach(s=>{
+    const t=s.type||'other';
+    if(!grouped[t])grouped[t]=[];
+    grouped[t].push(s);
+  });
+  let html='<option value="">-- Select a source --</option>';
+  for(const[type,sources] of Object.entries(grouped)){
+    html+=`<optgroup label="${type}">`;
+    sources.sort((a,b)=>(a.name||'').localeCompare(b.name||'')).forEach(s=>{
+      html+=`<option value="${s.id}" data-type="${s.type}" data-pkg="${esc(s.pkg)}">${esc(s.name)}${s.lang?' ('+s.lang+')':''}</option>`;
+    });
+    html+='</optgroup>';
+  }
+  sel.innerHTML=html;
+}
+
+function updateSrcBadge(){
+  const b=document.getElementById('srcBadge');
+  if(_sources.length){b.style.display='';b.textContent=_sources.length+' sources'}
+  else{b.style.display='none'}
+}
+
+function onSourceChange(){
+  const sel=document.getElementById('invokeSource');
+  const opt=sel.selectedOptions[0];
+  if(opt&&opt.dataset.type){
+    // Auto-set type dropdown based on source type
+    const isAnime=opt.dataset.type.includes('anime');
+    document.getElementById('invokeType').value=isAnime?'true':'false';
+  }
+  // Re-fill args based on current method
+  onMethodChange();
+}
+
+// ── Terminal: Method auto-fill args ──
+function onMethodChange(){
+  const sel=document.getElementById('invokeMethod');
+  const customRow=document.getElementById('customMethodRow');
+  if(sel.value===''){customRow.style.display='flex';return}
+  customRow.style.display='none';
+
+  const sourceId=document.getElementById('invokeSource').value;
+  const isAnime=document.getElementById('invokeType').value==='true';
+  let args={};
+
+  switch(sel.value){
+    case 'loadExtensions':
+      args={folderPath:'/home/z/my-project/bridge/extensions'};
+      break;
+    case 'search':
+      args={sourceId,isAnime,query:'naruto',page:1,filters:[]};
+      break;
+    case 'getPopular':
+      args={sourceId,isAnime,page:1};
+      break;
+    case 'getLatest':
+      args={sourceId,isAnime,page:1};
+      break;
+    case 'getDetail':
+      args={sourceId,isAnime,media:{title:'Test',url:'https://example.com/anime/1'}};
+      break;
+    case 'getFilterList':
+      args={sourceId,isAnime};
+      break;
+    case 'getVideoList':
+      args={sourceId,isAnime,episode:{name:'Episode 1',url:'https://example.com/episode/1',episode_number:1}};
+      break;
+    case 'convertApk':
+      args={apkPath:'/path/to/file.apk'};
+      break;
+    default:
+      args={};
+  }
+  document.getElementById('invokeArgs').value=JSON.stringify(args,null,2);
+}
+
+// ── Terminal: Invoke ──
 async function runInvoke(){
-  const method=document.getElementById('invokeMethod').value.trim();
-  let args={};try{args=JSON.parse(document.getElementById('invokeArgs').value||'{}')}catch{args={}};
-  const timeout=(parseInt(document.getElementById('invokeTimeout').value)||30)*1000;
+  const sel=document.getElementById('invokeMethod');
+  let method=sel.value;
+  if(method===''){
+    method=document.getElementById('customMethod').value.trim();
+    if(!method)return toast('Enter a method name','error');
+  }
+  let args={};try{args=JSON.parse(document.getElementById('invokeArgs').value||'{}')}catch{return toast('Invalid JSON in args','error')};
+  const timeout=(parseInt(document.getElementById('invokeTimeout').value)||60)*1000;
   const out=document.getElementById('outputArea');
   out.value='Running '+method+'...\n';
   document.getElementById('outputMeta').innerHTML='';
@@ -365,6 +520,12 @@ async function runInvoke(){
     if(r.ok){
       out.value=JSON.stringify(r.data,null,2);
       document.getElementById('outputMeta').innerHTML=`<span class="ok">OK</span> · ${elapsed}ms`;
+      // If this was loadExtensions, refresh source list
+      if(method==='loadExtensions'&&Array.isArray(r.data)){
+        _sources=r.data.map(s=>({id:s.id,name:s.name,type:s.type||(s.pkg?.includes('manga')?'aniyomi-manga':'aniyomi-anime'),lang:s.lang||'',pkg:s.pkg||''}));
+        populateSourceDropdown();
+        updateSrcBadge();
+      }
     }else{
       out.value='ERROR: '+r.error;
       document.getElementById('outputMeta').innerHTML=`<span class="err">FAILED</span> · ${elapsed}ms`;
@@ -441,6 +602,9 @@ async function loadUserDetail(uid){
   const d=await api('/admin/user/'+uid);
   openModal('userDetail',d);
 }
+
+// Initialize args on page load
+onMethodChange();
 
 if(token)showApp();
 </script>
