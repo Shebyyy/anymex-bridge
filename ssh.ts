@@ -1,8 +1,6 @@
 import { createServer as createHttpServer } from 'node:http'
-import { readFileSync, writeFileSync } from 'node:fs'
-import { generateKeyPairSync } from 'node:crypto'
+import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
-import { Server as SshServer } from 'ssh2'
 import { authenticateUser, createUser, getUserExtensions, getUserAvailableExtensions, uninstallExtensionForUser, removeRepoForUser, getRepoByUrl, db, getAllUsers, getStats, getUserRepos, addRepoForUser, getExtension } from './db.js'
 import { isJarReady, invokeJar, invokeJarOnce, getJarPath, startSidecar } from './jar.js'
 import { addRepo, refreshRepo, getAllRepos } from './repos.js'
@@ -16,17 +14,6 @@ const EXT_DIR = join(import.meta.dir, 'extensions')
 
 const SSH_PORT = 3022
 const HTTP_PORT = 8082
-
-const HOST_KEY_DIR = join(import.meta.dir, 'data')
-const HOST_KEY_PATH = join(HOST_KEY_DIR, 'host_key')
-
-function getHostKey(): Buffer {
-  try { return readFileSync(HOST_KEY_PATH) } catch {}
-  const key = generateKeyPairSync('rsa', { modulusLength: 2048, privateKeyEncoding: { type: 'pkcs1', format: 'pem' }, publicKeyEncoding: { type: 'spki', format: 'pem' } })
-  writeFileSync(HOST_KEY_PATH, key.privateKey)
-  console.log('[ssh] Generated new RSA 2048 host key')
-  return Buffer.from(key.privateKey)
-}
 
 // ─── HTTP Server (registration + data endpoints) ──────────
 
@@ -306,7 +293,7 @@ export function startHttpServer() {
 
         // ── GET: JAR status ──
         if (url.pathname === '/admin/jarStatus' && req.method === 'GET') {
-          const { statSync, existsSync } = await import('node:fs')
+          const { statSync } = await import('node:fs')
           let fileSize = 0
           try { fileSize = statSync(getJarPath()).size } catch {}
           res.end(JSON.stringify({
@@ -358,7 +345,35 @@ export function startHttpServer() {
         return
       }
 
-      // ── Public endpoints ──
+      // ── Public: login (used by SSH proxy) ──
+      if (url.pathname === '/login' && req.method === 'POST') {
+        const body = await readBody(req)
+        const { username, password } = JSON.parse(body)
+        const user = authenticateUser(username, password)
+        if (!user) { res.writeHead(401); res.end(JSON.stringify({ ok: false, error: 'invalid credentials' })); return }
+        res.end(JSON.stringify({ ok: true, user }))
+        return
+      }
+
+      // ── Public: RPC (used by SSH proxy) ──
+      if (url.pathname === '/rpc' && req.method === 'POST') {
+        const body = await readBody(req)
+        const { username, password, method, args, id } = JSON.parse(body)
+        const user = authenticateUser(username, password)
+        if (!user) {
+          res.end(JSON.stringify({ id: id || '0', status: 'error', error: 'invalid credentials' }))
+          return
+        }
+        try {
+          const result = await handleMethod(user.id, user.username, { method, args })
+          res.end(JSON.stringify({ id: id || '0', status: 'ok', data: result }))
+        } catch (e: any) {
+          res.end(JSON.stringify({ id: id || '0', status: 'error', error: e.message }))
+        }
+        return
+      }
+
+      // ── Public: health ──
       if (url.pathname === '/health') {
         const stats = db.query(`SELECT (SELECT COUNT(*) FROM users) as users, (SELECT COUNT(*) FROM extensions) as extensions, (SELECT COUNT(*) FROM user_extensions) as installs`).get() as any
         res.end(JSON.stringify({ ...stats, jarReady: isJarReady() }))
@@ -417,63 +432,40 @@ function readBody(req: any): Promise<string> {
   })
 }
 
-// ─── SSH Server ────────────────────────────────────────────
+// ─── SSH Server (Node.js proxy) ────────────────────────
+// Bun's ssh2 has a bug where exec info.command is always empty.
+// Instead, we spawn a Node.js child process (ssh-server.cjs) that handles
+// SSH protocol correctly and proxies to our HTTP /login + /rpc endpoints.
+
+import { spawn, type ChildProcess } from 'node:child_process'
+
+let sshProcess: ChildProcess | null = null
 
 export function startSshServer() {
-  const hostKey = getHostKey()
-  const sshServer = new SshServer({
-    hostKeys: [hostKey],
-    algorithms: { kex: ['ecdh-sha2-nistp256'], serverHostKey: ['rsa-sha2-256', 'ssh-rsa'] }
-  })
-
-  sshServer.on('connection', (client) => {
-    let userId: string | null = null
-    let username: string | null = null
-
-    client.on('authentication', (ctx) => {
-      if (ctx.method === 'password') {
-        const user = authenticateUser(ctx.username, ctx.password as string)
-        if (user) { userId = user.id; username = user.username; ctx.accept() }
-        else ctx.reject()
-      } else ctx.reject()
+  try {
+    sshProcess = spawn('node', [join(import.meta.dir, 'ssh-server.cjs')], {
+      cwd: import.meta.dir,
+      stdio: ['ignore', 'pipe', 'pipe'],
+      env: { ...process.env, SSH_PORT: String(SSH_PORT), HTTP_PORT: String(HTTP_PORT) }
     })
-
-    client.on('ready', () => {
-      console.log(`[ssh] User '${username}' connected`)
-
-      client.on('session', (accept) => {
-        const session = accept()
-
-        session.on('exec', (accept, info) => {
-          const channel = accept()
-          const raw = (info.command || '').trim()
-
-          if (!raw) {
-            channel.write(JSON.stringify({ id: '0', status: 'error', error: 'empty command' }) + '\n')
-            channel.close(); return
-          }
-
-          try {
-            const msg = JSON.parse(raw)
-            handleMethod(userId!, username!, msg).then(result => {
-              channel.write(JSON.stringify({ id: msg.id || '0', status: 'ok', data: result }) + '\n')
-              channel.close()
-            }).catch(e => {
-              channel.write(JSON.stringify({ id: msg.id || '0', status: 'error', error: e.message }) + '\n')
-              channel.close()
-            })
-          } catch {
-            channel.write(JSON.stringify({ id: '0', status: 'error', error: 'invalid JSON' }) + '\n')
-            channel.close()
-          }
-        })
-      })
+    sshProcess.stdout?.on('data', (d: Buffer) => process.stdout.write(d))
+    sshProcess.stderr?.on('data', (d: Buffer) => process.stderr.write(d))
+    sshProcess.on('exit', (code) => {
+      console.log(`[ssh-node] Process exited with code ${code}`)
+      sshProcess = null
     })
+    console.log(`[ssh] Spawning Node.js SSH proxy (port ${SSH_PORT})`)
+  } catch (e: any) {
+    console.error(`[ssh] Failed to start SSH proxy: ${e.message}`)
+    console.error('[ssh] Ensure Node.js is installed. SSH will not be available.')
+  }
+}
 
-    client.on('close', () => console.log(`[ssh] User '${username}' disconnected`))
-  })
-
-  sshServer.listen(SSH_PORT, '0.0.0.0', () => console.log(`[ssh] Listening on port ${SSH_PORT}`))
+export function stopSshServer() {
+  if (sshProcess) {
+    sshProcess.kill()
+    sshProcess = null
+  }
 }
 
 // ─── Method Router ─────────────────────────────────────────
