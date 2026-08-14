@@ -1,0 +1,54 @@
+name: Deploy to Server
+
+on:
+  push:
+    branches: [beta]
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Deploy via SSH
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.SERVER_HOST }}
+          username: ${{ secrets.SERVER_USER }}
+          password: ${{ secrets.SERVER_PASSWORD }}
+          command_timeout: 60s
+          script_stop: true
+          script: |
+            echo "=== Deploying anymex-bridge (beta) ==="
+
+            if [ -d /tmp/anymex-bridge-deploy/.git ]; then
+              cd /tmp/anymex-bridge-deploy
+              git pull origin beta
+            else
+              rm -rf /tmp/anymex-bridge-deploy
+              git clone -b beta https://github.com/Shebyyy/anymex-bridge.git /tmp/anymex-bridge-deploy
+            fi
+
+            rsync -a --exclude='.git' --exclude='data' --exclude='jar-cache' --exclude='extensions' --exclude='.env' --exclude='node_modules' /tmp/anymex-bridge-deploy/ /root/anymex-bridge/
+
+            cd /root/anymex-bridge
+            /root/.bun/bin/bun install
+
+            # Kill old bridge by PID file
+            if [ -f /tmp/anymex-bridge.pid ]; then
+              kill $(cat /tmp/anymex-bridge.pid) 2>/dev/null || true
+              rm -f /tmp/anymex-bridge.pid
+            fi
+            sleep 2
+
+            # Start with setsid
+            setsid /root/.bun/bin/bun run /root/anymex-bridge/index.ts > /tmp/bridge-deploy.log 2>&1 &
+            echo $! > /tmp/anymex-bridge.pid
+            sleep 5
+
+            if ss -tlnp | grep -q 3022; then
+              echo "✅ Bridge is running on port 3022"
+            else
+              echo "❌ Bridge failed to start!"
+              cat /tmp/bridge-deploy.log
+              exit 1
+            fi
