@@ -69,3 +69,34 @@ Stage Summary:
 - 4 modified files: BridgeDispatcher, ExtensionManager, exports, pubspec
 - No new SourceMethods files needed - existing ones work via BridgeDispatcher
 - Usage: ExtensionManager().initServerBridge(host: "...", username: "...", password: "...")
+
+---
+Task ID: 3
+Agent: Main Agent
+Task: Fix ServerBridge - missing Kotatsu support, broken type mapping, wrong source detection
+
+Work Log:
+- Found 5 bugs in ServerBridge.dart:
+  1. `createSourceMethods` only handled CloudStreamSource and Aniyomi — KotatsuSource completely missing
+  2. `_mapServerType` only matched 'anime'/'manga'/'novel' but server stores 'aniyomi-anime', 'aniyomi-manga', 'cloudstream', 'kotatsu' — everything fell to fallback
+  3. `_parseInstalledList` checked for `is_cloudstream` field and `source_id.startsWith('cs_')` — server never returns those, it returns `type: 'cloudstream'`
+  4. `_parseAvailableList` only created ASource, never KotatsuSource or CloudStreamSource
+  5. Server's `getExtensions` used exact `type = ?` match, but client sent 'anime' while server stored 'aniyomi-anime' → zero results
+- Fixed server ssh.ts: Changed `WHERE type = ?` to `WHERE type LIKE ?` with `%type%` pattern
+- Rewrote ServerBridge.dart:
+  - Added KotatsuSource + DesktopKotatsuSourceMethods imports
+  - Replaced `_mapServerType` with `_serverTypeToItemType` handling all server types (aniyomi-anime→anime, aniyomi-manga→manga, cloudstream→anime, kotatsu→manga)
+  - Added `_serverTypeToKind` helper (returns 'aniyomi'/'cloudstream'/'kotatsu')
+  - Added `_mapToSource` dispatcher that creates correct Source subclass based on server type
+  - Added `_mapToKotatsuSource` that parses extra JSON for jarName/pkgName
+  - Fixed `_parseInstalledList` and `_parseAvailableList` to use server `type` field
+  - Fixed `createSourceMethods` to handle KotatsuSource → DesktopKotatsuSourceMethods
+  - Fixed `_getServerExtId` to also check KotatsuSource.pkgName
+  - Fixed `invokeStreamMethod` to do a single invokeMethod call instead of returning empty stream
+
+Stage Summary:
+- Server bridge now supports ALL 3 extension types: Aniyomi, CloudStream, AND Kotatsu
+- Type mapping fixed: server types (aniyomi-anime, aniyomi-manga, cloudstream, kotatsu) correctly mapped to Source subclasses
+- Server query fixed: LIKE matching allows client 'anime'/'manga' filters to match 'aniyomi-anime'/'aniyomi-manga'
+- Stream method fallback: instead of returning empty stream, now does a single invoke and emits result
+- Files changed: ServerBridge.dart (rewritten), ssh.ts (1 line fix)

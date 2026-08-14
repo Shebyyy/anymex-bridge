@@ -181,7 +181,7 @@ async function handleMethod(userId: string, username: string, msg: any): Promise
       const { type, query } = args || {}
       let sql = 'SELECT id, name, pkg, type, version, icon_url, lang, is_nsfw, extra FROM extensions'
       const params: any[] = []
-      if (type) { sql += ' WHERE type = ?'; params.push(type) }
+      if (type) { sql += ' WHERE type LIKE ?'; params.push(`%${type}%`) }
       if (query) { sql += (params.length ? ' AND' : ' WHERE') + ' name LIKE ?'; params.push(`%${query}%`) }
       sql += ' ORDER BY name'
       return db.prepare(sql).all(...params)
