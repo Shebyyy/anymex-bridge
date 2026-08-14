@@ -45,3 +45,27 @@ Stage Summary:
 - Modified files: BridgeDispatcher.dart, ExtensionManager.dart, Source.dart, pubspec.yaml, barrel export
 - The app can now use `BridgeType.server` on iOS (or any platform)
 - Flow: iOS user → registers via HTTP → connects via SSH → manages repos/extensions on server → all JAR method calls (getPopular, search, etc.) forwarded through SSH to server's JAR
+
+---
+Task ID: 2
+Agent: Main Agent
+Task: Re-implement server bridge client with ONE file approach (after repo reset)
+
+Work Log:
+- Read ALL Dart files in the project thoroughly (BridgeDispatcher, SidecarBridge, JniBridge, ExtensionManager, DesktopExtensionBase, RuntimeController, RuntimePaths, RuntimeDownloader, RuntimeTools, AnymeXBridge, ExtensionBridge, KvStore, Logger, all Extensions/SourceMethods/Models files, all Service implementations, Native bindings, Sora, Aniyomi, CloudStream, Kotatsu, Mangayomi)
+- Understood complete architecture: BridgeDispatcher routes to JniBridge/SidecarBridge, all SourceMethods call BridgeDispatcher().invokeMethod(), Extension subclasses handle list/install/repos
+- Key insight: Server forwards unknown methods to its local JAR, so ALL existing SourceMethods work automatically via SSH - ZERO new SourceMethods needed
+- Created ONE file: lib/Runtime/Bridge/ServerBridge.dart containing:
+  - ServerBridge: SSH transport (singleton, dartssh2, same pattern as SidecarBridge)
+  - ServerAuth: HTTP register/health endpoints
+  - ServerBridgeExtensions: Extension subclass for server-side extension management (list, install, repos via SSH)
+- Modified BridgeDispatcher.dart: Added server to BridgeType enum, all methods handle server mode
+- Modified ExtensionManager.dart: Added initServerBridge()/disconnectServerBridge(), fixed getSourceManager() to check managerId first
+- Modified anymex_extension_runtime_bridge.dart: Added ServerBridge export
+- Modified pubspec.yaml: Added dartssh2: ^2.11.0 dependency
+
+Stage Summary:
+- ONE new file: ServerBridge.dart (SSH transport + auth + ServerBridgeExtensions)
+- 4 modified files: BridgeDispatcher, ExtensionManager, exports, pubspec
+- No new SourceMethods files needed - existing ones work via BridgeDispatcher
+- Usage: ExtensionManager().initServerBridge(host: "...", username: "...", password: "...")
