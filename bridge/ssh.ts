@@ -3,11 +3,14 @@ import { readFileSync, writeFileSync } from 'node:fs'
 import { generateKeyPairSync } from 'node:crypto'
 import { join } from 'node:path'
 import { Server as SshServer } from 'ssh2'
-import { authenticateUser, createUser, getUserExtensions, getUserAvailableExtensions, uninstallExtensionForUser, removeRepoForUser, getRepoByUrl, db } from './db.js'
+import { authenticateUser, createUser, getUserExtensions, getUserAvailableExtensions, uninstallExtensionForUser, removeRepoForUser, getRepoByUrl, db, getAllUsers, getStats } from './db.js'
 import { isJarReady, invokeJar, invokeJarOnce } from './jar.js'
 import { addRepo } from './repos.js'
 import { installExtension, downloadExtension } from './extensions.js'
 import { runUpdateNow } from './auto-update.js'
+
+const ADMIN_KEY = process.env.ADMIN_KEY || 'anymex-admin-2024'
+let adminTokens = new Set<string>()
 
 const SSH_PORT = 3022
 const HTTP_PORT = 8082
@@ -25,12 +28,122 @@ function getHostKey(): Buffer {
 
 // ─── HTTP Server (registration + data endpoints) ──────────
 
+function checkAdmin(req: any): boolean {
+  const auth = req.headers['authorization'] || ''
+  const token = auth.replace('Bearer ', '')
+  return adminTokens.has(token)
+}
+
 export function startHttpServer() {
   const server = createHttpServer(async (req, res) => {
     const url = new URL(req.url || '/', `http://localhost:${HTTP_PORT}`)
-    res.setHeader('Content-Type', 'application/json')
 
     try {
+      // ── Serve admin panel ──
+      if (url.pathname === '/admin' || url.pathname === '/admin/') {
+        res.setHeader('Content-Type', 'text/html; charset=utf-8')
+        res.end(readFileSync(join(import.meta.dir, 'admin.html'), 'utf-8'))
+        return
+      }
+
+      res.setHeader('Content-Type', 'application/json')
+
+      // ── Admin login ──
+      if (url.pathname === '/admin/login' && req.method === 'POST') {
+        const body = await readBody(req)
+        const { key } = JSON.parse(body)
+        if (key === ADMIN_KEY) {
+          const token = crypto.randomUUID()
+          adminTokens.add(token)
+          res.end(JSON.stringify({ ok: true, token }))
+        } else {
+          res.writeHead(401)
+          res.end(JSON.stringify({ ok: false, error: 'invalid key' }))
+        }
+        return
+      }
+
+      // ── Admin API (bearer token required) ──
+      if (url.pathname.startsWith('/admin/')) {
+        if (!checkAdmin(req)) { res.writeHead(401); res.end(JSON.stringify({ error: 'unauthorized' })); return }
+
+        if (url.pathname === '/admin/stats' && req.method === 'GET') {
+          const stats = getStats()
+          const users = getAllUsers()
+          const userDetails = users.map(u => ({
+            id: u.id, username: u.username,
+            repos: (db.query('SELECT COUNT(*) as c FROM user_repos WHERE user_id = ?').get(u.id) as any)?.c ?? 0,
+            extensions: (db.query('SELECT COUNT(*) as c FROM user_extensions WHERE user_id = ?').get(u.id) as any)?.c ?? 0
+          }))
+          res.end(JSON.stringify({ ...stats, userDetails }))
+          return
+        }
+
+        if (url.pathname === '/admin/users' && req.method === 'GET') {
+          res.end(JSON.stringify(getAllUsers()))
+          return
+        }
+
+        if (url.pathname === '/admin/repos' && req.method === 'GET') {
+          const repos = db.query(`
+            SELECT r.*, (SELECT COUNT(*) FROM user_repos ur WHERE ur.repo_id = r.id) as userCount,
+            (SELECT COUNT(*) FROM extensions e WHERE e.repo_id = r.id) as extCount
+            FROM repos r ORDER BY r.added DESC
+          `).all() as any[]
+          res.end(JSON.stringify(repos))
+          return
+        }
+
+        if (url.pathname === '/admin/extensions' && req.method === 'GET') {
+          const exts = db.query(`
+            SELECT e.*, (SELECT COUNT(*) FROM user_extensions ue WHERE ue.ext_id = e.id) as installCount
+            FROM extensions e ORDER BY e.name
+          `).all() as any[]
+          res.end(JSON.stringify(exts))
+          return
+        }
+
+        // DELETE user
+        const delUser = url.pathname.match(/^\/admin\/user\/([\w-]+)$/)
+        if (delUser && req.method === 'DELETE') {
+          const uid = delUser[1]
+          db.run('DELETE FROM user_extensions WHERE user_id = ?', [uid])
+          db.run('DELETE FROM user_repos WHERE user_id = ?', [uid])
+          db.run('DELETE FROM users WHERE id = ?', [uid])
+          console.log(`[admin] Deleted user ${uid}`)
+          res.end(JSON.stringify({ ok: true }))
+          return
+        }
+
+        // DELETE repo
+        const delRepo = url.pathname.match(/^\/admin\/repo\/(\d+)$/)
+        if (delRepo && req.method === 'DELETE') {
+          const rid = Number(delRepo[1])
+          db.run('DELETE FROM extensions WHERE repo_id = ?', [rid])
+          db.run('DELETE FROM user_repos WHERE repo_id = ?', [rid])
+          db.run('DELETE FROM repos WHERE id = ?', [rid])
+          console.log(`[admin] Deleted repo ${rid}`)
+          res.end(JSON.stringify({ ok: true }))
+          return
+        }
+
+        // DELETE extension
+        const delExt = url.pathname.match(/^\/admin\/extension\/(\d+)$/)
+        if (delExt && req.method === 'DELETE') {
+          const eid = Number(delExt[1])
+          db.run('DELETE FROM user_extensions WHERE ext_id = ?', [eid])
+          db.run('DELETE FROM extensions WHERE id = ?', [eid])
+          console.log(`[admin] Deleted extension ${eid}`)
+          res.end(JSON.stringify({ ok: true }))
+          return
+        }
+
+        res.writeHead(404)
+        res.end(JSON.stringify({ error: 'not found' }))
+        return
+      }
+
+      // ── Public endpoints ──
       if (url.pathname === '/health') {
         const stats = db.query(`SELECT (SELECT COUNT(*) FROM users) as users, (SELECT COUNT(*) FROM extensions) as extensions, (SELECT COUNT(*) FROM user_extensions) as installs`).get() as any
         res.end(JSON.stringify({ ...stats, jarReady: isJarReady() }))
