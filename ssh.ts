@@ -6,7 +6,7 @@ import { Server as SshServer } from 'ssh2'
 import { authenticateUser, createUser, getUserExtensions, getUserAvailableExtensions, uninstallExtensionForUser, removeRepoForUser, getRepoByUrl, db, getAllUsers, getStats, getUserRepos, addRepoForUser, getExtension } from './db.js'
 import { isJarReady, invokeJar, invokeJarOnce, getJarPath, startSidecar } from './jar.js'
 import { addRepo, refreshRepo, getAllRepos } from './repos.js'
-import { installExtension, downloadExtension } from './extensions.js'
+import { installExtension, downloadExtension, convertAllApks, listExtensionFiles } from './extensions.js'
 import { runUpdateNow } from './auto-update.js'
 
 const ADMIN_KEY = process.env.ADMIN_KEY || 'anymex-admin-2024'
@@ -194,6 +194,35 @@ export function startHttpServer() {
         if (url.pathname === '/admin/downloadedExtensions' && req.method === 'GET') {
           const exts = db.query(`SELECT id, name, type, version, pkg, file_path FROM extensions WHERE file_path IS NOT NULL AND file_path != '' ORDER BY name`).all() as any[]
           res.end(JSON.stringify(exts))
+          return
+        }
+
+        // ── GET: list actual files in extensions directory ──
+        if (url.pathname === '/admin/extFiles' && req.method === 'GET') {
+          res.end(JSON.stringify(listExtensionFiles()))
+          return
+        }
+
+        // ── POST: convert all APKs in extensions dir to JAR ──
+        if (url.pathname === '/admin/convertAllApks' && req.method === 'POST') {
+          const t0 = Date.now()
+          const result = await convertAllApks()
+          res.end(JSON.stringify({ ok: true, ...result, elapsed: Date.now() - t0 }))
+          return
+        }
+
+        // ── POST: download all extensions that don't have files yet ──
+        if (url.pathname === '/admin/downloadAll' && req.method === 'POST') {
+          const t0 = Date.now()
+          const exts = db.query(`SELECT id, name FROM extensions WHERE file_path IS NULL OR file_path = ''`).all() as any[]
+          let downloaded = 0, failed = 0
+          const errors: string[] = []
+          for (const ext of exts) {
+            const r = await downloadExtension(ext.id)
+            if (r.ok) downloaded++
+            else { failed++; errors.push(`${ext.name}: ${r.error}`) }
+          }
+          res.end(JSON.stringify({ ok: true, total: exts.length, downloaded, failed, errors, elapsed: Date.now() - t0 }))
           return
         }
 

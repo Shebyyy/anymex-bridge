@@ -1,8 +1,8 @@
 import { db, installExtensionForUser, getExtension } from './db.js'
-import { join } from 'node:path'
-import { existsSync, mkdirSync, writeFileSync, readFileSync, unlinkSync, renameSync } from 'node:fs'
+import { join, basename, extname } from 'node:path'
+import { existsSync, mkdirSync, writeFileSync, readFileSync, unlinkSync, renameSync, readdirSync, statSync } from 'node:fs'
 import { createHash } from 'node:crypto'
-import { isJarReady, invokeJar } from './jar.js'
+import { isJarReady, invokeJar, startSidecar } from './jar.js'
 
 const EXT_DIR = join(import.meta.dir, 'extensions')
 mkdirSync(EXT_DIR, { recursive: true })
@@ -71,6 +71,19 @@ export async function downloadExtension(extId: number, force = false): Promise<{
     db.run('UPDATE extensions SET file_path = ?, file_hash = ? WHERE id = ?', [filePath, fileHash, extId])
 
     console.log(`[ext] Saved: ${filePath} (${(buf.length / 1024).toFixed(1)}KB) ${ext.file_hash ? '[UPDATED]' : ''}`)
+
+    // Auto-convert APK → JAR for aniyomi extensions
+    if (filePath.endsWith('.apk')) {
+      const conv = await convertApkToJar(filePath)
+      if (conv.ok && conv.jarPath) {
+        filePath = conv.jarPath
+        db.run('UPDATE extensions SET file_path = ? WHERE id = ?', [filePath, extId])
+        console.log(`[ext] Auto-converted APK → JAR: ${filePath}`)
+      } else {
+        console.warn(`[ext] APK conversion failed: ${conv.error} (file kept as APK)`)
+      }
+    }
+
     return { ok: true, filePath, updated: !!ext.file_hash }
   } catch (e: any) {
     // Clean up tmp file on error
@@ -79,10 +92,19 @@ export async function downloadExtension(extId: number, force = false): Promise<{
   }
 }
 
-// Install extension for user — downloads if needed, tracks in DB
-export async function installExtension(userId: string, extId: number): Promise<{ ok: boolean; error?: string }> {
+// Install extension for user — downloads if needed, auto-converts APK→JAR, tracks in DB
+export async function installExtension(userId: string, extId: number): Promise<{ ok: boolean; error?: string; converted?: boolean }> {
   const dl = await downloadExtension(extId)
   if (!dl.ok) return dl
+
+  // Ensure file is JAR (convert APK if needed)
+  if (dl.filePath?.endsWith('.apk')) {
+    const conv = await convertApkToJar(dl.filePath)
+    if (conv.ok && conv.jarPath) {
+      db.run('UPDATE extensions SET file_path = ? WHERE id = ?', [conv.jarPath, extId])
+      console.log(`[ext] Auto-converted APK → JAR on install: ext ${extId}`)
+    }
+  }
 
   installExtensionForUser(userId, extId)
   console.log(`[ext] Installed ext ${extId} for user ${userId}`)
@@ -91,17 +113,70 @@ export async function installExtension(userId: string, extId: number): Promise<{
 
 // Convert APK to JAR using the runtime JAR
 export async function convertApkToJar(apkPath: string): Promise<{ ok: boolean; error?: string; jarPath?: string }> {
-  if (!isJarReady()) return { ok: false, error: 'Runtime JAR not available' }
+  if (!isJarReady()) {
+    const started = await startSidecar()
+    if (!started.ok) return { ok: false, error: 'Cannot start JAR: ' + started.error }
+  }
 
   try {
-    const result = await invokeJar('convertApk', { apkPath })
+    const outJarPath = apkPath.replace(/\.apk$/, '.jar')
+    const result = await invokeJar('convertApk', { apkPath, outJarPath }, 120000)
     if (result?.jarPath && existsSync(result.jarPath)) {
       return { ok: true, jarPath: result.jarPath }
+    }
+    // JAR might return jarPath at different key or the outJarPath was used
+    if (outJarPath !== apkPath && existsSync(outJarPath)) {
+      return { ok: true, jarPath: outJarPath }
     }
     return { ok: false, error: 'JAR convertApk returned no jarPath' }
   } catch (e: any) {
     return { ok: false, error: `convertApk failed: ${e.message}` }
   }
+}
+
+// Convert all APK files in the extensions directory to JAR
+export async function convertAllApks(): Promise<{ converted: number; failed: number; errors: string[] }> {
+  let converted = 0, failed = 0
+  const errors: string[] = []
+
+  try {
+    const files = readdirSync(EXT_DIR)
+    const apks = files.filter(f => f.endsWith('.apk'))
+    console.log(`[ext] Found ${apks.length} APK files to convert`)
+
+    for (const file of apks) {
+      const apkPath = join(EXT_DIR, file)
+      const result = await convertApkToJar(apkPath)
+      if (result.ok && result.jarPath) {
+        converted++
+        // Update DB: find extension with this apk path and update to jar path
+        db.run('UPDATE extensions SET file_path = ? WHERE file_path = ?', [result.jarPath, apkPath])
+        console.log(`[ext] Converted: ${file} → ${basename(result.jarPath)}`)
+      } else {
+        failed++
+        errors.push(`${file}: ${result.error}`)
+        console.error(`[ext] Convert failed: ${file} — ${result.error}`)
+      }
+    }
+  } catch (e: any) {
+    errors.push(e.message)
+  }
+
+  return { converted, failed, errors }
+}
+
+// List all files in extensions directory with their info
+export function listExtensionFiles(): { name: string; path: string; size: number; type: 'jar' | 'apk' | 'cs3' | 'other' }[] {
+  try {
+    return readdirSync(EXT_DIR).map(f => {
+      const p = join(EXT_DIR, f)
+      let size = 0
+      try { size = statSync(p).size } catch {}
+      const ext = extname(f).toLowerCase()
+      const type = ext === '.jar' ? 'jar' as const : ext === '.apk' ? 'apk' as const : ext === '.cs3' ? 'cs3' as const : 'other' as const
+      return { name: f, path: p, size, type }
+    })
+  } catch { return [] }
 }
 
 // Batch re-download extensions that had version changes

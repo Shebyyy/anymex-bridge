@@ -216,17 +216,36 @@ tbody td:first-child{color:#e4e4e7;font-weight:500}
   <div class="panel" id="panel-terminal">
     <div class="content">
       <div class="terminal">
-        <div class="section-label">JAR Method Testing</div>
+        <div class="section-label">Step 1: Setup Extensions</div>
+        <div class="input-row">
+          <label>Files</label>
+          <span id="extFilesInfo" style="color:#52525b;font-size:12px">Loading...</span>
+          <button class="btn-sm btn-ghost" onclick="doShowExtFiles()" style="flex:none">List Files</button>
+          <button class="btn-sm btn-ghost" onclick="doDownloadAll()" style="flex:none">Download All</button>
+          <button class="btn-sm btn-primary" onclick="doConvertAllApks()" style="flex:none">Convert APKs → JARs</button>
+        </div>
+
+        <div class="section-label">Step 2: Load Sources into JAR</div>
+        <div class="input-row">
+          <label>Source</label>
+          <select id="invokeSource" onchange="onSourceChange()">
+            <option value="">-- Load sources first --</option>
+          </select>
+          <button class="btn-sm btn-primary" onclick="doLoadSources()" style="flex:none">Load Sources</button>
+          <button class="btn-sm btn-ghost" onclick="runJarStatus()" style="flex:none">JAR Status</button>
+        </div>
+
+        <div class="section-label">Step 3: Test JAR Methods</div>
         <div class="input-row">
           <label>Method</label>
           <select id="invokeMethod" onchange="onMethodChange()">
-            <option value="loadExtensions">loadExtensions</option>
             <option value="search">search</option>
             <option value="getPopular">getPopular</option>
             <option value="getLatest">getLatest</option>
             <option value="getDetail">getDetail</option>
             <option value="getFilterList">getFilterList</option>
             <option value="getVideoList">getVideoList</option>
+            <option value="loadExtensions">loadExtensions</option>
             <option value="convertApk">convertApk</option>
             <option value="">── custom ──</option>
           </select>
@@ -234,13 +253,6 @@ tbody td:first-child{color:#e4e4e7;font-weight:500}
         <div class="input-row" id="customMethodRow" style="display:none">
           <label>Custom</label>
           <input id="customMethod" placeholder="method name">
-        </div>
-        <div class="input-row">
-          <label>Source</label>
-          <select id="invokeSource" onchange="onSourceChange()">
-            <option value="">-- Load sources first --</option>
-          </select>
-          <button class="btn-sm btn-ghost" onclick="doLoadSources()" style="flex:none">Load Sources</button>
         </div>
         <div class="input-row">
           <label>Type</label>
@@ -258,7 +270,6 @@ tbody td:first-child{color:#e4e4e7;font-weight:500}
           <input id="invokeTimeout" type="number" value="60" style="max-width:80px;flex:none">
           <button class="btn-sm btn-primary" onclick="runInvoke()" style="margin-left:4px;height:36px">▶ Run</button>
           <button class="btn-sm btn-ghost" onclick="runForceUpdate()">Force Update</button>
-          <button class="btn-sm btn-ghost" onclick="runJarStatus()">JAR Status</button>
         </div>
         <div class="section-label">Output</div>
         <textarea id="outputArea" readonly placeholder="Output will appear here..."></textarea>
@@ -303,7 +314,7 @@ async function login(){
   }catch(e){toast('Connection failed','error')}
 }
 function logout(){token='';localStorage.removeItem('bridge_admin_token');document.getElementById('app').style.display='none';document.getElementById('loginScreen').style.display='flex';keyInput.value=''}
-function showApp(){document.getElementById('loginScreen').style.display='none';document.getElementById('app').style.display='block';loadAll();loadJarStatus();loadCachedSources()}
+function showApp(){document.getElementById('loginScreen').style.display='none';document.getElementById('app').style.display='block';loadAll();loadJarStatus();loadCachedSources();loadExtFilesInfo()}
 
 // ── Tabs ──
 function switchTab(name,btn){document.querySelectorAll('.tab').forEach(t=>t.classList.remove('active'));document.querySelectorAll('.panel').forEach(p=>p.classList.remove('active'));btn.classList.add('active');document.getElementById('panel-'+name).classList.add('active')}
@@ -385,6 +396,59 @@ async function deleteExtension(id,name){
   if(!confirm(`Delete extension "${name}"? Removes from ALL users.`))return;
   const r=await api('/admin/extension/'+id,{method:'DELETE'});
   if(r.ok){toast('Deleted','success');loadAll()}else toast(r.error||'Failed','error');
+}
+
+// ── Terminal: Setup ──
+async function loadExtFilesInfo(){
+  try{
+    const files=await api('/admin/extFiles');
+    const jars=files.filter(f=>f.type==='jar').length;
+    const apks=files.filter(f=>f.type==='apk').length;
+    const cs3s=files.filter(f=>f.type==='cs3').length;
+    const el=document.getElementById('extFilesInfo');
+    if(!files.length){el.textContent='No files in extensions dir';el.style.color='#ef4444'}
+    else{
+      let t=`${files.length} files (${jars} JAR`;
+      if(apks)t+=`, <span style="color:#ef4444">${apks} APK</span>`;
+      if(cs3s)t+=`, ${cs3s} CS3`;
+      t+=')';
+      el.innerHTML=t;el.style.color=apks?'#ef4444':'#22c55e';
+    }
+  }catch{document.getElementById('extFilesInfo').textContent='(check failed)'}
+}
+async function doShowExtFiles(){
+  const out=document.getElementById('outputArea');
+  const files=await api('/admin/extFiles');
+  if(!files.length){out.value='No files in extensions directory.';return}
+  out.value='Files in extensions directory:\n';
+  files.forEach(f=>{out.value+=`  [${f.type.toUpperCase()}] ${f.name} (${fmtSize(f.size)})\n`});
+  const apks=files.filter(f=>f.type==='apk');
+  if(apks.length)out.value+=`\n⚠ ${apks.length} APK files need conversion. Click "Convert APKs → JARs" above.`;
+  document.getElementById('outputMeta').innerHTML='';
+}
+async function doDownloadAll(){
+  const out=document.getElementById('outputArea');
+  out.value='Downloading all missing extensions...\n';
+  document.getElementById('outputMeta').innerHTML='';
+  const r=await apiPost('/admin/downloadAll',{});
+  if(r.ok){
+    out.value+=`Done: ${r.downloaded} downloaded, ${r.failed} failed (${r.total} total) in ${(r.elapsed/1000).toFixed(1)}s\n`;
+    if(r.errors?.length)out.value+=`\nErrors:\n${r.errors.map(e=>'  '+e).join('\n')}\n`;
+    toast(`Downloaded ${r.downloaded} extensions`,'success');
+    loadExtFilesInfo();loadAll();
+  }else{out.value+='ERROR: '+r.error;toast(r.error||'Failed','error')}
+}
+async function doConvertAllApks(){
+  const out=document.getElementById('outputArea');
+  out.value='Converting APKs to JARs... (this may take a while)\n';
+  document.getElementById('outputMeta').innerHTML='';
+  const r=await apiPost('/admin/convertAllApks',{});
+  if(r.ok){
+    out.value+=`Done: ${r.converted} converted, ${r.failed} failed in ${(r.elapsed/1000).toFixed(1)}s\n`;
+    if(r.errors?.length)out.value+=`\nErrors:\n${r.errors.map(e=>'  '+e).join('\n')}\n`;
+    toast(`Converted ${r.converted} APKs`,'success');
+    loadExtFilesInfo();loadAll();
+  }else{out.value+='ERROR: '+r.error;toast(r.error||'Failed','error')}
 }
 
 // ── Terminal: Sources ──
