@@ -1,11 +1,12 @@
 import { createServer as createHttpServer } from 'node:http'
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
-import { authenticateUser, createUser, getUserExtensions, getUserAvailableExtensions, uninstallExtensionForUser, removeRepoForUser, getRepoByUrl, db, getAllUsers, getStats, getUserRepos, addRepoForUser, getExtension } from './db.js'
+import { authenticateUser, createUser, getUserExtensions, getUserAvailableExtensions, uninstallExtensionForUser, removeRepoForUser, getRepoByUrl, db, getAllUsers, getStats, getUserRepos, addRepoForUser, getExtension, addUserInstalled, removeUserInstalled, getUserInstalledPkgs, countOtherUsersWithPkg } from './db.js'
 import { isJarReady, invokeJar, invokeJarOnce, getJarPath, startSidecar } from './jar.js'
 import { addRepo, refreshRepo, getAllRepos } from './repos.js'
 import { installExtension, downloadExtension, convertAllApks, listExtensionFiles } from './extensions.js'
 import { runUpdateNow } from './auto-update.js'
+import { existsSync, mkdirSync, unlinkSync, writeFileSync } from 'node:fs'
 
 const ADMIN_KEY = process.env.ADMIN_KEY || 'anymex-admin-2024'
 let adminTokens = new Set<string>()
@@ -554,22 +555,72 @@ async function handleMethod(userId: string, username: string, msg: any): Promise
   const { method, args } = msg
 
   switch (method) {
+    // ── v2: Client-side repo management, server handles install/load only ──
+
+    case 'installExtension': {
+      const { url, pkgName, type, name, iconUrl, version } = args || {}
+      if (!url || !pkgName) throw new Error('url and pkgName required')
+      return installForUser(userId, { url, pkgName, type: type || 'aniyomi', name, iconUrl, version })
+    }
+
+    case 'uninstallExtension': {
+      const { pkgName, type } = args || {}
+      if (!pkgName) throw new Error('pkgName required')
+      return uninstallForUser(userId, pkgName, type)
+    }
+
+    // Intercept load* to filter to user's installed extensions only
+    case 'loadExtensions': {
+      const folderPath = join(EXT_DIR, 'Aniyomi')
+      const all = await invokeJar('loadExtensions', { folderPath }, 30000)
+      return filterUserSources(userId, all, 'aniyomi')
+    }
+
+    case 'csLoadExtensions': {
+      const folderPath = join(EXT_DIR, 'CloudStream')
+      const all = await invokeJar('csLoadExtensions', { folderPath }, 30000)
+      return filterUserSources(userId, all, 'cloudstream')
+    }
+
+    case 'kotatsuLoadExtensions': {
+      // Kotatsu: don't filter — install/uninstall is client-side toggle
+      const folderPath = join(EXT_DIR, 'Kotatsu')
+      return invokeJar('kotatsuLoadExtensions', { folderPath }, 30000)
+    }
+
+    // Ensure Kotatsu plugin.jar exists on server
+    case 'ensureKotatsuJar': {
+      const { url } = args || {}
+      if (!url) throw new Error('url required')
+      const dir = join(EXT_DIR, 'Kotatsu')
+      mkdirSync(dir, { recursive: true })
+      const jarFile = join(dir, 'plugin.jar')
+      if (!existsSync(jarFile)) {
+        console.log(`[ssh] Downloading Kotatsu plugin.jar from ${url}`)
+        const res = await fetch(url)
+        if (!res.ok) throw new Error(`Download failed: ${res.status}`)
+        writeFileSync(jarFile, Buffer.from(await res.arrayBuffer()))
+      }
+      return { ok: true }
+    }
+
+    case 'health':
+      return { status: 'ok', user: username, jarReady: isJarReady() }
+
+    // ── Legacy admin methods (kept for admin panel) ──
     case 'addRepo': {
       const { url, type } = args || {}
       if (!url) throw new Error('url required')
       return addRepo(userId, url, type)
     }
-    case 'installExtension': {
-      const { extId } = args || {}
-      if (!extId) throw new Error('extId required')
-      return installExtension(userId, Number(extId))
+    case 'listExtensions':
+      return getUserExtensions(userId)
+    case 'getExtensions': {
+      const { type, query } = args || {}
+      return getUserAvailableExtensions(userId, type, query)
     }
-    case 'uninstallExtension': {
-      const { extId } = args || {}
-      if (!extId) throw new Error('extId required')
-      const ok = uninstallExtensionForUser(userId, Number(extId))
-      return { ok }
-    }
+    case 'getRepos':
+      return db.query(`SELECT r.id, r.url, r.type, r.name, r.last_fetched FROM repos r JOIN user_repos ur ON r.id = ur.repo_id WHERE ur.user_id = ?`).all(userId)
     case 'removeRepo': {
       const { url } = args || {}
       if (!url) throw new Error('url required')
@@ -578,29 +629,19 @@ async function handleMethod(userId: string, username: string, msg: any): Promise
       const ok = removeRepoForUser(userId, repo.id)
       return { ok }
     }
-    case 'listExtensions':
-      return getUserExtensions(userId)
     case 'downloadExtension': {
       const { extId } = args || {}
       if (!extId) throw new Error('extId required')
       return downloadExtension(Number(extId))
     }
     case 'forceUpdate': {
-      // Manual trigger — re-fetch all repos & re-download changed plugins
       console.log(`[ssh] User '${username}' triggered force update`)
       await runUpdateNow()
       return { ok: true, message: 'Update cycle complete' }
     }
-    case 'getExtensions': {
-      const { type, query } = args || {}
-      return getUserAvailableExtensions(userId, type, query)
-    }
-    case 'getRepos':
-      return db.query(`SELECT r.id, r.url, r.type, r.name, r.last_fetched FROM repos r JOIN user_repos ur ON r.id = ur.repo_id WHERE ur.user_id = ?`).all(userId)
-    case 'health':
-      return { status: 'ok', user: username, jarReady: isJarReady() }
+
+    // ── Default: forward to JAR sidecar (source methods) ──
     default:
-      // Forward to JAR sidecar or one-shot fallback
       try {
         if (isJarReady()) return await invokeJar(method, args || {})
         return await invokeJarOnce(method, args || {})
@@ -608,4 +649,65 @@ async function handleMethod(userId: string, username: string, msg: any): Promise
         throw new Error(`${method}: ${e.message}`)
       }
   }
+}
+
+// ── v2 install/uninstall helpers ──
+
+function filterUserSources(userId: string, sources: any[], type: string): any[] {
+  const userPkgs = getUserInstalledPkgs(userId, type)
+  if (userPkgs.size === 0) return []
+  return (sources || []).filter((s: any) =>
+    userPkgs.has(s.pkgName) || userPkgs.has(s.pkg) || userPkgs.has(s.className)
+  )
+}
+
+async function installForUser(userId: string, opts: { url: string; pkgName: string; type: string; name?: string; iconUrl?: string; version?: string }) {
+  const { url, pkgName, type, name, iconUrl, version } = opts
+  const typeFolder = type === 'cloudstream' ? 'CloudStream' : type === 'kotatsu' ? 'Kotatsu' : 'Aniyomi'
+  const dir = join(EXT_DIR, typeFolder)
+  mkdirSync(dir, { recursive: true })
+  const targetFile = join(dir, `${pkgName}.jar`)
+
+  if (!existsSync(targetFile)) {
+    const isApk = url.toLowerCase().endsWith('.apk')
+    const isCs3 = url.toLowerCase().endsWith('.cs3')
+    const downloadPath = isApk ? join(dir, `${pkgName}.apk`) :
+                         isCs3 ? join(dir, `${pkgName}.cs3`) : targetFile
+
+    console.log(`[ssh] Downloading ${type} extension: ${pkgName} from ${url}`)
+    const res = await fetch(url)
+    if (!res.ok) throw new Error(`Download failed: HTTP ${res.status}`)
+    const buf = Buffer.from(await res.arrayBuffer())
+    writeFileSync(downloadPath, buf)
+
+    if (isApk || isCs3) {
+      if (!isJarReady()) {
+        const started = await startSidecar()
+        if (!started.ok) throw new Error('JAR not ready: ' + started.error)
+      }
+      console.log(`[ssh] Converting ${isApk ? 'APK' : 'CS3'} to JAR: ${pkgName}`)
+      await invokeJar('convertApk', { apkPath: downloadPath, outJarPath: targetFile }, 120000)
+      try { unlinkSync(downloadPath) } catch {}
+    }
+  } else {
+    console.log(`[ssh] Extension already exists: ${pkgName}`)
+  }
+
+  addUserInstalled(userId, pkgName, type, name, iconUrl, version)
+  return { ok: true }
+}
+
+function uninstallForUser(userId: string, pkgName: string, type?: string) {
+  removeUserInstalled(userId, pkgName)
+
+  if (countOtherUsersWithPkg(userId, pkgName) === 0) {
+    const typeFolder = type === 'cloudstream' ? 'CloudStream' : type === 'kotatsu' ? 'Kotatsu' : 'Aniyomi'
+    const filePath = join(EXT_DIR, typeFolder, `${pkgName}.jar`)
+    try {
+      unlinkSync(filePath)
+      console.log(`[ssh] Deleted unused JAR: ${pkgName}`)
+    } catch {}
+  }
+
+  return { ok: true }
 }
