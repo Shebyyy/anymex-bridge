@@ -1,0 +1,944 @@
+=== BRIDGE FILES ON LOCAL MAIN ===
+total 116
+drwxr-xr-x 7 z z  4096 Aug 14 04:48 .
+drwxr-xr-x 1 z z  4096 Aug 14 05:06 ..
+drwxrwxr-x 8 z z  4096 Aug 14 04:48 .git
+drwxrwxr-x 3 z z  4096 Aug 14 04:00 .github
+-rw-rw-r-- 1 z z    83 Aug 14 04:00 .gitignore
+-rw-rw-r-- 1 z z  2363 Aug 14 06:06 auto-update.ts
+-rwxr-xr-x 1 z z  4204 Aug  6 08:40 bun.lock
+drwxr-xr-x 2 z z  4096 Aug 14 02:58 data
+-rwxrwxr-x 1 z z  7329 Aug 14 06:05 db.ts
+drwxr-xr-x 2 z z  4096 Aug 14 02:58 extensions
+-rwxrwxr-x 1 z z  4613 Aug 14 04:48 extensions.ts
+-rwxrwxr-x 1 z z  2586 Aug 14 04:48 index.ts
+drwxr-xr-x 2 z z  4096 Aug 14 02:58 jar-cache
+-rwxrwxr-x 1 z z  8074 Aug 14 04:48 jar.ts
+-rwxr-xr-x 1 z z   296 Aug  6 09:56 package.json
+-rwxr-xr-x 1 z z 13853 Aug 14 06:05 repos.ts
+-rwxrwxr-x 1 z z  8368 Aug 14 06:06 ssh.ts
+-rwxr-xr-x 1 z z    56 Aug  6 09:57 start.sh
+-rwxr-xr-x 1 z z  6226 Aug  6 09:58 test-jar.ts
+=== BRIDGE FILES ON REMOTE BETA ===
+=== COMPARE bridge/ssh.ts ===
+0a1,211
+> import { createServer as createHttpServer } from 'node:http'
+> import { readFileSync, writeFileSync } from 'node:fs'
+> import { generateKeyPairSync } from 'node:crypto'
+> import { join } from 'node:path'
+> import { Server as SshServer } from 'ssh2'
+> import { authenticateUser, createUser, getUserExtensions, getUserAvailableExtensions, uninstallExtensionForUser, removeRepoForUser, getRepoByUrl, db } from './db.js'
+> import { isJarReady, invokeJar, invokeJarOnce } from './jar.js'
+> import { addRepo } from './repos.js'
+> import { installExtension, downloadExtension } from './extensions.js'
+> import { runUpdateNow } from './auto-update.js'
+> 
+> const SSH_PORT = 3022
+> const HTTP_PORT = 8082
+> 
+> const HOST_KEY_DIR = join(import.meta.dir, 'data')
+> const HOST_KEY_PATH = join(HOST_KEY_DIR, 'host_key')
+> 
+> function getHostKey(): Buffer {
+>   try { return readFileSync(HOST_KEY_PATH) } catch {}
+>   const key = generateKeyPairSync('rsa', { modulusLength: 2048, privateKeyEncoding: { type: 'pkcs1', format: 'pem' }, publicKeyEncoding: { type: 'spki', format: 'pem' } })
+>   writeFileSync(HOST_KEY_PATH, key.privateKey)
+>   console.log('[ssh] Generated new RSA 2048 host key')
+>   return Buffer.from(key.privateKey)
+> }
+> 
+> // ─── HTTP Server (registration + data endpoints) ──────────
+> 
+> export function startHttpServer() {
+>   const server = createHttpServer(async (req, res) => {
+>     const url = new URL(req.url || '/', `http://localhost:${HTTP_PORT}`)
+>     res.setHeader('Content-Type', 'application/json')
+> 
+>     try {
+>       if (url.pathname === '/health') {
+>         const stats = db.query(`SELECT (SELECT COUNT(*) FROM users) as users, (SELECT COUNT(*) FROM extensions) as extensions, (SELECT COUNT(*) FROM user_extensions) as installs`).get() as any
+>         res.end(JSON.stringify({ ...stats, jarReady: isJarReady() }))
+>         return
+>       }
+> 
+>       if (url.pathname === '/register' && req.method === 'POST') {
+>         const body = await readBody(req)
+>         const { username, password } = JSON.parse(body)
+>         if (!username || !password || username.length < 3 || password.length < 4) {
+>           res.writeHead(400)
+>           res.end(JSON.stringify({ ok: false, error: 'username min 3 chars, password min 4 chars' }))
+>           return
+>         }
+>         res.end(JSON.stringify(createUser(username, password)))
+>         return
+>       }
+> 
+>       if (url.pathname === '/addRepo' && req.method === 'POST') {
+>         const body = await readBody(req)
+>         const { username, password, url: repoUrl, type } = JSON.parse(body)
+>         const user = authenticateUser(username, password)
+>         if (!user) { res.writeHead(401); res.end(JSON.stringify({ ok: false, error: 'invalid credentials' })); return }
+>         if (!repoUrl) { res.writeHead(400); res.end(JSON.stringify({ ok: false, error: 'url required' })); return }
+>         res.end(JSON.stringify(await addRepo(user.id, repoUrl, type)))
+>         return
+>       }
+> 
+>       if (url.pathname === '/installExtension' && req.method === 'POST') {
+>         const body = await readBody(req)
+>         const { username, password, extId } = JSON.parse(body)
+>         const user = authenticateUser(username, password)
+>         if (!user) { res.writeHead(401); res.end(JSON.stringify({ ok: false, error: 'invalid credentials' })); return }
+>         if (!extId) { res.writeHead(400); res.end(JSON.stringify({ ok: false, error: 'extId required' })); return }
+>         res.end(JSON.stringify(await installExtension(user.id, Number(extId))))
+>         return
+>       }
+> 
+>       res.writeHead(404)
+>       res.end(JSON.stringify({ error: 'not found' }))
+>     } catch (e: any) {
+>       res.writeHead(500)
+>       res.end(JSON.stringify({ error: e.message }))
+>     }
+>   })
+> 
+>   server.listen(HTTP_PORT, () => console.log(`ttp] Listening on ${HTTP_PORT}`))
+> }
+> 
+> function readBody(req: any): Promise<string> {
+>   return new Promise((resolve, reject) => {
+>     let data = ''
+>     req.on('data', (c: Buffer) => data += c)
+>     req.on('end', () => resolve(data))
+>     req.on('error', reject)
+>   })
+> }
+> 
+> // ─── SSH Server ────────────────────────────────────────────
+> 
+> export function startSshServer() {
+>   const hostKey = getHostKey()
+>   const sshServer = new SshServer({
+>     hostKeys: ostKey],
+>     algorithms: { kex: ['ecdh-sha2-nistp256'], serverHostKey: ['rsa-sha2-256', 'ssh-rsa'] }
+>   })
+> 
+>   sshServer.on('connection', (client) => {
+>     let userId: string | null = null
+>     let username: string | null = null
+> 
+>     client.on('authentication', (ctx) => {
+>       if (ctx.method === 'password') {
+>         const user = authenticateUser(ctx.username, ctx.password as string)
+>         if (user) { userId = user.id; username = user.username; ctx.accept() }
+>         else ctx.reject()
+>       } else ctx.reject()
+>     })
+> 
+>     client.on('ready', () => {
+>       console.log(`[ssh] User '${username}' connected`)
+> 
+>       client.on('session', (accept) => {
+>         const session = accept()
+> 
+>         session.on('exec', (accept, info) => {
+>           const channel = accept()
+>           const raw = (info.command || '').trim()
+> 
+>           if (!raw) {
+>             channel.write(JSON.stringify({ id: '0', status: 'error', error: 'empty command' }) + '\n')
+>             channel.close(); return
+>           }
+> 
+>           try {
+>             const msg = JSON.parse(raw)
+>             handleMethod(userId!, username!, msg).then(result => {
+>               channel.write(JSON.stringify({ id: msg.id || '0', status: 'ok', data: result }) + '\n')
+>               channel.close()
+>             }).catch(e => {
+>               channel.write(JSON.stringify({ id: msg.id || '0', status: 'error', error: e.message }) + '\n')
+>               channel.close()
+>             })
+>           } catch {
+>             channel.write(JSON.stringify({ id: '0', status: 'error', error: 'invalid JSON' }) + '\n')
+>             channel.close()
+>           }
+>         })
+>       })
+>     })
+> 
+>     client.on('close', () => console.log(`[ssh] User '${username}' disconnected`))
+>   })
+> 
+>   sshServer.listen(SSH_PORT, '0.0.0.0', () => console.log(`[ssh] Listening on port ${SSH_PORT}`))
+> }
+> 
+> // ─── Method Router ─────────────────────────────────────────
+> 
+> async function handleMethod(userId: string, username: string, msg: any): Promise<any> {
+>   const { method, args } = msg
+> 
+>   switch (method) {
+>     case 'addRepo': {
+>       const { url, type } = args || {}
+>       if (!url) throw new Error('url required')
+>       return addRepo(userId, url, type)
+>     }
+>     case 'installExtension': {
+>       const { extId } = args || {}
+>       if (!extId) throw new Error('extId required')
+>       return installExtension(userId, Number(extId))
+>     }
+>     case 'uninstallExtension': {
+>       const { extId } = args || {}
+>       if (!extId) throw new Error('extId required')
+>       const ok = uninstallExtensionForUser(userId, Number(extId))
+>       return { ok }
+>     }
+>     case 'removeRepo': {
+>       const { url } = args || {}
+>       if (!url) throw new Error('url required')
+>       const repo = getRepoByUrl(url)
+>       if (!repo) throw new Error('repo not found')
+>       const ok = removeRepoForUser(userId, repo.id)
+>       return { ok }
+>     }
+>     case 'listExtensions':
+>       return getUserExtensions(userId)
+>     case 'downloadExtension': {
+>       const { extId } = args || {}
+>       if (!extId) throw new Error('extId required')
+>       return downloadExtension(Number(extId))
+>     }
+>     case 'forceUpdate': {
+>       // Manual trigger — re-fetch all repos & re-download changed plugins
+>       console.log(`[ssh] User '${username}' triggered force update`)
+>       await runUpdateNow()
+>       return { ok: true, message: 'Update cycle complete' }
+>     }
+>     case 'getExtensions': {
+>       const { type, query } = args || {}
+>       return getUserAvailableExtensions(userId, type, query)
+>     }
+>     case 'getRepos':
+>       return db.query(`SELECT r.id, r.url, r.type, r.name, r.last_fetched FROM repos r JOIN user_repos ur ON r.id = ur.repo_id WHERE ur.user_id = ?`).all(userId)
+>     case 'health':
+>       return { status: 'ok', user: username, jarReady: isJarReady() }
+>     default:
+>       // Forward to JAR sidecar or one-shot fallback
+>       try {
+>         if (isJarReady()) return await invokeJar(method, args || {})
+>         return await invokeJarOnce(method, args || {})
+>       } catch (e: any) {
+>         throw new Error(`${method}: ${e.message}`)
+>       }
+>   }
+> }
+\ No newline at end of file
+DIFFERENT
+=== COMPARE bridge/db.ts ===
+0a1,186
+> import { Database } from 'bun:sqlite'
+> import { join } from 'node:path'
+> import { mkdirSync } from 'node:fs'
+> 
+> const DIR = join(import.meta.dir, 'data')
+> mkdirSync(DIR, { recursive: true })
+> 
+> export const db = new Database(join(DIR, 'bridge.db'))
+> db.exec('PRAGMA journal_mode=WAL')
+> db.exec('PRAGMA foreign_keys=ON')
+> 
+> export function initSchema() {
+>   db.exec(`
+>     CREATE TABLE IF NOT EXISTS users (
+>       id TEXT PRIMARY KEY,
+>       username TEXT UNIQUE NOT NULL,
+>       password TEXT NOT NULL,
+>       created TEXT DEFAULT (datetime('now'))
+>     );
+>     CREATE TABLE IF NOT EXISTS repos (
+>       id INTEGER PRIMARY KEY AUTOINCREMENT,
+>       url TEXT UNIQUE NOT NULL,
+>       type TEXT NOT NULL,
+>       name TEXT,
+>       shortname TEXT,
+>       added TEXT DEFAULT (datetime('now')),
+>       last_fetched TEXT
+>     );
+>     CREATE TABLE IF NOT EXISTS user_repos (
+>       user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+>       repo_id INTEGER NOT NULL REFERENCES repos(id) ON DELETE CASCADE,
+>       PRIMARY KEY (user_id, repo_id)
+>     );
+>     CREATE TABLE IF NOT EXISTS extensions (
+>       id INTEGER PRIMARY KEY AUTOINCREMENT,
+>       name TEXT NOT NULL,
+>       pkg TEXT,
+>       type TEXT NOT NULL,
+>       repo_id INTEGER REFERENCES repos(id) ON DELETE CASCADE,
+>       version TEXT,
+>       icon_url TEXT,
+>       lang TEXT,
+>       is_nsfw INTEGER DEFAULT 0,
+>       file_path TEXT,
+>       file_hash TEXT,
+>       extra TEXT,
+>       created TEXT DEFAULT (datetime('now'))
+>     );
+>     CREATE TABLE IF NOT EXISTS user_extensions (
+>       user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+>       ext_id INTEGER NOT NULL REFERENCES extensions(id) ON DELETE CASCADE,
+>       installed TEXT DEFAULT (datetime('now')),
+>       PRIMARY KEY (user_id, ext_id)
+>     );
+>   `)
+> 
+>   // Migration: add repo_id to extensions if missing (existing installs)
+>   try {
+>     db.exec('SELECT repo_id FROM extensions LIMIT 0')
+>   } catch {
+>     db.exec('ALTER TABLE extensions ADD COLUMN repo_id INTEGER REFERENCES repos(id) ON DELETE CASCADE')
+>     console.log('[db] Migration: added repo_id column to extensions')
+>   }
+> }
+> 
+> export function createUser(username: string, password: string): { ok: boolean; error?: string; user?: { id: string; username: string } } {
+>   const existing = db.query('SELECT id FROM users WHERE username = ?').get(username)
+>   if (existing) return { ok: false, error: 'username already exists' }
+> 
+>   const id = crypto.randomUUID()
+>   db.run('INSERT INTO users (id, username, password) VALUES (?, ?, ?)', [id, username, password])
+>   return { ok: true, user: { id, username } }
+> }
+> 
+> export function authenticateUser(username: string, password: string): { id: string; username: string } | null {
+>   return db.query('SELECT id, username FROM users WHERE username = ? AND password = ?').get(username, password) as any || null
+> }
+> 
+> export function addRepoForUser(userId: string, url: string, type: string, name?: string, shortname?: string): { ok: boolean; error?: string; repo?: { id: number; url: string; type: string } } {
+>   const existing = db.query('SELECT id FROM repos WHERE url = ?').get(url) as any
+>   let repoId: number
+>   if (existing) {
+>     repoId = existing.id
+>   } else {
+>     db.run('INSERT INTO repos (url, type, name, shortname) VALUES (?, ?, ?, ?)', [url, type, name || null, shortname || null])
+>     const row = db.query('SELECT last_insert_rowid() as id').get() as any
+>     repoId = row.id
+>   }
+>   try {
+>     db.run('INSERT OR IGNORE INTO user_repos (user_id, repo_id) VALUES (?, ?)', [userId, repoId])
+>   } catch {}
+>   return { ok: true, repo: { id: repoId, url, type } }
+> }
+> 
+> export function getUserRepos(userId: string) {
+>   return db.query(`
+>     SELECT r.id, r.url, r.type, r.name, r.shortname, r.added, r.last_fetched
+>     FROM repos r JOIN user_repos ur ON r.id = ur.repo_id
+>     WHERE ur.user_id = ? ORDER BY r.added DESC
+>   `).all(userId) as any[]
+> }
+> 
+> export function upsertExtension(name: string, pkg: string | null, type: string, repoId: number | null, version: string | null, iconUrl: string | null, lang: string | null, isNsfw: boolean, filePath: string | null, fileHash: string | null, extra: any): number {
+>   const existing = db.query('SELECT id FROM extensions WHERE pkg = ? OR (pkg IS NULL AND name = ?)').get(pkg, name) as any
+>   if (existing) {
+>     db.run(`UPDATE extensions SET name=?, type=?, repo_id=?, version=?, icon_url=?, lang=?, is_nsfw=?, file_path=?, file_hash=?, extra=? WHERE id=?`,
+>       [name, type, repoId, version, iconUrl, lang, isNsfw ? 1 : 0, filePath, fileHash, typeof extra === 'string' ? extra : JSON.stringify(extra), existing.id])
+>     return existing.id
+>   }
+>   db.run(`INSERT INTO extensions (name, pkg, type, repo_id, version, icon_url, lang, is_nsfw, file_path, file_hash, extra) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+>     [name, pkg, type, repoId, version, iconUrl, lang, isNsfw ? 1 : 0, filePath, fileHash, typeof extra === 'string' ? extra : JSON.stringify(extra)])
+>   const row = db.query('SELECT last_insert_rowid() as id').get() as any
+>   return row.id
+> }
+> 
+> export function installExtensionForUser(userId: string, extId: number): boolean {
+>   try {
+>     db.run('INSERT OR IGNORE INTO user_extensions (user_id, ext_id) VALUES (?, ?)', [userId, extId])
+>     return true
+>   } catch { return false }
+> }
+> 
+> export function uninstallExtensionForUser(userId: string, extId: number): boolean {
+>   try {
+>     db.run('DELETE FROM user_extensions WHERE user_id = ? AND ext_id = ?', [userId, extId])
+>     return true
+>   } catch { return false }
+> }
+> 
+> export function removeRepoForUser(userId: string, repoId: number): boolean {
+>   try {
+>     db.run('DELETE FROM user_repos WHERE user_id = ? AND repo_id = ?', [userId, repoId])
+>     return true
+>   } catch { return false }
+> }
+> 
+> export function getUserExtensions(userId: string) {
+>   return db.query(`
+>     SELECT e.* FROM extensions e
+>     JOIN user_extensions ue ON e.id = ue.ext_id
+>     WHERE ue.user_id = ?
+>   `).all(userId) as any[]
+> }
+> 
+> export function getAllExtensions() {
+>   return db.query('SELECT * FROM extensions ORDER BY name').all() as any[]
+> }
+> 
+> export function getExtension(id: number) {
+>   return db.query('SELECT * FROM extensions WHERE id = ?').get(id) as any || null
+> }
+> 
+> export function getAllUsers() {
+>   return db.query('SELECT id, username, created FROM users ORDER BY username').all() as any[]
+> }
+> 
+> export function markRepoFetched(repoId: number) {
+>   db.run("UPDATE repos SET last_fetched = datetime('now') WHERE id = ?", [repoId])
+> }
+> 
+> export function getRepoByUrl(url: string) {
+>   return (db.query('SELECT id, url, type, name FROM repos WHERE url = ?').get(url) as any) || null
+> }
+> 
+> export function getUserAvailableExtensions(userId: string, type?: string, query?: string) {
+>   let sql = `
+>     SELECT e.id, e.name, e.pkg, e.type, e.version, e.icon_url, e.lang, e.is_nsfw, e.extra
+>     FROM extensions e
+>     JOIN user_repos ur ON e.repo_id = ur.repo_id
+>     WHERE ur.user_id = ?
+>   `
+>   const params: any[] = [userId]
+>   if (type) { sql += ' AND e.type LIKE ?'; params.push(`%${type}%`) }
+>   if (query) { sql += ' AND e.name LIKE ?'; params.push(`%${query}%`) }
+>   sql += ' ORDER BY e.name'
+>   return db.prepare(sql).all(...params) as any[]
+> }
+> 
+> export function getStats() {
+>   return db.query(`SELECT
+>     (SELECT COUNT(*) FROM users) as users,
+>     (SELECT COUNT(*) FROM user_repos) as repos,
+>     (SELECT COUNT(*) FROM extensions) as extensions,
+>     (SELECT COUNT(*) FROM user_extensions) as installs
+>   `).get() as any
+> }
+DIFFERENT
+=== COMPARE bridge/repos.ts ===
+0a1,388
+> import { db, addRepoForUser, markRepoFetched, upsertExtension } from './db.js'
+> import { join } from 'node:path'
+> import { mkdirSync } from 'node:fs'
+> 
+> const EXT_DIR = join(import.meta.dir, 'extensions')
+> mkdirSync(EXT_DIR, { recursive: true })
+> 
+> // ─── Types ──────────────────────────────────────────────────
+> 
+> export type RepoType = 'aniyomi' | 'cloudstream' | 'kotatsu'
+> 
+> export function detectRepoType(url: string): RepoType {
+>   if (url.endsWith('.jar')) return 'kotatsu'
+>   if (url.includes('index.pb') || url.includes('index.min.json') || url.includes('index.json')) return 'aniyomi'
+>   return 'cloudstream'
+> }
+> 
+> // Strip the index filename to get base URL (matches runtime exactly)
+> function getBaseUrl(repoUrl: string): string {
+>   return repoUrl
+>     .replace(/\/index\.min\.json$/, '')
+>     .replace(/\/index\.json$/, '')
+>     .replace(/\/index\.pb\.gz$/, '')
+>     .replace(/\/index\.pb$/, '')
+> }
+> 
+> // ─── Aniyomi ───────────────────────────────────────────────
+> 
+> interface AniyomiExt {
+>   name: string; pkg?: string; apk?: string; lang?: string;
+>   code?: number; version?: string; isNsfw?: boolean;
+>   sources?: { name: string; lang: string; id?: string | number; baseUrl?: string }[]
+> }
+> 
+> function getAniyomiType(ext: AniyomiExt): string {
+>   const pkg = ext.pkg || ''
+>   if (pkg.includes('.anime.')) return 'aniyomi-anime'
+>   if (pkg.includes('.manga.')) return 'aniyomi-manga'
+>   if (ext.name?.startsWith('Aniyomi: ')) return 'aniyomi-anime'
+>   if (ext.name?.startsWith('Tachiyomi: ')) return 'aniyomi-manga'
+>   return 'aniyomi-anime'
+> }
+> 
+> async function fetchAniyomiJson(url: string): Promise<AniyomiExt[]> {
+>   const res = await fetch(url)
+>   if (!res.ok) throw new Error(`Failed to fetch ${url}: ${res.status}`)
+>   const bytes = new Uint8Array(await res.arrayBuffer())
+>   let data = bytes
+>   if (data.length >= 2 && data[0] === 0x1F && data[1] === 0x8B) {
+>     const decompressed = await decompressGzip(data)
+>     if (decompressed) data = decompressed
+>   }
+>   const isJson = data.length > 0 && (data[0] === 0x7B || data[0] === 0x5B)
+>   if (!isJson) throw new Error('Not JSON format')
+>   return JSON.parse(new TextDecoder().decode(data))
+> }
+> 
+> async function decompressGzip(data: Uint8Array): Promise<Uint8Array | null> {
+>   try {
+>     const { DecompressionStream } = await import('node:stream/web')
+>     const ds = new DecompressionStream('gzip')
+>     const writer = ds.writable.getWriter()
+>     writer.write(data)
+>     writer.close()
+>     const reader = ds.readable.getReader()
+>     const chunks: Uint8Array[] = []
+>     while (true) {
+>       const { done, value } = await reader.read()
+>       if (done) break
+>       chunks.push(value)
+>     }
+>     const total = chunks.reduce((s, c) => s + c.length, 0)
+>     const result = new Uint8Array(total)
+>     let offset = 0
+>     for (const c of chunks) { result.set(c, offset); offset += c.length }
+>     return result
+>   } catch { return null }
+> }
+> 
+> // Port of Dart PbDecoder — matches the runtime's custom protobuf format exactly
+> async function fetchAniyomiPb(url: string): Promise<AniyomiExt[]> {
+>   const res = await fetch(url)
+>   if (!res.ok) throw new Error(`Failed to fetch ${url}: ${res.status}`)
+>   let bytes = new Uint8Array(await res.arrayBuffer())
+> 
+>   if (bytes.length >= 2 && bytes[0] === 0x1F && bytes[1] === 0x8B) {
+>     const decompressed = await decompressGzip(bytes)
+>     if (decompressed) bytes = decompressed
+>   }
+> 
+>   const isJson = bytes.length > 0 && (bytes[0] === 0x7B || bytes[0] === 0x5B)
+>   if (isJson) {
+>     return JSON.parse(new TextDecoder().decode(bytes))
+>   }
+> 
+>   return decodePbIndex(bytes)
+> }
+> 
+> // ─── Protobuf decoder (ported from Dart PbDecoder) ─────────
+> 
+> function readVarint(bytes: Uint8Array, offset: number): [number, number] {
+>   let result = 0, shift = 0, pos = offset
+>   while (pos < bytes.length) {
+>     const b = bytes[pos++]
+>     result |= (b & 0x7F) << shift
+>     if ((b & 0x80) === 0) return [result, pos - offset]
+>     shift += 7
+>   }
+>   return [result, pos - offset]
+> }
+> 
+> function parseMessage(bytes: Uint8Array, start: number, end: number): Map<number, any[]> {
+>   const map = new Map<number, any[]>()
+>   let pos = start
+>   try {
+>     while (pos < end) {
+>       const [key, keyLen] = readVarint(bytes, pos)
+>       pos += keyLen
+>       const wireType = key & 0x7
+>       const fieldNum = key >> 3
+> 
+>       if (wireType === 0) {
+>         const [val, len] = readVarint(bytes, pos)
+>         pos += len
+>         if (!map.has(fieldNum)) map.set(fieldNum, [])
+>         map.get(fieldNum)!.push(val)
+>       } else if (wireType === 1) {
+>         pos += 8
+>       } else if (wireType === 2) {
+>         const [len, lenLen] = readVarint(bytes, pos)
+>         pos += lenLen
+>         const val = bytes.slice(pos, pos + len)
+>         pos += len
+>         if (!map.has(fieldNum)) map.set(fieldNum, [])
+>         map.get(fieldNum)!.push(val)
+>       } else if (wireType === 5) {
+>         pos += 4
+>       } else {
+>         break
+>       }
+>     }
+>   } catch {}
+>   return map
+> }
+> 
+> function getString(list: any[] | undefined): string {
+>   if (!list || list.length === 0) return ''
+>   try { return new TextDecoder().decode(list[0]) } catch { return '' }
+> }
+> 
+> function getInt(list: any[] | undefined): number {
+>   if (!list || list.length === 0) return 0
+>   return list[0] as number
+> }
+> 
+> function decodePbIndex(bytes: Uint8Array): AniyomiExt[] {
+>   const rootMap = parseMessage(bytes, 0, bytes.length)
+> 
+>   const extListBytes = rootMap.get(101)?.[0] as Uint8Array | undefined
+>   if (extListBytes) {
+>     const extListMap = parseMessage(extListBytes, 0, extListBytes.length)
+>     const extensions = extListMap.get(1) ?? []
+>     return parsePbExtensions(extensions)
+>   }
+> 
+>   const extensions = rootMap.get(1)
+>   if (extensions && extensions.length > 0 && extensions[0] instanceof Uint8Array) {
+>     const firstExtMap = parseMessage(extensions[0] as Uint8Array, 0, (extensions[0] as Uint8Array).length)
+>     if (firstExtMap.has(2)) {
+>       return parsePbExtensions(extensions)
+>     }
+>   }
+> 
+>   return []
+> }
+> 
+> function parsePbExtensions(extensionList: any[]): AniyomiExt[] {
+>   const results: AniyomiExt[] = []
+>   for (const extObj of extensionList) {
+>     const extBytes = extObj as Uint8Array
+>     const extMap = parseMessage(extBytes, 0, extBytes.length)
+> 
+>     const name = getString(extMap.get(1))
+>     const pkg = getString(extMap.get(2))
+> 
+>     const resBytes = extMap.get(3)?.[0] as Uint8Array | undefined
+>     let apkName = ''
+>     if (resBytes) {
+>       const resMap = parseMessage(resBytes, 0, resBytes.length)
+>       const apkUrl = getString(resMap.get(1))
+>       apkName = apkUrl.includes('/') ? apkUrl.split('/').pop()! : apkUrl
+>     }
+> 
+>     const versionCode = getInt(extMap.get(5))
+>     const versionName = getString(extMap.get(6))
+>     const contentWarning = getInt(extMap.get(7))
+> 
+>     const sourcesList: AniyomiExt['sources'] = []
+>     const sources = extMap.get(8) ?? []
+>     for (const srcObj of sources) {
+>       const srcBytes = srcObj as Uint8Array
+>       const srcMap = parseMessage(srcBytes, 0, srcBytes.length)
+>       sourcesList.push({
+>         id: String(getInt(srcMap.get(1))),
+>         name: getString(srcMap.get(2)),
+>         lang: getString(srcMap.get(3)),
+>         baseUrl: getString(srcMap.get(4)),
+>       })
+>     }
+> 
+>     results.push({
+>       name, pkg: pkg || undefined, apk: apkName || undefined,
+>       lang: sourcesList.length > 0 ? sourcesList[0].lang : 'en',
+>       code: versionCode || undefined, version: versionName || undefined,
+>       isNsfw: contentWarning >= 2, sources: sourcesList,
+>     })
+>   }
+>   return results
+> }
+> 
+> // ─── CloudStream ───────────────────────────────────────────
+> 
+> interface CSPlugin {
+>   name: string; internalName?: string; url?: string;
+>   iconUrl?: string; language?: string; version?: string;
+>   pluginUrl?: string; plugin?: string; jarUrl?: string; jar?: string;
+>   isNsfw?: boolean; hasSettings?: boolean;
+>   supportsLatest?: boolean; supportsPopular?: boolean;
+> }
+> 
+> async function fetchCloudStreamRepo(url: string): Promise<{ plugins: CSPlugin[]; subRepos?: string[] }> {
+>   const res = await fetch(url)
+>   if (!res.ok) throw new Error(`Failed to fetch ${url}: ${res.status}`)
+>   const data = await res.json()
+> 
+>   if (data.pluginLists && Array.isArray(data.pluginLists)) {
+>     return { plugins: [], subRepos: data.pluginLists }
+>   }
+> 
+>   if (Array.isArray(data)) {
+>     return { plugins: data }
+>   }
+> 
+>   if (data.plugins && Array.isArray(data.plugins)) {
+>     return { plugins: data.plugins }
+>   }
+> 
+>   throw new Error('Unknown CloudStream repo format')
+> }
+> 
+> // ─── Fetch repo extensions (reusable for both add & refresh) ─
+> 
+> interface RepoFetchResult {
+>   ok: boolean
+>   error?: string
+>   extensions?: number
+>   updated?: number[]  // ext IDs that had version changes
+>   removed?: number[]  // ext IDs that no longer exist in repo
+>   subRepos?: string[]
+> }
+> 
+> async function fetchAndStoreRepo(url: string, type: RepoType, repoId: number | null): Promise<RepoFetchResult> {
+>   const updated: number[] = []
+>   let count = 0
+>   const seenPkgs = new Set<string>()
+> 
+>   try {
+>     if (type === 'aniyomi') {
+>       const base = getBaseUrl(url)
+>       let exts: AniyomiExt[]
+> 
+>       if (url.endsWith('.pb') || url.endsWith('.pb.gz')) {
+>         exts = await fetchAniyomiPb(url)
+>       } else {
+>         exts = await fetchAniyomiJson(url)
+>       }
+> 
+>       console.log(`[repos] Parsed ${exts.length} extensions from Aniyomi repo`)
+> 
+>       for (const ext of exts) {
+>         const extType = getAniyomiType(ext)
+>         const iconUrl = ext.pkg ? `${base}/icon/${ext.pkg}.png` : null
+>         const downloadUrl = ext.apk ? `${base}/apk/${ext.apk}` : null
+>         const newVersion = ext.version || null
+> 
+>         // Check if version changed
+>         const existing = ext.pkg
+>           ? db.query('SELECT id, version, file_path FROM extensions WHERE pkg = ?').get(ext.pkg) as any
+>           : null
+> 
+>         const extId = upsertExtension(
+>           ext.name, ext.pkg || null, extType, repoId, newVersion, iconUrl,
+>           ext.lang || null, ext.isNsfw || false, null, null,
+>           { downloadUrl, sources: ext.sources }
+>         )
+> 
+>         if (ext.pkg) seenPkgs.add(ext.pkg)
+>         count++
+> 
+>         // Detect version change on already-downloaded extension
+>         if (existing && existing.file_path && newVersion && existing.version !== newVersion) {
+>           updated.push(extId)
+>         }
+>       }
+> 
+>     } else if (type === 'cloudstream') {
+>       const result = await fetchCloudStreamRepo(url)
+> 
+>       if (result.subRepos) {
+>         return { ok: true, subRepos: result.subRepos }
+>       }
+> 
+>       for (const plugin of result.plugins) {
+>         const downloadUrl = plugin.pluginUrl || plugin.plugin || plugin.url || null
+>         const iconUrl = plugin.iconUrl || null
+>         const newVersion = plugin.version || null
+> 
+>         const existing = plugin.internalName
+>           ? db.query('SELECT id, version, file_path FROM extensions WHERE pkg = ?').get(plugin.internalName) as any
+>           : null
+> 
+>         const extId = upsertExtension(
+>           plugin.name, plugin.internalName || null, 'cloudstream', repoId, newVersion,
+>           iconUrl, plugin.language || 'ALL', plugin.isNsfw || false, null, null,
+>           { downloadUrl, jarUrl: plugin.jarUrl || plugin.jar || null }
+>         )
+> 
+>         if (plugin.internalName) seenPkgs.add(plugin.internalName)
+>         count++
+> 
+>         if (existing && existing.file_path && newVersion && existing.version !== newVersion) {
+>           updated.push(extId)
+>         }
+>       }
+> 
+>     } else if (type === 'kotatsu') {
+>       const jarName = url.split('/').pop() || 'plugin.jar'
+>       upsertExtension(
+>         `Kotatsu: ${jarName}`, jarName, 'kotatsu', repoId,
+>         null, null, null, false, null, null,
+>         { downloadUrl: url, isJar: true }
+>       )
+>       count = 1
+>     }
+>   } catch (e: any) {
+>     return { ok: false, error: e.message }
+>   }
+> 
+>   return { ok: true, extensions: count, updated }
+> }
+> 
+> // ─── Add Repo (first time) ──────────────────────────────────
+> 
+> export async function addRepo(userId: string, url: string, forceType?: string): Promise<{ ok: boolean; error?: string; repo?: any; extensions?: number; subRepos?: string[] }> {
+>   let type: RepoType = (forceType as RepoType) || detectRepoType(url)
+> 
+>   const repoResult = addRepoForUser(userId, url, type)
+>   if (!repoResult.ok) return repoResult
+> 
+>   const result = await fetchAndStoreRepo(url, type, repoResult.repo?.id || null)
+> 
+>   if (result.ok) {
+>     if (repoResult.repo) markRepoFetched(repoResult.repo.id)
+>     console.log(`[repos] Added ${url} (${result.extensions} extensions)`)
+>     return { ok: true, repo: repoResult.repo, extensions: result.extensions, subRepos: result.subRepos }
+>   }
+> 
+>   return { ok: true, repo: repoResult.repo, error: `Repo added but fetch failed: ${result.error}`, subRepos: result.subRepos }
+> }
+> 
+> // ─── Refresh Repo (re-fetch, detect changes) ───────────────
+> 
+> export async function refreshRepo(repoUrl: string, repoType: string, repoId: number): Promise<{ ok: boolean; updated?: number[]; error?: string }> {
+>   console.log(`[auto-update] Refreshing repo: ${repoUrl}`)
+>   const result = await fetchAndStoreRepo(repoUrl, repoType as RepoType, repoId)
+>   if (!result.ok) {
+>     console.error(`[auto-update] Failed to refresh ${repoUrl}: ${result.error}`)
+>     return { ok: false, error: result.error }
+>   }
+>   console.log(`[auto-update] ${repoUrl}: ${result.extensions} extensions, ${result.updated?.length || 0} need re-download`)
+>   return { ok: true, updated: result.updated }
+> }
+> 
+> // ─── Get all unique repos from DB (for auto-update) ────────
+> 
+> export function getAllRepos() {
+>   return db.query('SELECT id, url, type FROM repos').all() as { id: number; url: string; type: string }[]
+> }
+\ No newline at end of file
+DIFFERENT
+=== COMPARE bridge/extensions.ts ===
+0a1,123
+> import { db, installExtensionForUser, getExtension } from './db.js'
+> import { join } from 'node:path'
+> import { existsSync, mkdirSync, writeFileSync, readFileSync, unlinkSync, renameSync } from 'node:fs'
+> import { createHash } from 'node:crypto'
+> import { isJarReady, invokeJar } from './jar.js'
+> 
+> const EXT_DIR = join(import.meta.dir, 'extensions')
+> mkdirSync(EXT_DIR, { recursive: true })
+> 
+> export function hashFile(path: string): string {
+>   const data = readFileSync(path)
+>   return createHash('sha256').update(data).digest('hex')
+> }
+> 
+> // Download extension file (skip if already exists with same hash)
+> export async function downloadExtension(extId: number, force = false): Promise<{ ok: boolean; error?: string; filePath?: string; updated?: boolean }> {
+>   const ext = getExtension(extId)
+>   if (!ext) return { ok: false, error: 'Extension not found' }
+> 
+>   // Already downloaded and not forced → skip
+>   if (!force && ext.file_path && existsSync(ext.file_path)) {
+>     return { ok: true, filePath: ext.file_path, updated: false }
+>   }
+> 
+>   let extra: any = {}
+>   try { extra = typeof ext.extra === 'string' ? JSON.parse(ext.extra) : (ext.extra || {}) } catch {}
+>   const downloadUrl = extra.downloadUrl
+>   if (!downloadUrl) return { ok: false, error: 'No download URL for this extension' }
+> 
+>   console.log(`[ext] ${force ? 'Re-' : ''}Downloading extension ${ext.name} from ${downloadUrl}`)
+> 
+>   // Hoist path vars for catch block access
+>   let filePath = ''
+>   let tmpPath = ''
+> 
+>   try {
+>     const res = await fetch(downloadUrl)
+>     if (!res.ok) return { ok: false, error: `Download failed: ${res.status}` }
+> 
+>     const extType = ext.type
+>     let finalExt = 'jar'
+>     if (extType === 'cloudstream') finalExt = 'cs3'
+>     else if (extType?.startsWith('aniyomi')) {
+>       finalExt = downloadUrl.endsWith('.jar') ? 'jar' : 'apk'
+>     }
+> 
+>     const fileName = `${ext.pkg || ext.name.replace(/[^a-zA-Z0-9]/g, '_')}.${finalExt}`
+>     filePath = join(EXT_DIR, fileName)
+>     tmpPath = filePath + '.tmp'
+> 
+>     const buf = Buffer.from(await res.arrayBuffer())
+>     writeFileSync(tmpPath, buf)
+> 
+>     const fileHash = createHash('sha256').update(buf).digest('hex')
+> 
+>     // If hash hasn't changed, skip (no real update)
+>     if (!force && ext.file_hash === fileHash) {
+>       try { unlinkSync(tmpPath) } catch {}
+>       return { ok: true, filePath: ext.file_path, updated: false }
+>     }
+> 
+>     // Hash changed → replace old file
+>     if (existsSync(filePath)) unlinkSync(filePath)
+>     renameSync(tmpPath, filePath)
+> 
+>     // Delete old file if path changed (e.g. APK → JAR after convert)
+>     if (ext.file_path && ext.file_path !== filePath && existsSync(ext.file_path)) {
+>       try { unlinkSync(ext.file_path) } catch {}
+>     }
+> 
+>     db.run('UPDATE extensions SET file_path = ?, file_hash = ? WHERE id = ?', [filePath, fileHash, extId])
+> 
+>     console.log(`[ext] Saved: ${filePath} (${(buf.length / 1024).toFixed(1)}KB) ${ext.file_hash ? '[UPDATED]' : ''}`)
+>     return { ok: true, filePath, updated: !!ext.file_hash }
+>   } catch (e: any) {
+>     // Clean up tmp file on error
+>     if (tmpPath) try { unlinkSync(tmpPath) } catch {}
+>     return { ok: false, error: `Download error: ${e.message}` }
+>   }
+> }
+> 
+> // Install extension for user — downloads if needed, tracks in DB
+> export async function installExtension(userId: string, extId: number): Promise<{ ok: boolean; error?: string }> {
+>   const dl = await downloadExtension(extId)
+>   if (!dl.ok) return dl
+> 
+>   installExtensionForUser(userId, extId)
+>   console.log(`[ext] Installed ext ${extId} for user ${userId}`)
+>   return { ok: true }
+> }
+> 
+> // Convert APK to JAR using the runtime JAR
+> export async function convertApkToJar(apkPath: string): Promise<{ ok: boolean; error?: string; jarPath?: string }> {
+>   if (!isJarReady()) return { ok: false, error: 'Runtime JAR not available' }
+> 
+>   try {
+>     const result = await invokeJar('convertApk', { apkPath })
+>     if (result?.jarPath && existsSync(result.jarPath)) {
+>       return { ok: true, jarPath: result.jarPath }
+>     }
+>     return { ok: false, error: 'JAR convertApk returned no jarPath' }
+>   } catch (e: any) {
+>     return { ok: false, error: `convertApk failed: ${e.message}` }
+>   }
+> }
+> 
+> // Batch re-download extensions that had version changes
+> export async function updateExtensions(extIds: number[]): Promise<{ updated: number; failed: number }> {
+>   let updated = 0
+>   let failed = 0
+> 
+>   for (const id of extIds) {
+>     const result = await downloadExtension(id, true)
+>     if (result.ok && result.updated) {
+>       updated++
+>     } else if (!result.ok) {
+>       failed++
+>       console.error(`[ext] Failed to update ext ${id}: ${result.error}`)
+>     }
+>   }
+> 
+>   return { updated, failed }
+> }
+DIFFERENT
