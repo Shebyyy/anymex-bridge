@@ -1,0 +1,10 @@
+node_modules/
+data/
+jar-cache/
+extensions/
+*.db
+*.db-shm
+*.db-wal
+*.log
+*.pid
+.env
