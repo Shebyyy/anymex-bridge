@@ -462,7 +462,10 @@ async function doLoadSources(){
       _sources=r.sources||[];
       populateSourceDropdown();
       out.value+=`Loaded ${r.total} sources:\n`;
-      _sources.forEach(s=>{out.value+=`  [${s.type}] ${s.name} (id: ${s.id})\n`});
+      // Count unique base names
+      const bases=new Set(_sources.map(s=>baseName(s.name)));
+      out.value+=`  (${bases.size} unique extensions, ${r.total} language variants)\n`;
+      _sources.sort((a,b)=>(baseName(a.name)+a.lang).localeCompare(baseName(b.name)+b.lang)).forEach(s=>{out.value+=`  [${s.type}] ${s.name} (id: ${s.id})\n`});
       toast(`Loaded ${r.total} sources`,'success');
     }else{
       out.value+='ERROR: '+r.error+'\n';
@@ -480,24 +483,49 @@ function loadCachedSources(){
   }).catch(()=>{});
 }
 
+// Extract base name from extension (strip language codes like " (All)", " - EN", etc.)
+function baseName(name){
+  return (name||'').replace(/\s*[\-–—(].*$/, '').replace(/\s+(All|Multi|English|Japanese|Spanish|Portuguese|French|Italian|German|Arabic|Hindi|Thai|Vietnamese|Indonesian|Korean|Chinese|Turkish|Polish|Russian)$/i, '').trim();
+}
+
 function populateSourceDropdown(){
   const sel=document.getElementById('invokeSource');
   if(!_sources.length){
     sel.innerHTML='<option value="">-- No sources loaded --</option>';
     return;
   }
-  // Group by type
-  const grouped={};
+  // Group by type, then by base name
+  const byType={};
   _sources.forEach(s=>{
     const t=s.type||'other';
-    if(!grouped[t])grouped[t]=[];
-    grouped[t].push(s);
+    if(!byType[t])byType[t]=[];
+    byType[t].push(s);
   });
   let html='<option value="">-- Select a source --</option>';
-  for(const[type,sources] of Object.entries(grouped)){
+  for(const[type,sources] of Object.entries(byType)){
     html+=`<optgroup label="${type}">`;
-    sources.sort((a,b)=>(a.name||'').localeCompare(b.name||'')).forEach(s=>{
-      html+=`<option value="${s.id}" data-type="${s.type}" data-pkg="${esc(s.pkg)}">${esc(s.name)}${s.lang?' ('+s.lang+')':''}</option>`;
+    // Group by base name
+    const groups=new Map();
+    sources.forEach(s=>{
+      const bn=baseName(s.name);
+      if(!groups.has(bn))groups.set(bn,[]);
+      groups.get(bn).push(s);
+    });
+    // Sort base names
+    [...groups.keys()].sort().forEach(bn=>{
+      const items=groups.get(bn);
+      if(items.length===1){
+        const s=items[0];
+        html+=`<option value="${s.id}" data-type="${s.type}" data-pkg="${esc(s.pkg)}">${esc(s.name)}</option>`;
+      }else{
+        // Multiple languages — use optgroup
+        html+=`<optgroup label="${esc(bn)}">`;
+        items.sort((a,b)=>(a.lang||'').localeCompare(b.lang||'')).forEach(s=>{
+          const label=s.lang?s.lang:s.name.replace(bn,'').replace(/^[\s\-–—(]+|[\s\-–—)]+$/g,'')||'?';
+          html+=`<option value="${s.id}" data-type="${s.type}" data-pkg="${esc(s.pkg)}">${esc(s.name)}</option>`;
+        });
+        html+='</optgroup>';
+      }
     });
     html+='</optgroup>';
   }
