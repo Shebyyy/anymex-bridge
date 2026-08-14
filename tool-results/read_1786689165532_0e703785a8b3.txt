@@ -1,0 +1,969 @@
+    35→  bool get _isPluginInstalled =>
+    36→      AnymeXRuntimeBridge.isPluginInstalled ||
+    37→      AnymeXRuntimeBridge.controller.isReady.value;
+    38→
+    39→  int _managerIndex = 0;
+    40→  ItemType _tab = ItemType.anime;
+    41→  bool _didApplyHighlightTab = false;
+    42→  final Map<String, bool> _deleting = {};
+    43→
+    44→  static const _typeTabs = [
+    45→    (label: 'Anime', icon: Icons.movie_creation_outlined, type: ItemType.anime),
+    46→    (label: 'Manga', icon: Icons.menu_book_outlined, type: ItemType.manga),
+    47→    (label: 'Novel', icon: Icons.auto_stories_outlined, type: ItemType.novel),
+    48→  ];
+    49→
+    50→  List<Map<String, dynamic>> get _displayManagers {
+    51→    final List<Map<String, dynamic>> list = [];
+    52→    final activeManagers = em.managers;
+    53→
+    54→    for (final m in activeManagers) {
+    55→      // No iOS restriction — plugin managers are now supported on iOS via JNI bridge
+    56→      list.add({
+    57→        'name': m.name,
+    58→        'manager': m,
+    59→        'isMock': false,
+    60→      });
+    61→    }
+    62→
+    63→    // Show mock entries for Aniyomi/CloudStream on all platforms (including iOS)
+    64→    final hasAniyomi = activeManagers.any((m) => m.name.toLowerCase().contains('aniyomi'));
+    65→    final hasCloudStream = activeManagers.any((m) => m.name.toLowerCase().contains('cloudstream'));
+    66→
+    67→    if (!hasAniyomi) {
+    68→      list.add({
+    69→        'name': 'Aniyomi',
+    70→        'manager': null,
+    71→        'isMock': true,
+    72→      });
+    73→    }
+    74→    if (!hasCloudStream) {
+    75→      list.add({
+    76→        'name': 'CloudStream',
+    77→        'manager': null,
+    78→        'isMock': true,
+    79→      });
+    80→    }
+    81→
+    82→    list.sort((a, b) {
+    83→      final managerA = a['manager'] as Extension?;
+    84→      final managerB = b['manager'] as Extension?;
+    85→
+    86→      final aRequires = managerA?.requiresPlugin ?? _isMockPluginRequired(a['name'] as String);
+    87→      final bRequires = managerB?.requiresPlugin ?? _isMockPluginRequired(b['name'] as String);
+    88→
+    89→      if (aRequires != bRequires) {
+    90→        return aRequires ? 1 : -1;
+    91→      }
+    92→
+    93→      final aName = (a['name'] as String).toLowerCase();
+    94→      final bName = (b['name'] as String).toLowerCase();
+    95→      if (aName.contains('mangayomi')) return -1;
+    96→      if (bName.contains('mangayomi')) return 1;
+    97→
+    98→      return aName.compareTo(bName);
+    99→    });
+   100→
+   101→    return list;
+   102→  }
+   103→
+   104→  bool _isMockPluginRequired(String name) {
+   105→    final lower = name.toLowerCase();
+   106→    return lower.contains('aniyomi') || lower.contains('cloudstream');
+   107→  }
+   108→
+   109→
+   110→  Future<void> _addRepos(ItemType type, List<String> urls) async {
+   111→    final currentManagerData = _displayManagers[_managerIndex];
+   112→    if (currentManagerData['isMock'] == true) return;
+   113→    final activeManager = currentManagerData['manager'] as Extension;
+   114→    await em.addRepos(urls, type, activeManager.id);
+   115→    widget.onSave?.call();
+   116→    if (mounted) setState(() {});
+   117→  }
+   118→
+   119→  Future<void> _removeRepo(Repo repo, ItemType type) async {
+   120→    final key = '${repo.url}_${type.name}';
+   121→    setState(() => _deleting[key] = true);
+   122→    try {
+   123→      await em.removeRepo(repo, type);
+   124→      widget.onSave?.call();
+   125→    } catch (_) {
+   126→      snackBar('Failed to remove repo');
+   127→    } finally {
+   128→      if (mounted) setState(() => _deleting.remove(key));
+   129→    }
+   130→  }
+   131→
+   132→  void _openAddDialog() {
+   133→    showDialog(
+   134→      context: context,
+   135→      barrierColor: Colors.black.withOpacity(0.5),
+   136→      builder: (_) => _AddRepoDialog(
+   137→        type: _tab,
+   138→        colors: context.colors,
+   139→        onAdd: (urls) async {
+   140→          await _addRepos(_tab, urls);
+   141→          if (mounted) {
+   142→            snackBar('${urls.length} repo${urls.length > 1 ? 's' : ''} added');
+   143→          }
+   144→        },
+   145→      ),
+   146→    );
+   147→  }
+   148→
+   149→  @override
+   150→  void didChangeDependencies() {
+   151→    super.didChangeDependencies();
+   152→    if (_didApplyHighlightTab) return;
+   153→    _didApplyHighlightTab = true;
+   154→
+   155→    final highlight = SettingsHighlightProvider.of(context)?.highlightTitle;
+   156→    final nextTab = switch (highlight) {
+   157→      'Anime' => ItemType.anime,
+   158→      'Manga' => ItemType.manga,
+   159→      'Novel' => ItemType.novel,
+   160→      _ => null,
+   161→    };
+   162→
+   163→    if (nextTab != null && _tab != nextTab) {
+   164→      setState(() => _tab = nextTab);
+   165→    }
+   166→  }
+   167→
+   168→  @override
+   169→  @override
+   170→  Widget build(BuildContext context) {
+   171→    return Glow(
+   172→      child: Scaffold(
+   173→        body: Obx(() {
+   174→          final displayList = _displayManagers;
+   175→          if (displayList.isEmpty) {
+   176→            return Column(children: [
+   177→              NestedHeader(
+   178→                title: 'Extensions',
+   179→                action: IconButton(
+   180→                  onPressed: () => navigate(() => const SettingsExtensionManager()),
+   181→                  icon: const Icon(Icons.settings_suggest_rounded),
+   182→                  tooltip: 'Extension Manager',
+   183→                ),
+   184→              ),
+   185→              Expanded(
+   186→                child: Center(
+   187→                  child: Text('No extension managers found.',
+   188→                      style: TextStyle(color: context.colors.onSurfaceVariant)),
+   189→                ),
+   190→              ),
+   191→            ]);
+   192→          }
+   193→
+   194→          if (_managerIndex >= displayList.length) {
+   195→            _managerIndex = 0;
+   196→          }
+   197→
+   198→          return Column(children: [
+   199→            NestedHeader(
+   200→              title: 'Extensions',
+   201→              action: IconButton(
+   202→                onPressed: () => navigate(() => const SettingsExtensionManager()),
+   203→                icon: const Icon(Icons.settings_suggest_rounded),
+   204→                tooltip: 'Extension Manager',
+   205→              ),
+   206→            ),
+   207→            const SizedBox(height: 10),
+   208→            if (displayList.length > 1) ...[
+   209→              Padding(
+   210→                padding: const EdgeInsets.symmetric(horizontal: 16),
+   211→                child: _buildManagerBar(),
+   212→              ),
+   213→              const SizedBox(height: 8),
+   214→            ],
+   215→            Padding(
+   216→              padding: const EdgeInsets.symmetric(horizontal: 16),
+   217→              child: _buildTypeBar(),
+   218→            ),
+   219→            const SizedBox(height: 4),
+   220→            Expanded(child: _buildBody()),
+   221→          ]);
+   222→        }),
+   223→        floatingActionButton: Obx(() => _buildFab() ?? const SizedBox.shrink()),
+   224→      ),
+   225→    );
+   226→  }
+   227→
+   228→  Widget _buildManagerBar() {
+   229→    final colors = context.colors;
+   230→    final managers = _displayManagers;
+   231→    final total = managers.length;
+   232→
+   233→    double alignX =
+   234→        total > 1 ? -1.0 + (2.0 * _managerIndex / (total - 1)) : 0.0;
+   235→
+   236→    return LayoutBuilder(builder: (context, constraints) {
+   237→      const minTabWidth = 120.0;
+   238→      final naturalTabWidth = constraints.maxWidth / total;
+   239→      final tabWidth =
+   240→          naturalTabWidth < minTabWidth ? minTabWidth : naturalTabWidth;
+   241→      final totalWidth = tabWidth * total;
+   242→
+   243→      return SingleChildScrollView(
+   244→        scrollDirection: Axis.horizontal,
+   245→        child: SizedBox(
+   246→          width: totalWidth,
+   247→          child: Container(
+   248→            height: 46,
+   249→            padding: const EdgeInsets.all(4),
+   250→            decoration: BoxDecoration(
+   251→              color: colors.surfaceContainerHighest.withOpacity(0.4),
+   252→              borderRadius: BorderRadius.circular(16),
+   253→              border: Border.all(color: colors.outline.withOpacity(0.1)),
+   254→            ),
+   255→            child: Stack(children: [
+   256→              AnimatedAlign(
+   257→                duration: const Duration(milliseconds: 300),
+   258→                curve: Curves.easeOutQuint,
+   259→                alignment: Alignment(alignX, 0),
+   260→                child: FractionallySizedBox(
+   261→                  widthFactor: 1 / total,
+   262→                  heightFactor: 1,
+   263→                  child: Container(
+   264→                    decoration: BoxDecoration(
+   265→                      color: colors.secondary,
+   266→                      borderRadius: BorderRadius.circular(12),
+   267→                      boxShadow: [
+   268→                        BoxShadow(
+   269→                            color: colors.secondary.withOpacity(0.3),
+   270→                            blurRadius: 8,
+   271→                            offset: const Offset(0, 2))
+   272→                      ],
+   273→                    ),
+   274→                  ),
+   275→                ),
+   276→              ),
+   277→              Row(
+   278→                children: managers.asMap().entries.map((e) {
+   279→                  final selected = _managerIndex == e.key;
+   280→                  return Expanded(
+   281→                    child: GestureDetector(
+   282→                      behavior: HitTestBehavior.opaque,
+   283→                      onTap: () {
+   284→                        if (!selected) {
+   285→                          HapticFeedback.lightImpact();
+   286→                          setState(() => _managerIndex = e.key);
+   287→                        }
+   288→                      },
+   289→                      child: AnimatedOpacity(
+   290→                        opacity: selected ? 1.0 : 0.6,
+   291→                        duration: const Duration(milliseconds: 200),
+   292→                        child: SizedBox.expand(
+   293→                          child: Row(
+   294→                            mainAxisAlignment: MainAxisAlignment.center,
+   295→                            crossAxisAlignment: CrossAxisAlignment.center,
+   296→                            children: [
+   297→                              Icon(Icons.extension_outlined,
+   298→                                  size: 14,
+   299→                                  color: selected
+   300→                                      ? colors.onSecondary
+   301→                                      : colors.onSurfaceVariant),
+   302→                              const SizedBox(width: 5),
+   303→                              Flexible(
+   304→                                child: Text(
+   305→                                  e.value['name'] as String,
+   306→                                  maxLines: 1,
+   307→                                  overflow: TextOverflow.ellipsis,
+   308→                                  style: TextStyle(
+   309→                                    fontSize: 12,
+   310→                                    fontWeight: selected
+   311→                                        ? FontWeight.w700
+   312→                                        : FontWeight.w400,
+   313→                                    color: selected
+   314→                                        ? colors.onSecondary
+   315→                                        : colors.onSurfaceVariant,
+   316→                                  ),
+   317→                                ),
+   318→                              ),
+   319→                            ],
+   320→                          ),
+   321→                        ),
+   322→                      ),
+   323→                    ),
+   324→                  );
+   325→                }).toList(),
+   326→              ),
+   327→            ]),
+   328→          ),
+   329→        ),
+   330→      );
+   331→    });
+   332→  }
+   333→
+   334→  Widget _buildTypeBar() {
+   335→    final colors = context.colors;
+   336→    const tabs = _typeTabs;
+   337→    final total = tabs.length;
+   338→    final currentIndex = tabs.indexWhere((t) => t.type == _tab);
+   339→    final alignX = -1.0 + (2.0 * currentIndex / (total - 1));
+   340→
+   341→    return LayoutBuilder(builder: (context, constraints) {
+   342→      const minTabWidth = 100.0;
+   343→      final naturalTabWidth = constraints.maxWidth / total;
+   344→      final tabWidth =
+   345→          naturalTabWidth < minTabWidth ? minTabWidth : naturalTabWidth;
+   346→      final totalWidth = tabWidth * total;
+   347→
+   348→      return SingleChildScrollView(
+   349→        scrollDirection: Axis.horizontal,
+   350→        child: SizedBox(
+   351→          width: totalWidth,
+   352→          child: Container(
+   353→            height: 54,
+   354→            padding: const EdgeInsets.all(4),
+   355→            decoration: BoxDecoration(
+   356→              color: colors.surfaceContainerHighest.withOpacity(0.4),
+   357→              borderRadius: BorderRadius.circular(20),
+   358→              border: Border.all(color: colors.outline.withOpacity(0.1)),
+   359→            ),
+   360→            child: Stack(children: [
+   361→              AnimatedAlign(
+   362→                duration: const Duration(milliseconds: 300),
+   363→                curve: Curves.easeOutQuint,
+   364→                alignment: Alignment(alignX, 0),
+   365→                child: FractionallySizedBox(
+   366→                  widthFactor: 1 / total,
+   367→                  heightFactor: 1,
+   368→                  child: Container(
+   369→                    decoration: BoxDecoration(
+   370→                      color: colors.primary,
+   371→                      borderRadius: BorderRadius.circular(16),
+   372→                      boxShadow: [
+   373→                        BoxShadow(
+   374→                            color: colors.primary.withOpacity(0.3),
+   375→                            blurRadius: 8,
+   376→                            offset: const Offset(0, 2))
+   377→                      ],
+   378→                    ),
+   379→                  ),
+   380→                ),
+   381→              ),
+   382→              Row(
+   383→                children: tabs.map((t) {
+   384→                  final selected = _tab == t.type;
+   385→                  return Expanded(
+   386→                    child: HighlightDecorator(
+   387→                      title: t.label,
+   388→                      child: GestureDetector(
+   389→                        behavior: HitTestBehavior.opaque,
+   390→                        onTap: () {
+   391→                          if (!selected) {
+   392→                            HapticFeedback.lightImpact();
+   393→                            setState(() => _tab = t.type);
+   394→                          }
+   395→                        },
+   396→                        child: AnimatedScale(
+   397→                          scale: selected ? 1.05 : 1.0,
+   398→                          duration: const Duration(milliseconds: 250),
+   399→                          curve: Curves.easeInOut,
+   400→                          child: AnimatedOpacity(
+   401→                            opacity: selected ? 1.0 : 0.7,
+   402→                            duration: const Duration(milliseconds: 200),
+   403→                            child: SizedBox.expand(
+   404→                              child: Row(
+   405→                                mainAxisAlignment: MainAxisAlignment.center,
+   406→                                children: [
+   407→                                  Icon(t.icon,
+   408→                                      size: 16,
+   409→                                      color: selected
+   410→                                          ? colors.onPrimary
+   411→                                          : colors.onSurfaceVariant),
+   412→                                  const SizedBox(width: 6),
+   413→                                  Flexible(
+   414→                                    child: AnimatedDefaultTextStyle(
+   415→                                      duration:
+   416→                                          const Duration(milliseconds: 200),
+   417→                                      style: TextStyle(
+   418→                                        fontSize: 13,
+   419→                                        fontFamily: 'Poppins',
+   420→                                        fontWeight: selected
+   421→                                            ? FontWeight.w700
+   422→                                            : FontWeight.w400,
+   423→                                        color: selected
+   424→                                            ? colors.onPrimary
+   425→                                            : colors.onSurfaceVariant,
+   426→                                      ),
+   427→                                      child: Text(t.label,
+   428→                                          overflow: TextOverflow.ellipsis,
+   429→                                          maxLines: 1),
+   430→                                    ),
+   431→                                  ),
+   432→                                ],
+   433→                              ),
+   434→                            ),
+   435→                          ),
+   436→                        ),
+   437→                      ),
+   438→                    ),
+   439→                  );
+   440→                }).toList(),
+   441→              ),
+   442→            ]),
+   443→          ),
+   444→        ),
+   445→      );
+   446→    });
+   447→  }
+   448→
+   449→  Widget _buildBody() {
+   450→    if (_managerIndex >= _displayManagers.length) return const SizedBox.shrink();
+   451→    final selectedManagerData = _displayManagers[_managerIndex];
+   452→    final bool isMock = selectedManagerData['isMock'] as bool;
+   453→    
+   454→    if (isMock) {
+   455→      if (_isPluginInstalled) {
+   456→        if (AnymeXRuntimeBridge.controller.error.value.isNotEmpty) {
+   457→          return Center(
+   458→            child: Padding(
+   459→              padding: const EdgeInsets.all(24.0),
+   460→              child: Column(
+   461→                mainAxisSize: MainAxisSize.min,
+   462→                children: [
+   463→                  Icon(
+   464→                    Icons.error_outline_rounded,
+   465→                    color: context.colors.error,
+   466→                    size: 48,
+   467→                  ),
+   468→                  const SizedBox(height: 16),
+   469→                  Text(
+   470→                    'Failed to Start Extension Runtime',
+   471→                    style: TextStyle(
+   472→                      fontSize: 16,
+   473→                      fontWeight: FontWeight.bold,
+   474→                      color: context.colors.onSurface,
+   475→                    ),
+   476→                  ),
+   477→                  const SizedBox(height: 8),
+   478→                  Text(
+   479→                    AnymeXRuntimeBridge.controller.error.value,
+   480→                    textAlign: TextAlign.center,
+   481→                    style: TextStyle(
+   482→                      fontSize: 13,
+   483→                      color: context.colors.error,
+   484→                    ),
+   485→                  ),
+   486→                  const SizedBox(height: 20),
+   487→                  FilledButton.icon(
+   488→                    onPressed: () => AnymeXRuntimeBridge.checkAndInitialize(),
+   489→                    icon: const Icon(Icons.refresh_rounded),
+   490→                    label: const Text('Retry'),
+   491→                    style: FilledButton.styleFrom(
+   492→                      backgroundColor: context.colors.primary,
+   493→                      foregroundColor: context.colors.onPrimary,
+   494→                      shape: RoundedRectangleBorder(
+   495→                        borderRadius: BorderRadius.circular(12),
+   496→                      ),
+   497→                    ),
+   498→                  ),
+   499→                ],
+   500→              ),
+   501→            ),
+   502→          );
+   503→        }
+   504→
+   505→        return Center(
+   506→          child: Column(
+   507→            mainAxisSize: MainAxisSize.min,
+   508→            children: [
+   509→              const CircularProgressIndicator(),
+   510→              const SizedBox(height: 16),
+   511→              Text(
+   512→                'Starting extension runtime...',
+   513→                style: TextStyle(
+   514→                  fontSize: 15,
+   515→                  color: context.colors.onSurfaceVariant,
+   516→                ),
+   517→              ),
+   518→            ],
+   519→          ),
+   520→        );
+   521→      }
+   522→      return _buildPluginRequiredPlaceholder(selectedManagerData['name'] as String);
+   523→    }
+   524→    
+   525→    final manager = selectedManagerData['manager'] as Extension;
+   526→    final supported = _tab == ItemType.anime
+   527→        ? manager.supportsAnime
+   528→        : _tab == ItemType.manga
+   529→            ? manager.supportsManga
+   530→            : manager.supportsNovel;
+   531→
+   532→    if (!supported) return _buildUnsupported();
+   533→
+   534→    return Obx(() {
+   535→      final repos = manager.getReposRx(_tab).value;
+   536→      return AnimatedSwitcher(
+   537→        duration: const Duration(milliseconds: 200),
+   538→        child: repos.isEmpty
+   539→            ? _buildEmpty(key: ValueKey('empty_$_tab'))
+   540→            : _buildRepoList(repos, key: ValueKey('list_$_tab')),
+   541→      );
+   542→    });
+   543→  }
+   544→
+   545→  Widget _buildPluginRequiredPlaceholder(String managerName) {
+   546→    final colors = context.colors;
+   547→    return Center(
+   548→      child: Padding(
+   549→        padding: const EdgeInsets.symmetric(horizontal: 24),
+   550→        child: Column(
+   551→          mainAxisSize: MainAxisSize.min,
+   552→          children: [
+   553→            Container(
+   554→              width: 72,
+   555→              height: 72,
+   556→              decoration: BoxDecoration(
+   557→                color: colors.errorContainer.withOpacity(0.2),
+   558→                borderRadius: BorderRadius.circular(20),
+   559→              ),
+   560→              child: Icon(
+   561→                Icons.warning_amber_rounded,
+   562→                size: 32,
+   563→                color: colors.error,
+   564→              ),
+   565→            ),
+   566→            const SizedBox(height: 16),
+   567→            Text(
+   568→              'Plugin Not Installed',
+   569→              style: TextStyle(
+   570→                fontSize: 16,
+   571→                fontWeight: FontWeight.bold,
+   572→                color: colors.onSurface,
+   573→              ),
+   574→            ),
+   575→            const SizedBox(height: 8),
+   576→            Text(
+   577→              'To use the $managerName extension manager, you need to download and install the runtime plugin.',
+   578→              textAlign: TextAlign.center,
+   579→              style: TextStyle(
+   580→                fontSize: 13,
+   581→                color: colors.onSurfaceVariant,
+   582→              ),
+   583→            ),
+   584→            const SizedBox(height: 20),
+   585→            FilledButton.icon(
+   586→              onPressed: () => navigate(() => const SettingsExtensionManager()),
+   587→              icon: const Icon(Icons.download_rounded),
+   588→              label: const Text('Go to Plugin Downloader'),
+   589→              style: FilledButton.styleFrom(
+   590→                backgroundColor: colors.primary,
+   591→                foregroundColor: colors.onPrimary,
+   592→                shape: RoundedRectangleBorder(
+   593→                  borderRadius: BorderRadius.circular(12),
+   594→                ),
+   595→              ),
+   596→            ),
+   597→          ],
+   598→        ),
+   599→      ),
+   600→    );
+   601→  }
+   602→
+   603→  Widget _buildUnsupported() {
+   604→    final colors = context.colors;
+   605→    return Center(
+   606→      child: Column(mainAxisSize: MainAxisSize.min, children: [
+   607→        Container(
+   608→          width: 64,
+   609→          height: 64,
+   610→          decoration: BoxDecoration(
+   611→              color: colors.surfaceContainer,
+   612→              borderRadius: BorderRadius.circular(16)),
+   613→          child: Icon(Icons.block_outlined,
+   614→              size: 28, color: colors.onSurfaceVariant),
+   615→        ),
+   616→        const SizedBox(height: 14),
+   617→        Text('Not supported',
+   618→            style: TextStyle(
+   619→                fontSize: 15,
+   620→                fontWeight: FontWeight.w600,
+   621→                color: colors.onSurface)),
+   622→        const SizedBox(height: 4),
+   623→        Text('${_tab.name.capitalizeFirst} is not supported\nby this manager',
+   624→            textAlign: TextAlign.center,
+   625→            style: TextStyle(fontSize: 13, color: colors.onSurfaceVariant)),
+   626→      ]),
+   627→    );
+   628→  }
+   629→
+   630→  Widget _buildEmpty({Key? key}) {
+   631→    final colors = context.colors;
+   632→    final icon = _typeTabs.firstWhere((t) => t.type == _tab).icon;
+   633→    return Center(
+   634→      key: key,
+   635→      child: Column(mainAxisSize: MainAxisSize.min, children: [
+   636→        Container(
+   637→          width: 72,
+   638→          height: 72,
+   639→          decoration: BoxDecoration(
+   640→              color: colors.surfaceContainer.withValues(alpha: 0.4),
+   641→              borderRadius: BorderRadius.circular(20)),
+   642→          child: Icon(icon, size: 30, color: colors.onSurfaceVariant),
+   643→        ),
+   644→        const SizedBox(height: 16),
+   645→        Text('No repositories yet',
+   646→            style: TextStyle(
+   647→                fontSize: 15,
+   648→                fontWeight: FontWeight.w600,
+   649→                color: colors.onSurface)),
+   650→        const SizedBox(height: 5),
+   651→        Text('Tap + to add a repository URL',
+   652→            style: TextStyle(fontSize: 13, color: colors.onSurfaceVariant)),
+   653→      ]),
+   654→    );
+   655→  }
+   656→
+   657→  Widget _buildRepoList(List<Repo> repos, {Key? key}) {
+   658→    return ListView.separated(
+   659→      key: key,
+   660→      padding: const EdgeInsets.fromLTRB(16, 12, 16, 100),
+   661→      itemCount: repos.length,
+   662→      separatorBuilder: (_, __) => const SizedBox(height: 8),
+   663→      itemBuilder: (_, i) {
+   664→        final repo = repos[i];
+   665→        final k = '${repo.url}_${_tab.name}';
+   666→        return _buildRepoCard(repo, isDeleting: _deleting[k] == true);
+   667→      },
+   668→    );
+   669→  }
+   670→
+   671→  Widget _buildRepoCard(Repo repo, {required bool isDeleting}) {
+   672→    final colors = context.colors;
+   673→    final host = _host(repo.url);
+   674→
+   675→    return AnimatedOpacity(
+   676→      opacity: isDeleting ? 0.4 : 1.0,
+   677→      duration: const Duration(milliseconds: 200),
+   678→      child: Container(
+   679→        decoration: BoxDecoration(
+   680→          color: colors.surfaceContainerLow.withValues(alpha: 0.4),
+   681→          borderRadius: BorderRadius.circular(14),
+   682→          border: Border.all(color: colors.outlineVariant.withOpacity(0.5)),
+   683→        ),
+   684→        child: Padding(
+   685→          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+   686→          child: Row(children: [
+   687→            Container(
+   688→              width: 36,
+   689→              height: 36,
+   690→              decoration: BoxDecoration(
+   691→                  color: colors.surfaceContainer,
+   692→                  borderRadius: BorderRadius.circular(9)),
+   693→              child: Icon(Icons.storage_outlined,
+   694→                  size: 17, color: colors.onSurfaceVariant),
+   695→            ),
+   696→            const SizedBox(width: 12),
+   697→            Expanded(
+   698→              child: Column(
+   699→                  crossAxisAlignment: CrossAxisAlignment.start,
+   700→                  children: [
+   701→                    Text(
+   702→                      _path(repo.url),
+   703→                      style: TextStyle(
+   704→                          fontSize: 12.5,
+   705→                          fontFamily: 'monospace',
+   706→                          color: colors.onSurface,
+   707→                          fontWeight: FontWeight.w500),
+   708→                      maxLines: 2,
+   709→                      overflow: TextOverflow.ellipsis,
+   710→                    ),
+   711→                    if (host != null) ...[
+   712→                      const SizedBox(height: 2),
+   713→                      Text(host,
+   714→                          style: TextStyle(
+   715→                              fontSize: 11, color: colors.onSurfaceVariant)),
+   716→                    ],
+   717→                  ]),
+   718→            ),
+   719→            _iconBtn(Icons.copy_outlined, colors.onSurfaceVariant, 'Copy', () {
+   720→              Clipboard.setData(ClipboardData(text: repo.url));
+   721→              snackBar('URL copied to clipboard');
+   722→            }),
+   723→            const SizedBox(width: 2),
+   724→            if (isDeleting)
+   725→              Padding(
+   726→                padding: const EdgeInsets.all(9),
+   727→                child: SizedBox(
+   728→                    width: 18,
+   729→                    height: 18,
+   730→                    child: CircularProgressIndicator(
+   731→                        strokeWidth: 2, color: colors.error)),
+   732→              )
+   733→            else
+   734→              _iconBtn(Icons.delete_outline_rounded, colors.error, 'Remove',
+   735→                  () => _removeRepo(repo, _tab)),
+   736→          ]),
+   737→        ),
+   738→      ),
+   739→    );
+   740→  }
+   741→
+   742→  Widget? _buildFab() {
+   743→    if (_managerIndex >= _displayManagers.length) return null;
+   744→    final selectedManagerData = _displayManagers[_managerIndex];
+   745→    if (selectedManagerData['isMock'] == true) return null;
+   746→
+   747→    final manager = selectedManagerData['manager'] as Extension;
+   748→    final supported = _tab == ItemType.anime
+   749→        ? manager.supportsAnime
+   750→        : _tab == ItemType.manga
+   751→            ? manager.supportsManga
+   752→            : manager.supportsNovel;
+   753→    if (!supported) return null;
+   754→    final colors = context.colors;
+   755→    return FloatingActionButton.extended(
+   756→      onPressed: _openAddDialog,
+   757→      icon: const Icon(Icons.add, size: 20),
+   758→      label: const Text('Add Repo',
+   759→          style: TextStyle(fontWeight: FontWeight.w600, fontSize: 14)),
+   760→      backgroundColor: colors.primary,
+   761→      foregroundColor: colors.onPrimary,
+   762→      elevation: 2,
+   763→      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+   764→    );
+   765→  }
+   766→
+   767→  Widget _iconBtn(
+   768→          IconData icon, Color color, String tooltip, VoidCallback onTap) =>
+   769→      Tooltip(
+   770→        message: tooltip,
+   771→        child: InkWell(
+   772→          onTap: onTap,
+   773→          borderRadius: BorderRadius.circular(8),
+   774→          child: Padding(
+   775→              padding: const EdgeInsets.all(8),
+   776→              child: Icon(icon, size: 18, color: color)),
+   777→        ),
+   778→      );
+   779→
+   780→  String _path(String url) {
+   781→    try {
+   782→      final p = Uri.parse(url).path;
+   783→      return p.isEmpty ? url : p;
+   784→    } catch (_) {
+   785→      return url;
+   786→    }
+   787→  }
+   788→
+   789→  String? _host(String url) {
+   790→    try {
+   791→      final h = Uri.parse(url).host;
+   792→      return h.isEmpty ? null : h;
+   793→    } catch (_) {
+   794→      return null;
+   795→    }
+   796→  }
+   797→}
+   798→
+   799→class _AddRepoDialog extends StatefulWidget {
+   800→  final ItemType type;
+   801→  final ColorScheme colors;
+   802→  final Future<void> Function(List<String>) onAdd;
+   803→
+   804→  const _AddRepoDialog(
+   805→      {required this.type, required this.colors, required this.onAdd});
+   806→
+   807→  @override
+   808→  State<_AddRepoDialog> createState() => _AddRepoDialogState();
+   809→}
+   810→
+   811→class _AddRepoDialogState extends State<_AddRepoDialog> {
+   812→  final _ctrl = TextEditingController();
+   813→  bool _loading = false;
+   814→
+   815→  @override
+   816→  void dispose() {
+   817→    _ctrl.dispose();
+   818→    super.dispose();
+   819→  }
+   820→
+   821→  Future<void> _submit() async {
+   822→    final urls = _ctrl.text
+   823→        .trim()
+   824→        .split(RegExp(r'[\n,]'))
+   825→        .map((u) => u.trim())
+   826→        .where((u) => u.isNotEmpty)
+   827→        .toList();
+   828→    if (urls.isEmpty) return;
+   829→
+   830→    setState(() => _loading = true);
+   831→    try {
+   832→      await widget.onAdd(urls);
+   833→      if (mounted) Navigator.of(context).pop();
+   834→    } finally {
+   835→      if (mounted) setState(() => _loading = false);
+   836→    }
+   837→  }
+   838→
+   839→  @override
+   840→  Widget build(BuildContext context) {
+   841→    final c = widget.colors;
+   842→    final icon = switch (widget.type) {
+   843→      ItemType.anime => Icons.movie_creation_outlined,
+   844→      ItemType.manga => Icons.menu_book_outlined,
+   845→      _ => Icons.auto_stories_outlined,
+   846→    };
+   847→    final label = widget.type.name.capitalizeFirst!;
+   848→
+   849→    return Dialog(
+   850→      backgroundColor: c.surface,
+   851→      surfaceTintColor: Colors.transparent,
+   852→      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+   853→      insetPadding: const EdgeInsets.symmetric(horizontal: 20, vertical: 24),
+   854→      child: Padding(
+   855→        padding: const EdgeInsets.all(20),
+   856→        child: Column(
+   857→            mainAxisSize: MainAxisSize.min,
+   858→            crossAxisAlignment: CrossAxisAlignment.start,
+   859→            children: [
+   860→              Row(children: [
+   861→                Container(
+   862→                  width: 38,
+   863→                  height: 38,
+   864→                  decoration: BoxDecoration(
+   865→                      color: c.primaryContainer,
+   866→                      borderRadius: BorderRadius.circular(10)),
+   867→                  child: Icon(icon, size: 18, color: c.onPrimaryContainer),
+   868→                ),
+   869→                const SizedBox(width: 12),
+   870→                Expanded(
+   871→                  child: Column(
+   872→                      crossAxisAlignment: CrossAxisAlignment.start,
+   873→                      children: [
+   874→                        Text('Add Repository',
+   875→                            style: TextStyle(
+   876→                                fontSize: 16,
+   877→                                fontWeight: FontWeight.w700,
+   878→                                color: c.onSurface)),
+   879→                        Text(label,
+   880→                            style: TextStyle(
+   881→                                fontSize: 12, color: c.onSurfaceVariant)),
+   882→                      ]),
+   883→                ),
+   884→                IconButton(
+   885→                  onPressed: () => Navigator.of(context).pop(),
+   886→                  icon: Icon(Icons.close_rounded,
+   887→                      size: 20, color: c.onSurfaceVariant),
+   888→                  style: IconButton.styleFrom(
+   889→                      padding: EdgeInsets.zero,
+   890→                      minimumSize: const Size(32, 32),
+   891→                      tapTargetSize: MaterialTapTargetSize.shrinkWrap),
+   892→                ),
+   893→              ]),
+   894→              const SizedBox(height: 18),
+   895→              Text('REPOSITORY URL',
+   896→                  style: TextStyle(
+   897→                      fontSize: 10,
+   898→                      fontWeight: FontWeight.w700,
+   899→                      letterSpacing: 1.1,
+   900→                      color: c.onSurfaceVariant)),
+   901→              const SizedBox(height: 8),
+   902→              TextField(
+   903→                controller: _ctrl,
+   904→                autofocus: true,
+   905→                maxLines: 2,
+   906→                minLines: 1,
+   907→                style: TextStyle(
+   908→                    fontSize: 12.5,
+   909→                    fontFamily: 'monospace',
+   910→                    color: c.onSurface,
+   911→                    height: 1.5),
+   912→                decoration: InputDecoration(
+   913→                  hintText: 'https://raw.githubusercontent.com/...',
+   914→                  hintStyle: TextStyle(
+   915→                      fontSize: 12,
+   916→                      color: c.onSurfaceVariant.withOpacity(0.6),
+   917→                      height: 1.5),
+   918→                  contentPadding: const EdgeInsets.all(14),
+   919→                  filled: true,
+   920→                  fillColor: c.surfaceContainer,
+   921→                  border: OutlineInputBorder(
+   922→                      borderRadius: BorderRadius.circular(12),
+   923→                      borderSide: BorderSide.none),
+   924→                  enabledBorder: OutlineInputBorder(
+   925→                      borderRadius: BorderRadius.circular(12),
+   926→                      borderSide:
+   927→                          BorderSide(color: c.outlineVariant.withOpacity(0.6))),
+   928→                  focusedBorder: OutlineInputBorder(
+   929→                      borderRadius: BorderRadius.circular(12),
+   930→                      borderSide: BorderSide(color: c.primary, width: 1.5)),
+   931→                ),
+   932→              ),
+   933→              const SizedBox(height: 6),
+   934→              Row(children: [
+   935→                Expanded(
+   936→                  child: TextButton(
+   937→                    onPressed:
+   938→                        _loading ? null : () => Navigator.of(context).pop(),
+   939→                    style: TextButton.styleFrom(
+   940→                      foregroundColor: c.onSurfaceVariant,
+   941→                      padding: const EdgeInsets.symmetric(vertical: 13),
+   942→                      shape: RoundedRectangleBorder(
+   943→                          borderRadius: BorderRadius.circular(12),
+   944→                          side: BorderSide(color: c.outlineVariant)),
+   945→                    ),
+   946→                    child: const Text('Cancel',
+   947→                        style: TextStyle(
+   948→                            fontWeight: FontWeight.w500, fontSize: 14)),
+   949→                  ),
+   950→                ),
+   951→                const SizedBox(width: 10),
+   952→                Expanded(
+   953→                  flex: 2,
+   954→                  child: AnimatedSwitcher(
+   955→                    duration: const Duration(milliseconds: 200),
+   956→                    child: _loading
+   957→                        ? Container(
+   958→                            key: const ValueKey('loading'),
+   959→                            height: 48,
+   960→                            decoration: BoxDecoration(
+   961→                                color: c.primary.withOpacity(0.15),
+   962→                                borderRadius: BorderRadius.circular(12)),
+   963→                            child: Row(
+   964→                                mainAxisAlignment: MainAxisAlignment.center,
+   965→                                children: [
+   966→                                  SizedBox(
+   967→                                      width: 16,
+   968→                                      height: 16,
+   969→                                      child: CircularProgressIndicator(
+   970→                                          strokeWidth: 2, color: c.primary)),
+   971→                                  const SizedBox(width: 10),
+   972→                                  Text('Adding…',
+   973→                                      style: TextStyle(
+   974→                                          color: c.primary,
+   975→                                          fontWeight: FontWeight.w500,
+   976→                                          fontSize: 14)),
+   977→                                ]),
+   978→                          )
+   979→                        : ElevatedButton.icon(
+   980→                            key: const ValueKey('add'),
+   981→                            onPressed: _submit,
+   982→                            icon: const Icon(Icons.add, size: 18),
+   983→                            label: const Text('Add Repository',
+   984→                                style: TextStyle(
+   985→                                    fontWeight: FontWeight.w600, fontSize: 14)),
+   986→                            style: ElevatedButton.styleFrom(
+   987→                              backgroundColor: c.primary,
+   988→                              foregroundColor: c.onPrimary,
+   989→                              elevation: 0,
+   990→                              minimumSize: const Size(double.infinity, 48),
+   991→                              shape: RoundedRectangleBorder(
+   992→                                  borderRadius: BorderRadius.circular(12)),
+   993→                            ),
+   994→                          ),
+   995→                  ),
+   996→                ),
+   997→              ]),
+   998→            ]),
+   999→      ),
+  1000→    );
+  1001→  }
+  1002→}
+  1003→
