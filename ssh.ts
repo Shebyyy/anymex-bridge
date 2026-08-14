@@ -3,9 +3,9 @@ import { readFileSync, writeFileSync } from 'node:fs'
 import { generateKeyPairSync } from 'node:crypto'
 import { join } from 'node:path'
 import { Server as SshServer } from 'ssh2'
-import { authenticateUser, createUser, getUserExtensions, getUserAvailableExtensions, uninstallExtensionForUser, removeRepoForUser, getRepoByUrl, db, getAllUsers, getStats } from './db.js'
-import { isJarReady, invokeJar, invokeJarOnce } from './jar.js'
-import { addRepo } from './repos.js'
+import { authenticateUser, createUser, getUserExtensions, getUserAvailableExtensions, uninstallExtensionForUser, removeRepoForUser, getRepoByUrl, db, getAllUsers, getStats, getUserRepos, addRepoForUser, getExtension } from './db.js'
+import { isJarReady, invokeJar, invokeJarOnce, getJarPath } from './jar.js'
+import { addRepo, refreshRepo, getAllRepos } from './repos.js'
 import { installExtension, downloadExtension } from './extensions.js'
 import { runUpdateNow } from './auto-update.js'
 
@@ -103,7 +103,146 @@ export function startHttpServer() {
           return
         }
 
-        // DELETE user
+        // ── POST: create user ──
+        if (url.pathname === '/admin/createUser' && req.method === 'POST') {
+          const body = await readBody(req)
+          const { username, password } = JSON.parse(body)
+          const result = createUser(username, password)
+          res.end(JSON.stringify(result))
+          return
+        }
+
+        // ── POST: add repo for user ──
+        if (url.pathname === '/admin/addRepo' && req.method === 'POST') {
+          const body = await readBody(req)
+          const { userId, url: repoUrl, type } = JSON.parse(body)
+          if (!userId || !repoUrl) { res.writeHead(400); res.end(JSON.stringify({ ok: false, error: 'userId and url required' })); return }
+          const result = await addRepo(userId, repoUrl, type)
+          res.end(JSON.stringify(result))
+          return
+        }
+
+        // ── POST: install extension for user ──
+        if (url.pathname === '/admin/installExtension' && req.method === 'POST') {
+          const body = await readBody(req)
+          const { userId, extId } = JSON.parse(body)
+          if (!userId || !extId) { res.writeHead(400); res.end(JSON.stringify({ ok: false, error: 'userId and extId required' })); return }
+          const result = await installExtension(userId, Number(extId))
+          res.end(JSON.stringify(result))
+          return
+        }
+
+        // ── POST: uninstall extension for user ──
+        if (url.pathname === '/admin/uninstallExtension' && req.method === 'POST') {
+          const body = await readBody(req)
+          const { userId, extId } = JSON.parse(body)
+          if (!userId || !extId) { res.writeHead(400); res.end(JSON.stringify({ ok: false, error: 'userId and extId required' })); return }
+          const ok = uninstallExtensionForUser(userId, Number(extId))
+          res.end(JSON.stringify({ ok }))
+          return
+        }
+
+        // ── POST: force update ──
+        if (url.pathname === '/admin/forceUpdate' && req.method === 'POST') {
+          const t0 = Date.now()
+          await runUpdateNow()
+          res.end(JSON.stringify({ ok: true, elapsed: Date.now() - t0 }))
+          return
+        }
+
+        // ── POST: invoke JAR method (test) ──
+        if (url.pathname === '/admin/invoke' && req.method === 'POST') {
+          const body = await readBody(req)
+          const { method, args, timeout } = JSON.parse(body)
+          if (!method) { res.writeHead(400); res.end(JSON.stringify({ error: 'method required' })); return }
+          try {
+            const t0 = Date.now()
+            let result: any
+            if (isJarReady()) {
+              result = await invokeJar(method, args || {}, timeout || 30000)
+            } else {
+              result = await invokeJarOnce(method, args || {}, timeout || 30000)
+            }
+            res.end(JSON.stringify({ ok: true, data: result, elapsed: Date.now() - t0 }))
+          } catch (e: any) {
+            res.end(JSON.stringify({ ok: false, error: e.message }))
+          }
+          return
+        }
+
+        // ── GET: user detail (repos + extensions) ──
+        const userDetail = url.pathname.match(/^\/admin\/user\/([\w-]+)$/)
+        if (userDetail && req.method === 'GET') {
+          const uid = userDetail[1]
+          const user = db.query('SELECT id, username, created FROM users WHERE id = ?').get(uid) as any
+          if (!user) { res.writeHead(404); res.end(JSON.stringify({ error: 'user not found' })); return }
+          const repos = getUserRepos(uid)
+          const extensions = getUserExtensions(uid)
+          const available = getUserAvailableExtensions(uid)
+          res.end(JSON.stringify({ ...user, repos, installedExtensions: extensions, availableExtensions: available }))
+          return
+        }
+
+        // ── GET: user repos ──
+        const userRepos = url.pathname.match(/^\/admin\/user\/([\w-]+)\/repos$/)
+        if (userRepos && req.method === 'GET') {
+          res.end(JSON.stringify(getUserRepos(userRepos[1])))
+          return
+        }
+
+        // ── GET: user extensions ──
+        const userExts = url.pathname.match(/^\/admin\/user\/([\w-]+)\/extensions$/)
+        if (userExts && req.method === 'GET') {
+          res.end(JSON.stringify(getUserExtensions(userExts[1])))
+          return
+        }
+
+        // ── GET: user available extensions ──
+        const userAvail = url.pathname.match(/^\/admin\/user\/([\w-]+)\/available$/)
+        if (userAvail && req.method === 'GET') {
+          const type = url.searchParams.get('type') || undefined
+          const query = url.searchParams.get('query') || undefined
+          res.end(JSON.stringify(getUserAvailableExtensions(userAvail[1], type, query)))
+          return
+        }
+
+        // ── POST: download/refresh a single extension ──
+        if (url.pathname === '/admin/downloadExtension' && req.method === 'POST') {
+          const body = await readBody(req)
+          const { extId, force } = JSON.parse(body)
+          if (!extId) { res.writeHead(400); res.end(JSON.stringify({ ok: false, error: 'extId required' })); return }
+          const result = await downloadExtension(Number(extId), force)
+          res.end(JSON.stringify(result))
+          return
+        }
+
+        // ── POST: refresh single repo ──
+        if (url.pathname === '/admin/refreshRepo' && req.method === 'POST') {
+          const body = await readBody(req)
+          const { repoId } = JSON.parse(body)
+          if (!repoId) { res.writeHead(400); res.end(JSON.stringify({ ok: false, error: 'repoId required' })); return }
+          const repo = db.query('SELECT id, url, type FROM repos WHERE id = ?').get(Number(repoId)) as any
+          if (!repo) { res.writeHead(404); res.end(JSON.stringify({ ok: false, error: 'repo not found' })); return }
+          const result = await refreshRepo(repo.url, repo.type, repo.id)
+          res.end(JSON.stringify(result))
+          return
+        }
+
+        // ── GET: JAR status ──
+        if (url.pathname === '/admin/jarStatus' && req.method === 'GET') {
+          const { statSync, existsSync } = await import('node:fs')
+          let fileSize = 0
+          try { fileSize = statSync(getJarPath()).size } catch {}
+          res.end(JSON.stringify({
+            jarReady: isJarReady(),
+            jarPath: getJarPath(),
+            fileSize,
+            fileSizeMB: (fileSize / 1024 / 1024).toFixed(2)
+          }))
+          return
+        }
+
+        // ── DELETE user ──
         const delUser = url.pathname.match(/^\/admin\/user\/([\w-]+)$/)
         if (delUser && req.method === 'DELETE') {
           const uid = delUser[1]
@@ -115,7 +254,7 @@ export function startHttpServer() {
           return
         }
 
-        // DELETE repo
+        // ── DELETE repo ──
         const delRepo = url.pathname.match(/^\/admin\/repo\/(\d+)$/)
         if (delRepo && req.method === 'DELETE') {
           const rid = Number(delRepo[1])
@@ -127,7 +266,7 @@ export function startHttpServer() {
           return
         }
 
-        // DELETE extension
+        // ── DELETE extension ──
         const delExt = url.pathname.match(/^\/admin\/extension\/(\d+)$/)
         if (delExt && req.method === 'DELETE') {
           const eid = Number(delExt[1])
