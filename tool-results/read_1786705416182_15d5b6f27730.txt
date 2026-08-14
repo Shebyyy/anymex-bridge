@@ -1,0 +1,688 @@
+     1→import 'dart:async';
+     2→import 'dart:io';
+     3→import 'package:anymex/database/database.dart';
+     4→import 'package:anymex_extension_runtime_bridge/Services/Aniyomi/Models/Source.dart';
+     5→import 'package:anymex_extension_runtime_bridge/Services/Sora/Models/Source.dart';
+     6→import 'package:anymex_extension_runtime_bridge/anymex_extension_runtime_bridge.dart';
+     7→import 'package:anymex/screens/extensions/ExtensionList.dart';
+     8→import 'package:anymex/screens/extensions/ExtensionTesting/extension_test_page.dart';
+     9→import 'package:anymex/screens/other_features.dart';
+    10→import 'package:anymex/screens/settings/sub_settings/settings_extension_manager.dart';
+    11→import 'package:anymex/screens/settings/sub_settings/settings_extensions.dart';
+    12→import 'package:anymex/utils/function.dart';
+    13→import 'package:anymex/utils/language.dart';
+    14→import 'package:anymex/utils/theme_extensions.dart';
+    15→import 'package:anymex/widgets/common/glow.dart';
+    16→import 'package:anymex/widgets/custom_widgets/anymex_image.dart';
+    17→import 'package:anymex/widgets/custom_widgets/anymex_tabbar.dart';
+    18→import 'package:anymex/widgets/helper/tv_wrapper.dart';
+    19→import 'package:anymex/widgets/header.dart';
+    20→import 'package:anymex/widgets/common/scroll_aware_app_bar.dart';
+    21→import 'package:flutter/material.dart';
+    22→import 'package:flutter/services.dart';
+    23→import 'package:get/get.dart';
+    24→import 'package:hugeicons/hugeicons.dart';
+    25→
+    26→class ExtensionScreen extends StatefulWidget {
+    27→  const ExtensionScreen({
+    28→    super.key,
+    29→    this.isTabScreen = false,
+    30→  });
+    31→
+    32→  final bool isTabScreen;
+    33→  @override
+    34→  State<ExtensionScreen> createState() => _ExtensionScreenState();
+    35→}
+    36→
+    37→class _ExtensionScreenState extends State<ExtensionScreen>
+    38→    with SingleTickerProviderStateMixin {
+    39→  final _textEditingController = TextEditingController();
+    40→  final _searchQuery = ''.obs;
+    41→  final _selectedLanguage = 'all'.obs;
+    42→  final _selectedSourceType = 'all'.obs;
+    43→  final _selectedContentType = ItemType.anime.obs;
+    44→  final _showInstalled = true.obs;
+    45→
+    46→  Timer? _searchDebounce;
+    47→  late final ScrollController _appBarScrollController;
+    48→  final ValueNotifier<bool> _isAppBarVisible = ValueNotifier<bool>(true);
+    49→
+    50→  static const _contentTabs = [
+    51→    (label: 'Anime', icon: Icons.movie_creation_outlined, type: ItemType.anime),
+    52→    (label: 'Manga', icon: Icons.menu_book_outlined, type: ItemType.manga),
+    53→    (label: 'Novel', icon: Icons.auto_stories_outlined, type: ItemType.novel),
+    54→  ];
+    55→
+    56→  @override
+    57→  void initState() {
+    58→    super.initState();
+    59→    _appBarScrollController = ScrollController();
+    60→    _checkPermission();
+    61→  }
+    62→
+    63→  @override
+    64→  void dispose() {
+    65→    _textEditingController.dispose();
+    66→    _searchDebounce?.cancel();
+    67→    _appBarScrollController.dispose();
+    68→    _isAppBarVisible.dispose();
+    69→    super.dispose();
+    70→  }
+    71→
+    72→  Future<void> _checkPermission() async => await Database().requestPermission();
+    73→
+    74→  void _onSearchChanged(String value) {
+    75→    _searchDebounce?.cancel();
+    76→    _searchDebounce = Timer(const Duration(milliseconds: 250), () {
+    77→      _searchQuery.value = value;
+    78→    });
+    79→  }
+    80→
+    81→  bool get _hasActiveFilters =>
+    82→      _selectedLanguage.value != 'all' || _selectedSourceType.value != 'all';
+    83→
+    84→  @override
+    85→  Widget build(BuildContext context) {
+    86→    final theme = context.colors;
+    87→    final isDesktop = MediaQuery.sizeOf(context).width > 600;
+    88→    final showMobileAppBar = widget.isTabScreen && !isDesktop;
+    89→
+    90→    final statusBarHeight = MediaQuery.paddingOf(context).top;
+    91→    const appBarHeight = kToolbarHeight + 20;
+    92→
+    93→    final mainContent = Column(
+    94→      children: [
+    95→        if (widget.isTabScreen) ...[
+    96→          if (isDesktop) ...[
+    97→            const SizedBox(height: 10),
+    98→            const Header(type: PageType.extensions),
+    99→            const SizedBox(height: 20),
+   100→          ] else ...[
+   101→            SizedBox(height: statusBarHeight + appBarHeight),
+   102→          ]
+   103→        ] else ...[
+   104→          NestedHeader(
+   105→            title: 'Extensions',
+   106→            action: Row(
+   107→              mainAxisSize: MainAxisSize.min,
+   108→              children: [
+   109→                IconButton(
+   110→                  icon: Icon(Icons.build_outlined,
+   111→                      color: theme.primary, size: 20),
+   112→                  onPressed: () => navigate(() => const ExtensionTestPage()),
+   113→                  tooltip: "Test Extensions",
+   114→                  style: IconButton.styleFrom(
+   115→                    padding: const EdgeInsets.all(6),
+   116→                    tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+   117→                  ),
+   118→                ),
+   119→                const SizedBox(width: 4),
+   120→                IconButton(
+   121→                  icon: Icon(HugeIcons.strokeRoundedGithub,
+   122→                      color: theme.primary, size: 20),
+   123→                  onPressed: () => navigate(() => const SettingsExtensions()),
+   124→                  tooltip: "Repositories",
+   125→                  style: IconButton.styleFrom(
+   126→                    padding: const EdgeInsets.all(6),
+   127→                    tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+   128→                  ),
+   129→                ),
+   130→              ],
+   131→            ),
+   132→          ),
+   133→        ],
+   134→        const SizedBox(height: 12),
+   135→        Padding(
+   136→          padding: const EdgeInsets.symmetric(horizontal: 16),
+   137→          child: _buildContentTypeBar(),
+   138→        ),
+   139→        const SizedBox(height: 8),
+   140→        Padding(
+   141→          padding: const EdgeInsets.symmetric(horizontal: 16),
+   142→          child: _buildStatusBar(),
+   143→        ),
+   144→        const SizedBox(height: 10),
+   145→        _buildSearchRow(),
+   146→        _buildSourceTypeChips(),
+   147→        Expanded(child: _buildView()),
+   148→      ],
+   149→    );
+   150→
+   151→    return Glow(
+   152→      disabled: widget.isTabScreen,
+   153→      isTabScreen: widget.isTabScreen,
+   154→      child: Scaffold(
+   155→        resizeToAvoidBottomInset: false,
+   156→        backgroundColor: Colors.transparent,
+   157→        body: Stack(
+   158→          children: [
+   159→            mainContent,
+   160→            if (showMobileAppBar)
+   161→              CustomAnimatedAppBar(
+   162→                isVisible: _isAppBarVisible,
+   163→                scrollController: _appBarScrollController,
+   164→                headerContent: const Header(type: PageType.extensions),
+   165→                visibleStatusBarStyle: SystemUiOverlayStyle(
+   166→                  statusBarIconBrightness:
+   167→                      Theme.of(context).brightness == Brightness.light
+   168→                          ? Brightness.dark
+   169→                          : Brightness.light,
+   170→                  statusBarBrightness: Theme.of(context).brightness,
+   171→                  statusBarColor: Colors.transparent,
+   172→                ),
+   173→                hiddenStatusBarStyle: SystemUiOverlayStyle(
+   174→                  statusBarIconBrightness:
+   175→                      Theme.of(context).brightness == Brightness.light
+   176→                          ? Brightness.light
+   177→                          : Brightness.dark,
+   178→                  statusBarBrightness:
+   179→                      Theme.of(context).brightness == Brightness.light
+   180→                          ? Brightness.dark
+   181→                          : Brightness.light,
+   182→                  statusBarColor: Colors.transparent,
+   183→                ),
+   184→              ),
+   185→          ],
+   186→        ),
+   187→      ),
+   188→    );
+   189→  }
+   190→
+   191→  Widget _buildContentTypeBar() {
+   192→    return Obx(() {
+   193→      final selected = _selectedContentType.value;
+   194→      const tabs = _contentTabs;
+   195→      final selectedIndex = tabs.indexWhere((t) => t.type == selected);
+   196→
+   197→      return AnymeXTabBar(
+   198→        selectTabs: tabs.map((t) => t.label).toList(),
+   199→        selectedIndex: selectedIndex,
+   200→        icons: tabs.map((t) => t.icon).toList(),
+   201→        height: 54,
+   202→        minTabWidth: 100.0,
+   203→        activeColor: context.colors.primary,
+   204→        activeTextColor: context.colors.onPrimary,
+   205→        inactiveTextColor: context.colors.onSurfaceVariant,
+   206→        onTabSelected: (index) {
+   207→          final t = tabs[index];
+   208→          _selectedContentType.value = t.type;
+   209→          _selectedSourceType.value = 'all';
+   210→          _textEditingController.clear();
+   211→          _searchQuery.value = '';
+   212→        },
+   213→      );
+   214→    });
+   215→  }
+   216→
+   217→  Widget _buildStatusBar() {
+   218→    return Obx(() {
+   219→      final isInstalled = _showInstalled.value;
+   220→      const tabs = ['Installed', 'Available'];
+   221→      final currentIndex = isInstalled ? 0 : 1;
+   222→
+   223→      return AnymeXTabBar(
+   224→        selectTabs: tabs,
+   225→        selectedIndex: currentIndex,
+   226→        height: 46,
+   227→        activeColor: context.colors.secondary,
+   228→        activeTextColor: context.colors.onSecondary,
+   229→        inactiveTextColor: context.colors.onSurfaceVariant,
+   230→        onTabSelected: (index) {
+   231→          _showInstalled.value = index == 0;
+   232→          _textEditingController.clear();
+   233→          _searchQuery.value = '';
+   234→        },
+   235→      );
+   236→    });
+   237→  }
+   238→
+   239→  Widget _buildSearchRow() {
+   240→    return Padding(
+   241→      padding: const EdgeInsets.symmetric(horizontal: 16),
+   242→      child: Row(
+   243→        children: [
+   244→          Expanded(
+   245→            child: TextField(
+   246→              controller: _textEditingController,
+   247→              onChanged: _onSearchChanged,
+   248→              decoration: InputDecoration(
+   249→                hintText: 'Search extensions...',
+   250→                hintStyle: TextStyle(
+   251→                  color: context.colors.onSurface.withOpacity(0.4),
+   252→                  fontSize: 14,
+   253→                  fontFamily: 'Poppins',
+   254→                ),
+   255→                prefixIcon: Icon(
+   256→                  Icons.search_rounded,
+   257→                  color: context.colors.onSurface.withOpacity(0.45),
+   258→                  size: 20,
+   259→                ),
+   260→                filled: true,
+   261→                fillColor:
+   262→                    context.colors.surfaceContainerHighest.withOpacity(0.4),
+   263→                contentPadding: const EdgeInsets.symmetric(
+   264→                    horizontal: 16, vertical: 12),
+   265→                border: OutlineInputBorder(
+   266→                  borderRadius: BorderRadius.circular(14),
+   267→                  borderSide: BorderSide(
+   268→                      color: context.colors.outline.withOpacity(0.1)),
+   269→                ),
+   270→                enabledBorder: OutlineInputBorder(
+   271→                  borderRadius: BorderRadius.circular(14),
+   272→                  borderSide: BorderSide(
+   273→                      color: context.colors.outline.withOpacity(0.15)),
+   274→                ),
+   275→                focusedBorder: OutlineInputBorder(
+   276→                  borderRadius: BorderRadius.circular(14),
+   277→                  borderSide: BorderSide(
+   278→                      color: context.colors.primary.withOpacity(0.5),
+   279→                      width: 1.5),
+   280→                ),
+   281→              ),
+   282→            ),
+   283→          ),
+   284→          const SizedBox(width: 8),
+   285→          Obx(() {
+   286→            final active = _selectedLanguage.value != 'all';
+   287→            return Stack(
+   288→              clipBehavior: Clip.none,
+   289→              children: [
+   290→                Container(
+   291→                  height: 48,
+   292→                  width: 48,
+   293→                  decoration: BoxDecoration(
+   294→                    color: active
+   295→                        ? context.colors.primary.withOpacity(0.12)
+   296→                        : context.colors.surfaceContainerHighest
+   297→                            .withOpacity(0.4),
+   298→                    borderRadius: BorderRadius.circular(14),
+   299→                    border: Border.all(
+   300→                      color: active
+   301→                          ? context.colors.primary.withOpacity(0.35)
+   302→                          : context.colors.outline.withOpacity(0.15),
+   303→                    ),
+   304→                  ),
+   305→                  child: IconButton(
+   306→                    onPressed: () => _showLanguageSelector(context),
+   307→                    icon: Icon(
+   308→                      Icons.translate_rounded,
+   309→                      size: 20,
+   310→                      color: active
+   311→                          ? context.colors.primary
+   312→                          : context.colors.onSurface.withOpacity(0.55),
+   313→                    ),
+   314→                    tooltip: 'Select Language',
+   315→                    padding: EdgeInsets.zero,
+   316→                  ),
+   317→                ),
+   318→                if (active)
+   319→                  Positioned(
+   320→                    top: -3,
+   321→                    right: -3,
+   322→                    child: Container(
+   323→                      width: 9,
+   324→                      height: 9,
+   325→                      decoration: BoxDecoration(
+   326→                        color: context.colors.primary,
+   327→                        shape: BoxShape.circle,
+   328→                      ),
+   329→                    ),
+   330→                  ),
+   331→              ],
+   332→            );
+   333→          }),
+   334→        ],
+   335→      ),
+   336→    );
+   337→  }
+   338→
+   339→  void _showLanguageSelector(BuildContext context) {
+   340→    final languages = sortedLanguagesMap.keys.toList();
+   341→    final theme = Theme.of(context);
+   342→
+   343→    showDialog(
+   344→      context: context,
+   345→      barrierColor: Colors.black.withOpacity(0.6),
+   346→      builder: (context) {
+   347→        return Dialog(
+   348→          backgroundColor: Colors.transparent,
+   349→          surfaceTintColor: Colors.transparent,
+   350→          child: Container(
+   351→            width: double.infinity,
+   352→            constraints: BoxConstraints(
+   353→              maxHeight: MediaQuery.sizeOf(context).height * 0.75,
+   354→              maxWidth: 400,
+   355→            ),
+   356→            decoration: BoxDecoration(
+   357→              color: theme.colorScheme.surface,
+   358→              borderRadius: BorderRadius.circular(28),
+   359→              border: Border.all(
+   360→                color: theme.colorScheme.outline.withOpacity(0.12),
+   361→              ),
+   362→            ),
+   363→            child: Column(
+   364→              mainAxisSize: MainAxisSize.min,
+   365→              children: [
+   366→                Padding(
+   367→                  padding: const EdgeInsets.fromLTRB(24, 20, 24, 10),
+   368→                  child: Row(
+   369→                    children: [
+   370→                      Icon(
+   371→                        Icons.language_rounded,
+   372→                        color: theme.colorScheme.primary,
+   373→                        size: 24,
+   374→                      ),
+   375→                      const SizedBox(width: 12),
+   376→                      Expanded(
+   377→                        child: Text(
+   378→                          'Select Language',
+   379→                          style: TextStyle(
+   380→                            fontFamily: 'Poppins',
+   381→                            fontSize: 18,
+   382→                            fontWeight: FontWeight.bold,
+   383→                            color: theme.colorScheme.onSurface,
+   384→                          ),
+   385→                        ),
+   386→                      ),
+   387→                      IconButton(
+   388→                        onPressed: () => Navigator.pop(context),
+   389→                        icon: const Icon(Icons.close_rounded),
+   390→                        padding: EdgeInsets.zero,
+   391→                        constraints: const BoxConstraints(),
+   392→                      ),
+   393→                    ],
+   394→                  ),
+   395→                ),
+   396→                const Divider(height: 1),
+   397→                Expanded(
+   398→                  child: Obx(() {
+   399→                    final selLang = _selectedLanguage.value;
+   400→                    return ListView.builder(
+   401→                      physics: const BouncingScrollPhysics(),
+   402→                      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+   403→                      itemCount: languages.length,
+   404→                      itemBuilder: (context, index) {
+   405→                        final lang = languages[index];
+   406→                        final label = lang == 'all' ? 'All Languages' : lang;
+   407→                        final isSelected = selLang == lang;
+   408→
+   409→                        return Padding(
+   410→                          padding: const EdgeInsets.only(bottom: 8.0),
+   411→                          child: AnymexOnTap(
+   412→                            onTap: () {
+   413→                              _selectedLanguage.value = lang;
+   414→                              Navigator.pop(context);
+   415→                            },
+   416→                            child: AnimatedContainer(
+   417→                              duration: const Duration(milliseconds: 180),
+   418→                              padding: const EdgeInsets.all(14),
+   419→                              decoration: BoxDecoration(
+   420→                                color: isSelected
+   421→                                    ? theme.colorScheme.primaryContainer.opaque(0.35, iReallyMeanIt: true)
+   422→                                    : theme.colorScheme.surfaceContainer.opaque(0.3, iReallyMeanIt: true),
+   423→                                borderRadius: BorderRadius.circular(14),
+   424→                                border: Border.all(
+   425→                                  color: isSelected
+   426→                                      ? theme.colorScheme.primary.opaque(0.5, iReallyMeanIt: true)
+   427→                                      : theme.colorScheme.outline.opaque(0.15, iReallyMeanIt: true),
+   428→                                  width: isSelected ? 1.5 : 1,
+   429→                                ),
+   430→                              ),
+   431→                              child: Row(
+   432→                                children: [
+   433→                                  AnimatedContainer(
+   434→                                    duration: const Duration(milliseconds: 180),
+   435→                                    width: 22,
+   436→                                    height: 22,
+   437→                                    decoration: BoxDecoration(
+   438→                                      shape: BoxShape.circle,
+   439→                                      color: isSelected
+   440→                                          ? theme.colorScheme.primary
+   441→                                          : Colors.transparent,
+   442→                                      border: Border.all(
+   443→                                        color: isSelected
+   444→                                            ? theme.colorScheme.primary
+   445→                                            : theme.colorScheme.outline.opaque(0.4, iReallyMeanIt: true),
+   446→                                        width: 2,
+   447→                                      ),
+   448→                                    ),
+   449→                                    child: isSelected
+   450→                                        ? Icon(Icons.check_rounded,
+   451→                                            size: 14, color: theme.colorScheme.onPrimary)
+   452→                                        : null,
+   453→                                  ),
+   454→                                  const SizedBox(width: 14),
+   455→                                  Expanded(
+   456→                                    child: Text(
+   457→                                      label,
+   458→                                      style: TextStyle(
+   459→                                        fontFamily: 'Poppins',
+   460→                                        fontSize: 14,
+   461→                                        fontWeight: isSelected ? FontWeight.bold : FontWeight.normal,
+   462→                                        color: isSelected ? theme.colorScheme.primary : theme.colorScheme.onSurface,
+   463→                                      ),
+   464→                                    ),
+   465→                                  ),
+   466→                                ],
+   467→                              ),
+   468→                            ),
+   469→                          ),
+   470→                        );
+   471→                      },
+   472→                    );
+   473→                  }),
+   474→                ),
+   475→              ],
+   476→            ),
+   477→          ),
+   478→        );
+   479→      },
+   480→    );
+   481→  }
+   482→
+   483→  String? _getManagerIcon(String type) {
+   484→    switch (type) {
+   485→      case 'Mangayomi':
+   486→        return MSource(id: '', name: '', lang: '').managerIcon;
+   487→      case 'Aniyomi':
+   488→        return ASource(id: '', name: '', lang: '').managerIcon;
+   489→      case 'Cloudstream':
+   490→        return CloudStreamSource(id: '', name: '', lang: '').managerIcon;
+   491→      case 'Sora':
+   492→        return SSource(id: '', name: '', lang: '').managerIcon;
+   493→      case 'Kotatsu':
+   494→        return KotatsuSource(id: '', name: '', lang: '').managerIcon;
+   495→      default:
+   496→        return null;
+   497→    }
+   498→  }
+   499→
+   500→  bool _supportsContentType(String type, ItemType contentType) {
+   501→    if (type == 'all') return true;
+   502→    final activeManager =
+   503→        Get.find<ExtensionManager>().managers.firstWhereOrNull(
+   504→              (m) => m.name.toLowerCase().contains(type.toLowerCase()),
+   505→            );
+   506→    if (activeManager != null) {
+   507→      switch (contentType) {
+   508→        case ItemType.anime:
+   509→          return activeManager.supportsAnime;
+   510→        case ItemType.manga:
+   511→          return activeManager.supportsManga;
+   512→        case ItemType.novel:
+   513→          return activeManager.supportsNovel;
+   514→      }
+   515→    }
+   516→    final lowerType = type.toLowerCase();
+   517→    switch (contentType) {
+   518→      case ItemType.anime:
+   519→        return lowerType == 'mangayomi' ||
+   520→            lowerType == 'aniyomi' ||
+   521→            lowerType == 'cloudstream' ||
+   522→            lowerType == 'sora';
+   523→      case ItemType.manga:
+   524→        return lowerType == 'mangayomi' ||
+   525→            lowerType == 'aniyomi' ||
+   526→            lowerType == 'sora' ||
+   527→            lowerType == 'kotatsu';
+   528→      case ItemType.novel:
+   529→        return lowerType == 'mangayomi' || lowerType == 'sora';
+   530→    }
+   531→  }
+   532→
+   533→  Widget _buildSourceTypeChips() {
+   534→    // All source types available on all platforms (iOS now uses JNI bridge)
+   535→    final allSourceTypes = ['all', 'Mangayomi', 'Aniyomi', 'Cloudstream', 'Sora', 'Kotatsu'];
+   536→
+   537→    return Obx(() {
+   538→      final selectedType = _selectedSourceType.value;
+   539→      final contentType = _selectedContentType.value;
+   540→      final filteredSourceTypes = allSourceTypes
+   541→          .where((type) => _supportsContentType(type, contentType))
+   542→          .toList();
+   543→
+   544→      return Container(
+   545→        height: 38,
+   546→        margin: const EdgeInsets.only(top: 8, bottom: 8),
+   547→        child: ListView.builder(
+   548→          scrollDirection: Axis.horizontal,
+   549→          physics: const BouncingScrollPhysics(),
+   550→          padding: const EdgeInsets.symmetric(horizontal: 16),
+   551→          itemCount: filteredSourceTypes.length,
+   552→          itemBuilder: (context, index) {
+   553→            final type = filteredSourceTypes[index];
+   554→            final needsPlugin = _typeRequiresPlugin(type) && !_isPluginInstalled;
+   555→            final isSelected = !needsPlugin && selectedType == type;
+   556→            final label = type == 'all' ? 'All' : type;
+   557→            final iconUrl = _getManagerIcon(type);
+   558→
+   559→            return Opacity(
+   560→              opacity: needsPlugin ? 0.5 : 1.0,
+   561→              child: Padding(
+   562→                padding: const EdgeInsets.only(right: 8.0),
+   563→                child: _buildSourceChip(
+   564→                  label: label,
+   565→                  iconUrl: iconUrl,
+   566→                  isSelected: isSelected,
+   567→                  onTap: needsPlugin
+   568→                      ? () {
+   569→                          navigate(() => const SettingsExtensionManager());
+   570→                        }
+   571→                      : () {
+   572→                          _selectedSourceType.value = type;
+   573→                        },
+   574→                ),
+   575→              ),
+   576→            );
+   577→          },
+   578→        ),
+   579→      );
+   580→    });
+   581→  }
+   582→
+   583→  Widget _buildSourceChip({
+   584→    required String label,
+   585→    String? iconUrl,
+   586→    required bool isSelected,
+   587→    required VoidCallback onTap,
+   588→  }) {
+   589→    final theme = Theme.of(context);
+   590→    return GestureDetector(
+   591→      onTap: onTap,
+   592→      child: AnimatedContainer(
+   593→        duration: const Duration(milliseconds: 200),
+   594→        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+   595→        decoration: BoxDecoration(
+   596→          color: isSelected
+   597→              ? theme.colorScheme.primary.opaque(0.15, iReallyMeanIt: true)
+   598→              : theme.colorScheme.surfaceContainerHighest
+   599→                  .opaque(0.3, iReallyMeanIt: true),
+   600→          borderRadius: BorderRadius.circular(16),
+   601→          border: Border.all(
+   602→            color: isSelected
+   603→                ? theme.colorScheme.primary.opaque(0.4, iReallyMeanIt: true)
+   604→                : theme.colorScheme.onSurface.opaque(0.08, iReallyMeanIt: true),
+   605→            width: isSelected ? 1.2 : 0.5,
+   606→          ),
+   607→        ),
+   608→        child: Row(
+   609→          mainAxisSize: MainAxisSize.min,
+   610→          children: [
+   611→            if (iconUrl != null && iconUrl.isNotEmpty) ...[
+   612→              ClipRRect(
+   613→                borderRadius: BorderRadius.circular(6),
+   614→                child: AnymeXImage(
+   615→                  width: 16,
+   616→                  height: 16,
+   617→                  imageUrl: iconUrl,
+   618→                ),
+   619→              ),
+   620→              const SizedBox(width: 6),
+   621→            ] else ...[
+   622→              Icon(
+   623→                Icons.all_inclusive_rounded,
+   624→                size: 14,
+   625→                color: isSelected
+   626→                    ? theme.colorScheme.primary
+   627→                    : theme.colorScheme.onSurfaceVariant,
+   628→              ),
+   629→              const SizedBox(width: 6),
+   630→            ],
+   631→            Text(
+   632→              label,
+   633→              style: TextStyle(
+   634→                fontFamily: 'Poppins',
+   635→                fontSize: 12,
+   636→                fontWeight: isSelected ? FontWeight.bold : FontWeight.normal,
+   637→                color: isSelected
+   638→                    ? theme.colorScheme.primary
+   639→                    : theme.colorScheme.onSurface,
+   640→              ),
+   641→            ),
+   642→          ],
+   643→        ),
+   644→      ),
+   645→    );
+   646→  }
+   647→
+   648→  Widget _buildView() {
+   649→    return Obx(() {
+   650→      final query = _searchQuery.value;
+   651→      final lang = _selectedLanguage.value;
+   652→      final sourceType = _selectedSourceType.value;
+   653→      final contentType = _selectedContentType.value;
+   654→      final installed = _showInstalled.value;
+   655→
+   656→      return ExtensionList(
+   657→        key: ValueKey('${contentType.name}_$installed'),
+   658→        installed: installed,
+   659→        query: query,
+   660→        itemType: contentType,
+   661→        selectedLanguage: lang,
+   662→        selectedSourceType: sourceType,
+   663→        showRecommended: !installed,
+   664→      );
+   665→    });
+   666→  }
+   667→
+   668→  bool get _isPluginInstalled =>
+   669→      AnymeXRuntimeBridge.isPluginInstalled ||
+   670→      AnymeXRuntimeBridge.controller.isReady.value;
+   671→
+   672→  bool _typeRequiresPlugin(String type) {
+   673→    if (type == 'all') return false;
+   674→    final activeManager =
+   675→        Get.find<ExtensionManager>().managers.firstWhereOrNull(
+   676→              (m) => m.name.toLowerCase().contains(type.toLowerCase()),
+   677→            );
+   678→    if (activeManager != null) return activeManager.requiresPlugin;
+   679→    return type == 'Aniyomi' || type == 'Cloudstream';
+   680→  }
+   681→
+   682→  @override
+   683→  void reassemble() {
+   684→    super.reassemble();
+   685→    setState(() {});
+   686→  }
+   687→}
+   688→
