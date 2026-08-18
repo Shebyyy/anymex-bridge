@@ -147,6 +147,7 @@ tr:hover td{background:#18181b}
   <nav class="tabs">
     <button class="tab active" onclick="switchTab('dashboard',this)">Dashboard</button>
     <button class="tab" onclick="switchTab('users',this)">Users</button>
+    <button class="tab" onclick="switchTab('ipbans',this)">IP Bans</button>
     <button class="tab" onclick="switchTab('extensions',this)">Extensions</button>
     <button class="tab" onclick="switchTab('jar',this)">JAR</button>
     <button class="tab" onclick="switchTab('server',this)">Server</button>
@@ -170,6 +171,17 @@ tr:hover td{background:#18181b}
         <button class="btn-sm btn-primary" onclick="openModal('createUser')">+ Create User</button>
       </div>
       <table><thead><tr><th>Username</th><th>Status</th><th>ID</th><th>Joined</th><th>Extensions</th><th>Actions</th></tr></thead><tbody id="usersBody"></tbody></table>
+    </div>
+
+    <!-- IP Bans -->
+    <div class="panel" id="panel-ipbans">
+      <div class="toolbar">
+        <input placeholder="Search IPs..." oninput="filterTable('ipBansBody',this.value)">
+        <button class="btn-sm btn-ghost" onclick="loadBannedIPs()">Refresh</button>
+        <button class="btn-sm btn-primary" onclick="openModal('manualBanIP')">+ Ban IP</button>
+        <button class="btn-sm btn-danger" onclick="unbanAllIPs()">Unban All IPs</button>
+      </div>
+      <table><thead><tr><th>IP Address</th><th>Banned By</th><th>Reason</th><th>Date</th><th>Actions</th></tr></thead><tbody id="ipBansBody"></tbody></table>
     </div>
 
     <!-- Extensions -->
@@ -271,6 +283,7 @@ function switchTab(name,btn){
   document.getElementById('panel-'+name).classList.add('active');
   if(name==='extensions')loadExtensions();
   if(name==='server')loadLogs();
+  if(name==='ipbans')loadBannedIPs();
 }
 
 // Modal
@@ -286,6 +299,12 @@ function openModal(type,data={}){
     const exts=data.installedExtensions||[];
     const banned=!!data.banned;
     m.innerHTML=`<h2>${esc(data.username)} ${banned?'<span class="badge banned">BANNED</span>':''}</h2><p style="color:#71717a;font-size:12px;margin-bottom:12px">ID: ${esc(data.id)} · Joined: ${fmtDate(data.created)}</p><div class="detail-section"><h3>Installed Extensions (${exts.length})</h3><table><thead><tr><th>Name</th><th>Package</th><th>Type</th><th>Version</th><th>Action</th></tr></thead><tbody>${exts.map(e=>`<tr><td>${esc(e.name||e.pkg_name)}</td><td style="font-family:monospace;font-size:11px">${esc(e.pkg_name)}</td><td>${typeBadge(e.type)}</td><td>${esc(e.version)}</td><td><button class="btn-sm btn-danger" onclick="doDeleteExtFromUser('${data.id}','${esc(e.pkg_name)}')">Remove</button></td></tr>`).join('')||'<tr><td colspan="5" class="empty">No extensions</td></tr>'}</tbody></table></div><div class="modal-actions"><button class="btn-sm btn-ghost" onclick="closeModal()">Close</button></div>`;
+  } else if(type==='userIPs'){
+    const ips=data.ips||[];
+    const byIP=data.usersByIP||{};
+    m.innerHTML=`<h2>IPs for ${esc(data.username)}</h2><p style="color:#71717a;font-size:12px;margin-bottom:16px">User ID: ${esc(data.userId)}</p><table><thead><tr><th>IP Address</th><th>Also used by</th><th>Actions</th></tr></thead><tbody>${ips.map(ip=>{const others=(byIP[ip]||[]).filter(u=>u.id!==data.userId);return `<tr><td style="font-family:monospace;font-size:13px">${esc(ip)}</td><td>${others.length?others.map(o=>`<span style="font-size:12px${o.banned?';color:#ef4444':''}">${esc(o.username)}${o.banned?' (banned)':''}</span>`).join(', '):'<span style="color:#71717a">Only this user</span>'}</td><td><button class="btn-sm btn-yellow" onclick="doBanIP('${esc(ip)}')">Ban IP</button><button class="btn-sm btn-ghost" onclick="showIPUsers('${esc(ip)}')">Users</button></td></tr>`}).join('')||'<tr><td colspan="3" class="empty">No IPs recorded</td></tr>'}</tbody></table><div class="modal-actions"><button class="btn-sm btn-ghost" onclick="closeModal()">Close</button></div>`;
+  } else if(type==='manualBanIP'){
+    m.innerHTML=`<h2>Manually Ban IP</h2><p style="color:#71717a;font-size:12px;margin-bottom:12px">This IP will be blocked from registering, logging in, and using RPC.</p><label>IP Address</label><input id="m_banip" placeholder="e.g. 192.168.1.100"><label>Reason (optional)</label><input id="m_banreason" placeholder="Why is this IP banned?"><div class="modal-actions"><button class="btn-sm btn-ghost" onclick="closeModal()">Cancel</button><button class="btn-sm btn-danger" onclick="doManualBanIP()">Ban IP</button></div>`;
   } else if(type==='extUsers'){
     m.innerHTML=`<h2>${esc(data.pkgName)}</h2><p style="color:#71717a;font-size:12px;margin-bottom:12px">${typeBadge(data.type)} · ${data.install_count} users</p><table><thead><tr><th>User</th><th>Type</th><th>Version</th></tr></thead><tbody>${(data.usersList||[]).map(u=>`<tr><td>${esc(u.username)}</td><td>${typeBadge(u.type)}</td><td>${esc(u.version)}</td></tr>`).join('')||'<tr><td colspan="3" class="empty">No users</td></tr>'}</tbody></table><div class="modal-actions"><button class="btn-sm btn-ghost" onclick="closeModal()">Close</button></div>`;
   }
@@ -449,20 +468,76 @@ async function loadAll(){
     document.getElementById('headerStats').textContent=`${stats.totalUsers} users · ${stats.installs} installs`;
 
     const userDetails=stats.users||[];
-    document.getElementById('statsGrid').innerHTML=
-      [['Users',stats.totalUsers,''],['Installs',stats.installs,'orange'],['JAR',stats.jarReady?'Online':'Offline',stats.jarReady?'green':'red'],['Banned',stats.bannedCount||0,'red']].map(([l,v,c])=>
-        `<div class="stat-card"><div class="label">${l}</div><div class="value ${c}">${v}</div></div>`
-      ).join('');
 
     function userRow(u,extra=''){
-      return `<tr><td>${esc(u.username)} ${u.banned?'<span class="badge banned">BANNED</span>':''}</td><td>${u.banned?'<span style="color:#ef4444">Banned</span>':'<span style="color:#22c55e">Active</span>'}</td><td style="font-family:monospace;font-size:11px;max-width:120px;overflow:hidden;text-overflow:ellipsis" title="${esc(u.id)}">${esc(u.id)}</td><td>${fmtDate(u.created)}</td><td>${u.extensions||0}</td><td><button class="btn-sm btn-ghost" onclick="loadUserDetail('${u.id}')">Detail</button><button class="btn-sm btn-yellow" onclick="doBanToggle('${u.id}',${!!u.banned})" title="${u.banned?'Unban':'Ban'}">${u.banned?'Unban':'Ban'}</button><button class="btn-sm btn-danger" onclick="doDeleteAllExtForUser('${u.id}','${esc(u.username)}')" title="Delete all extensions">Ext</button><button class="btn-sm btn-danger" onclick="deleteUser('${u.id}','${esc(u.username)}')">Del</button></td></tr>`;
+      return `<tr><td>${esc(u.username)} ${u.banned?'<span class="badge banned">BANNED</span>':''}</td><td>${u.banned?'<span style="color:#ef4444">Banned</span>':'<span style="color:#22c55e">Active</span>'}</td><td style="font-family:monospace;font-size:11px;max-width:120px;overflow:hidden;text-overflow:ellipsis" title="${esc(u.id)}">${esc(u.id)}</td><td>${fmtDate(u.created)}</td><td>${u.extensions||0}</td><td><button class="btn-sm btn-ghost" onclick="loadUserDetail('${u.id}')">Detail</button><button class="btn-sm btn-ghost" onclick="loadUserIPs('${u.id}','${esc(u.username)}')" title="View IPs">IPs</button><button class="btn-sm btn-yellow" onclick="doBanToggle('${u.id}',${!!u.banned})" title="${u.banned?'Unban':'Ban'}">${u.banned?'Unban':'Ban'}</button><button class="btn-sm btn-danger" onclick="doDeleteAllExtForUser('${u.id}','${esc(u.username)}')" title="Delete all extensions">Ext</button><button class="btn-sm btn-danger" onclick="deleteUser('${u.id}','${esc(u.username)}')">Del</button></td></tr>`;
     }
+
+    document.getElementById('statsGrid').innerHTML=
+      [['Users',stats.totalUsers,''],['Installs',stats.installs,'orange'],['JAR',stats.jarReady?'Online':'Offline',stats.jarReady?'green':'red'],['Banned',stats.bannedCount||0,'red'],['IP Bans',stats.bannedIPCount||0,'red']].map(([l,v,c])=>
+        `<div class="stat-card"><div class="label">${l}</div><div class="value ${c}">${v}</div></div>`
+      ).join('');
 
     document.getElementById('dashUsers').innerHTML=users.map(u=>{const uc=userDetails.find(x=>x.id===u.id)||{extensions:0};return userRow({...u,extensions:uc.extensions})}).join('')||'<tr><td colspan="5" class="empty">No users</td></tr>';
     document.getElementById('usersBody').innerHTML=users.map(u=>{const uc=userDetails.find(x=>x.id===u.id)||{extensions:0};return userRow({...u,extensions:uc.extensions})}).join('')||'<tr><td colspan="6" class="empty">No users</td></tr>';
 
     loadJarStatus();
   }catch(e){console.error(e);toast('Failed to load data','error')}
+}
+
+// IP Bans tab
+async function loadBannedIPs(){
+  const r=await api('/admin/bannedIPs');
+  const ips=r.ips||[];
+  document.getElementById('ipBansBody').innerHTML=ips.map(ip=>
+    `<tr><td style="font-family:monospace;font-size:13px">${esc(ip.ip)}</td><td>${esc(ip.banned_by)}</td><td>${esc(ip.reason||'-')}</td><td>${fmtDate(ip.created)}</td><td><button class="btn-sm btn-ghost" onclick="showIPUsers('${esc(ip.ip)}')">Users</button><button class="btn-sm btn-danger" onclick="doUnbanIP('${esc(ip.ip)}')">Unban</button></td></tr>`
+  ).join('')||'<tr><td colspan="5" class="empty">No banned IPs</td></tr>';
+}
+
+async function loadUserIPs(userId,username){
+  toast('Loading IPs...');
+  const r=await api('/admin/userIPs/'+userId);
+  if(r.error){toast(r.error,'error');return}
+  openModal('userIPs',{userId,username,ips:r.ips,usersByIP:r.usersByIP});
+}
+
+async function showIPUsers(ip){
+  toast('Loading...');
+  const r=await api('/admin/ipUsers/'+encodeURIComponent(ip));
+  const users=r.users||[];
+  openModal('extUsers',{pkgName:ip,type:'ip',install_count:users.length,usersList:users});
+}
+
+async function doBanIP(ip){
+  if(!confirm(`Ban IP "${ip}"? All users on this IP will be blocked from registering, logging in, and using RPC.`))return;
+  const r=await apiPost('/admin/banIP',{ip,reason:'Manual ban from admin panel'});
+  if(r.ok){toast('IP banned','success');closeModal();loadBannedIPs();loadAll()}else toast(r.error||'Failed','error');
+}
+
+async function doManualBanIP(){
+  const ip=document.getElementById('m_banip').value.trim();
+  const reason=document.getElementById('m_banreason').value.trim();
+  if(!ip)return toast('IP required','error');
+  const r=await apiPost('/admin/banIP',{ip,reason:reason||''});
+  if(r.ok){toast('IP banned','success');closeModal();loadBannedIPs();loadAll()}else toast(r.error||'Failed','error');
+}
+
+async function doUnbanIP(ip){
+  if(!confirm(`Unban IP "${ip}"?`))return;
+  const r=await apiPost('/admin/unbanIP',{ip});
+  if(r.ok){toast('IP unbanned','success');closeModal();loadBannedIPs();loadAll()}else toast(r.error||'Failed','error');
+}
+
+async function unbanAllIPs(){
+  if(!confirm('Unban ALL IPs? This will allow everyone to register/login again.'))return;
+  const r=await apiPost('/admin/bannedIPs',{});
+  // We need to unban each one individually, or use the server
+  const list=await api('/admin/bannedIPs');
+  for(const ip of (list.ips||[])){
+    await apiPost('/admin/unbanIP',{ip:ip.ip});
+  }
+  toast(`Unbanned ${(list.ips||[]).length} IPs`,'success');
+  loadBannedIPs();loadAll();
 }
 </script>
 </body>
