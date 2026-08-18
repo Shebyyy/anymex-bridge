@@ -5,6 +5,7 @@ import { execSync } from 'node:child_process'
 import { authenticateUser, createUser, getAllUsers, getUserById, db, getUserInstalled, addUserInstalled, removeUserInstalled, getUserInstalledPkgs, countOtherUsersWithPkg, banUser, changePassword, editUsername, deleteAllUsers, deleteUserExtensions, deleteExtensionGlobally, getAllInstalledExtensions, getPkgUsers, clearDatabase, recordUserIP, isIPBanned, banAllUserIPs, unbanAllUserIPs, banIP, unbanIP, getAllBannedIPs, getBannedIPCount, getUserIPs, getUsersByIP } from './db.js'
 import { isJarReady, invokeJar, invokeJarOnce, getJarPath, startSidecar, stopSidecar } from './jar.js'
 import { runUpdateNow } from './auto-update.js'
+import { registerLimiter, loginLimiter, adminLoginLimiter, rpcLimiter, globalLimiter } from './rate-limit.js'
 
 const ADMIN_KEY = process.env.ADMIN_KEY || 'anymex-admin-2024'
 let adminTokens = new Set<string>()
@@ -39,6 +40,14 @@ export function startHttpServer() {
   const server = createHttpServer(async (req, res) => {
     const url = new URL(req.url || '/', `http://localhost:${HTTP_PORT}`)
 
+    // ── Global rate limit (all HTTP requests per IP) ──
+    const globalIP = getClientIP(req)
+    if (globalIP && !globalLimiter.check(globalIP)) {
+      res.writeHead(429)
+      res.end(JSON.stringify({ error: 'too many requests' }))
+      return
+    }
+
     try {
       // ── Serve admin panel ──
       if (url.pathname === '/admin' || url.pathname === '/admin/') {
@@ -49,11 +58,19 @@ export function startHttpServer() {
 
       res.setHeader('Content-Type', 'application/json')
 
-      // ── Admin login ──
+      // ── Admin login (rate limited) ──
       if (url.pathname === '/admin/login' && req.method === 'POST') {
+        const ip = getClientIP(req)
+        if (ip && !adminLoginLimiter.check(ip)) {
+          res.writeHead(429)
+          res.end(JSON.stringify({ ok: false, error: 'too many attempts' }))
+          console.log(`[http] Admin login rate-limited: ${ip}`)
+          return
+        }
         const body = await readBody(req)
         const { key } = JSON.parse(body)
         if (key === ADMIN_KEY) {
+          adminLoginLimiter.reset(ip)
           const token = crypto.randomUUID()
           adminTokens.add(token)
           res.end(JSON.stringify({ ok: true, token }))
@@ -361,9 +378,15 @@ export function startHttpServer() {
         return
       }
 
-      // ── Public: register ──
+      // ── Public: register (rate limited) ──
       if (url.pathname === '/register' && req.method === 'POST') {
         const ip = getClientIP(req)
+        if (ip && !registerLimiter.check(ip)) {
+          res.writeHead(429)
+          res.end(JSON.stringify({ ok: false, error: 'registration not available' }))
+          console.log(`[http] Registration rate-limited: ${ip}`)
+          return
+        }
         if (isIPBanned(ip)) {
           res.writeHead(403)
           res.end(JSON.stringify({ ok: false, error: 'registration not available' }))
@@ -386,9 +409,15 @@ export function startHttpServer() {
         return
       }
 
-      // ── Public: login (used by SSH proxy) ──
+      // ── Public: login (rate limited) ──
       if (url.pathname === '/login' && req.method === 'POST') {
         const ip = getClientIP(req)
+        if (ip && !loginLimiter.check(ip)) {
+          res.writeHead(429)
+          res.end(JSON.stringify({ ok: false, error: 'invalid credentials' }))
+          console.log(`[http] Login rate-limited: ${ip}`)
+          return
+        }
         if (isIPBanned(ip)) {
           res.writeHead(403)
           res.end(JSON.stringify({ ok: false, error: 'invalid credentials' }))
@@ -400,12 +429,13 @@ export function startHttpServer() {
         const user = authenticateUser(username, password)
         if (!user) { res.writeHead(401); res.end(JSON.stringify({ ok: false, error: 'invalid credentials' })); return }
         if (user.banned) { res.writeHead(403); res.end(JSON.stringify({ ok: false, error: 'account banned' })); return }
+        loginLimiter.reset(ip) // reset on successful login
         recordUserIP(user.id, ip)
         res.end(JSON.stringify({ ok: true, user }))
         return
       }
 
-      // ── Public: RPC (used by SSH proxy) ──
+      // ── Public: RPC (rate limited per user) ──
       if (url.pathname === '/rpc' && req.method === 'POST') {
         const ip = getClientIP(req)
         if (isIPBanned(ip)) {
@@ -424,6 +454,11 @@ export function startHttpServer() {
         }
         if (user.banned) {
           res.end(JSON.stringify({ id: id || '0', status: 'error', error: 'account banned' }))
+          return
+        }
+        if (!rpcLimiter.check(user.id)) {
+          res.end(JSON.stringify({ id: id || '0', status: 'error', error: 'too many requests' }))
+          console.log(`[http] RPC rate-limited for user '${user.username}' (${user.id})`)
           return
         }
         recordUserIP(user.id, ip)
