@@ -2,7 +2,7 @@ import { createServer as createHttpServer } from 'node:http'
 import { readFileSync, existsSync, mkdirSync, writeFileSync, unlinkSync, rmSync, readdirSync, statSync } from 'node:fs'
 import { join, dirname } from 'node:path'
 import { execSync } from 'node:child_process'
-import { authenticateUser, createUser, getAllUsers, getUserById, db, getUserInstalled, addUserInstalled, removeUserInstalled, getUserInstalledPkgs, countOtherUsersWithPkg, banUser, changePassword, editUsername, deleteAllUsers, deleteUserExtensions, deleteExtensionGlobally, getAllInstalledExtensions, getPkgUsers, clearDatabase } from './db.js'
+import { authenticateUser, createUser, getAllUsers, getUserById, db, getUserInstalled, addUserInstalled, removeUserInstalled, getUserInstalledPkgs, countOtherUsersWithPkg, banUser, changePassword, editUsername, deleteAllUsers, deleteUserExtensions, deleteExtensionGlobally, getAllInstalledExtensions, getPkgUsers, clearDatabase, recordUserIP, isIPBanned, banAllUserIPs, unbanAllUserIPs, banIP, unbanIP, getAllBannedIPs, getBannedIPCount, getUserIPs, getUsersByIP } from './db.js'
 import { isJarReady, invokeJar, invokeJarOnce, getJarPath, startSidecar, stopSidecar } from './jar.js'
 import { runUpdateNow } from './auto-update.js'
 
@@ -22,6 +22,17 @@ function checkAdmin(req: any): boolean {
   const auth = req.headers['authorization'] || ''
   const token = auth.replace('Bearer ', '')
   return adminTokens.has(token)
+}
+
+/** Extract client IP from request, respecting X-Forwarded-For (reverse proxy) */
+function getClientIP(req: any): string {
+  const forwarded = req.headers['x-forwarded-for']
+  if (forwarded) {
+    return (typeof forwarded === 'string' ? forwarded : forwarded[0]).split(',')[0].trim()
+  }
+  const realIP = req.headers['x-real-ip']
+  if (realIP) return realIP
+  return req.socket?.remoteAddress || ''
 }
 
 export function startHttpServer() {
@@ -66,7 +77,7 @@ export function startHttpServer() {
           }))
           const totalInstalls = (db.query('SELECT COUNT(*) as c FROM user_installed').get() as any)?.c ?? 0
           const bannedCount = users.filter(u => u.banned).length
-          res.end(JSON.stringify({ users: userDetails, totalUsers: users.length, installs: totalInstalls, jarReady: isJarReady(), bannedCount }))
+          res.end(JSON.stringify({ users: userDetails, totalUsers: users.length, installs: totalInstalls, jarReady: isJarReady(), bannedCount, bannedIPCount: getBannedIPCount() }))
           return
         }
 
@@ -84,11 +95,18 @@ export function startHttpServer() {
           return
         }
 
-        // ── Ban / unban user ──
+        // ── Ban / unban user (auto-ban/unban all their IPs) ──
         if (url.pathname === '/admin/banUser' && req.method === 'POST') {
           const body = await readBody(req)
           const { userId, banned } = JSON.parse(body)
           banUser(userId, !!banned)
+          if (banned) {
+            const ips = banAllUserIPs(userId)
+            console.log(`[admin] Banned user ${userId} + ${ips.length} IP(s): ${ips.join(', ')}`)
+          } else {
+            const ips = unbanAllUserIPs(userId)
+            console.log(`[admin] Unbanned user ${userId} + ${ips.length} IP(s): ${ips.join(', ')}`)
+          }
           res.end(JSON.stringify({ ok: true }))
           return
         }
@@ -287,6 +305,57 @@ export function startHttpServer() {
           return
         }
 
+        // ── List banned IPs ──
+        if (url.pathname === '/admin/bannedIPs' && req.method === 'GET') {
+          const ips = getAllBannedIPs()
+          res.end(JSON.stringify({ ips, count: ips.length }))
+          return
+        }
+
+        // ── Get user's IPs ──
+        const userIPs = url.pathname.match(/^\/admin\/userIPs\/([\w-]+)$/)
+        if (userIPs && req.method === 'GET') {
+          const uid = userIPs[1]
+          const ips = getUserIPs(uid)
+          const usersByIP: Record<string, any[]> = {}
+          for (const ip of ips) {
+            usersByIP[ip] = getUsersByIP(ip)
+          }
+          res.end(JSON.stringify({ userId: uid, ips, usersByIP }))
+          return
+        }
+
+        // ── Manually ban an IP ──
+        if (url.pathname === '/admin/banIP' && req.method === 'POST') {
+          const body = await readBody(req)
+          const { ip, reason } = JSON.parse(body)
+          if (!ip) { res.writeHead(400); res.end(JSON.stringify({ ok: false, error: 'ip required' })); return }
+          banIP(ip, 'admin-manual', reason || '')
+          console.log(`[admin] Manually banned IP: ${ip}`)
+          res.end(JSON.stringify({ ok: true }))
+          return
+        }
+
+        // ── Manually unban an IP ──
+        if (url.pathname === '/admin/unbanIP' && req.method === 'POST') {
+          const body = await readBody(req)
+          const { ip } = JSON.parse(body)
+          if (!ip) { res.writeHead(400); res.end(JSON.stringify({ ok: false, error: 'ip required' })); return }
+          unbanIP(ip)
+          console.log(`[admin] Manually unbanned IP: ${ip}`)
+          res.end(JSON.stringify({ ok: true }))
+          return
+        }
+
+        // ── Get users by IP ──
+        const ipUsers = url.pathname.match(/^\/admin\/ipUsers\/(.+)$/)
+        if (ipUsers && req.method === 'GET') {
+          const ip = decodeURIComponent(ipUsers[1])
+          const users = getUsersByIP(ip)
+          res.end(JSON.stringify({ ip, users }))
+          return
+        }
+
         res.writeHead(404)
         res.end(JSON.stringify({ error: 'not found' }))
         return
@@ -294,6 +363,13 @@ export function startHttpServer() {
 
       // ── Public: register ──
       if (url.pathname === '/register' && req.method === 'POST') {
+        const ip = getClientIP(req)
+        if (isIPBanned(ip)) {
+          res.writeHead(403)
+          res.end(JSON.stringify({ ok: false, error: 'registration not available' }))
+          console.log(`[http] Blocked registration from banned IP: ${ip}`)
+          return
+        }
         const body = await readBody(req)
         const { username, password } = JSON.parse(body)
         if (!username || !password || username.length < 3 || password.length < 4) {
@@ -301,23 +377,44 @@ export function startHttpServer() {
           res.end(JSON.stringify({ ok: false, error: 'username min 3 chars, password min 4 chars' }))
           return
         }
-        res.end(JSON.stringify(createUser(username, password)))
+        const result = createUser(username, password)
+        if (result.ok && result.user) {
+          recordUserIP(result.user.id, ip)
+          console.log(`[http] Registered '${username}' from ${ip}`)
+        }
+        res.end(JSON.stringify(result))
         return
       }
 
       // ── Public: login (used by SSH proxy) ──
       if (url.pathname === '/login' && req.method === 'POST') {
+        const ip = getClientIP(req)
+        if (isIPBanned(ip)) {
+          res.writeHead(403)
+          res.end(JSON.stringify({ ok: false, error: 'invalid credentials' }))
+          console.log(`[http] Blocked login from banned IP: ${ip}`)
+          return
+        }
         const body = await readBody(req)
         const { username, password } = JSON.parse(body)
         const user = authenticateUser(username, password)
         if (!user) { res.writeHead(401); res.end(JSON.stringify({ ok: false, error: 'invalid credentials' })); return }
         if (user.banned) { res.writeHead(403); res.end(JSON.stringify({ ok: false, error: 'account banned' })); return }
+        recordUserIP(user.id, ip)
         res.end(JSON.stringify({ ok: true, user }))
         return
       }
 
       // ── Public: RPC (used by SSH proxy) ──
       if (url.pathname === '/rpc' && req.method === 'POST') {
+        const ip = getClientIP(req)
+        if (isIPBanned(ip)) {
+          const body = await readBody(req)
+          const { id } = JSON.parse(body)
+          res.end(JSON.stringify({ id: id || '0', status: 'error', error: 'invalid credentials' }))
+          console.log(`[http] Blocked RPC from banned IP: ${ip}`)
+          return
+        }
         const body = await readBody(req)
         const { username, password, method, args, id } = JSON.parse(body)
         const user = authenticateUser(username, password)
@@ -329,6 +426,7 @@ export function startHttpServer() {
           res.end(JSON.stringify({ id: id || '0', status: 'error', error: 'account banned' }))
           return
         }
+        recordUserIP(user.id, ip)
         try {
           const result = await handleMethod(user.id, user.username, { method, args })
           res.end(JSON.stringify({ id: id || '0', status: 'ok', data: result }))
@@ -396,6 +494,14 @@ export function startSshServer() {
     sshServer.on('connection', (client) => {
       let sshUser: string | null = null
       let sshUserId: string | null = null
+      const clientIP = (client as any)._sock?.remoteAddress || (client as any).sock?.remoteAddress || ''
+
+      // Block banned IPs at SSH level
+      if (clientIP && isIPBanned(clientIP)) {
+        console.log(`[ssh] Rejected connection from banned IP: ${clientIP}`)
+        client.end()
+        return
+      }
 
       client.on('authentication', (ctx) => {
         if (ctx.method === 'password') {
@@ -403,7 +509,9 @@ export function startSshServer() {
           if (user && !user.banned) {
             sshUser = user.username
             sshUserId = user.id
-            client.on('ready', () => console.log(`[ssh] User '${sshUser}' connected`))
+            // Track IP for this SSH user
+            if (clientIP) recordUserIP(user.id, clientIP)
+            client.on('ready', () => console.log(`[ssh] User '${sshUser}' connected from ${clientIP}`))
             ctx.accept()
           } else {
             ctx.reject()
