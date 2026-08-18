@@ -98,7 +98,7 @@ tr:hover td{background:#18181b}
 .detail-section h3{font-size:14px;font-weight:600;margin-bottom:8px;padding-bottom:6px;border-bottom:1px solid #27272a}
 
 /* JAR panel */
-.jar-info{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:16px}
+.jar-info{display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px;margin-bottom:16px}
 .jar-info .item{background:#0a0a0a;border-radius:8px;padding:12px}
 .jar-info .item .k{font-size:11px;color:#71717a;text-transform:uppercase;letter-spacing:.5px}
 .jar-info .item .v{font-size:14px;margin-top:2px}
@@ -410,14 +410,21 @@ async function purgeOrphans(){
 // JAR
 async function loadJarStatus(){
   const r=await api('/admin/jarStatus');
+  const badge=document.getElementById('jarBadge');
+  badge.textContent=r.jarReady?'JAR v'+r.version:'JAR Off';
+  badge.className='jar-badge '+(r.jarReady?'on':'off');
+
   document.getElementById('jarInfo').innerHTML=`
     <div class="item"><div class="k">Status</div><div class="v" style="color:${r.jarReady?'#22c55e':'#ef4444'}">${r.jarReady?'Running':'Offline'}</div></div>
-    <div class="item"><div class="k">File Size</div><div class="v">${r.fileSizeMB||0} MB</div></div>
-    <div class="item"><div class="k">Path</div><div class="v" style="font-family:monospace;font-size:11px;word-break:break-all">${esc(r.jarPath)}</div></div>
-    <div class="item"><div class="k">Bytes</div><div class="v">${r.fileSize||0}</div></div>`;
-  const badge=document.getElementById('jarBadge');
-  badge.textContent=r.jarReady?'JAR On':'JAR Off';
-  badge.className='jar-badge '+(r.jarReady?'on':'off');
+    <div class="item"><div class="k">Version</div><div class="v" style="font-size:18px;font-weight:700;color:#f97316">${esc(r.version)}</div></div>
+    <div class="item"><div class="k">File Size</div><div class="v">${r.fileSizeMB||0} MB (${r.fileSize||0} bytes)</div></div>
+    <div class="item"><div class="k">Last Updated</div><div class="v">${r.updatedAt?fmtDate(r.updatedAt)+' '+new Date(r.updatedAt).toLocaleTimeString('en-US',{hour:'2-digit',minute:'2-digit'}):'Never'}</div></div>
+    ${r.previousVersion?`<div class="item"><div class="k">Previous Version</div><div class="v" style="color:#71717a">${esc(r.previousVersion)}</div></div>`:''}
+    <div class="item"><div class="k">Update Interval</div><div class="v">${r.updateIntervalHuman||'6h'}</div></div>
+    <div class="item"><div class="k">Next Check In</div><div class="v" style="color:#a78bfa">${esc(r.nextCheckInHuman||'calculating...')}</div></div>
+    <div class="item" style="grid-column:span 2"><div class="k">Release URL</div><div class="v" style="font-family:monospace;font-size:11px;word-break:break-all;color:#71717a">${r.downloadUrl?'<a href="'+esc(r.downloadUrl)+'" target="_blank" style="color:#a78bfa;text-decoration:none">'+esc(r.downloadUrl)+'</a>':'N/A'}</div></div>
+    <div class="item" style="grid-column:span 2"><div class="k">Path</div><div class="v" style="font-family:monospace;font-size:11px;word-break:break-all;color:#71717a">${esc(r.jarPath)}</div></div>
+  `;
 }
 
 async function forceUpdate(){

@@ -3,8 +3,8 @@ import { readFileSync, existsSync, mkdirSync, writeFileSync, unlinkSync, rmSync,
 import { join, dirname } from 'node:path'
 import { execSync } from 'node:child_process'
 import { authenticateUser, createUser, getAllUsers, getUserById, db, getUserInstalled, addUserInstalled, removeUserInstalled, getUserInstalledPkgs, countOtherUsersWithPkg, banUser, changePassword, editUsername, deleteAllUsers, deleteUserExtensions, deleteExtensionGlobally, getAllInstalledExtensions, getPkgUsers, clearDatabase, recordUserIP, isIPBanned, banAllUserIPs, unbanAllUserIPs, banIP, unbanIP, getAllBannedIPs, getBannedIPCount, getUserIPs, getUsersByIP } from './db.js'
-import { isJarReady, invokeJar, invokeJarOnce, getJarPath, startSidecar, stopSidecar } from './jar.js'
-import { runUpdateNow } from './auto-update.js'
+import { isJarReady, invokeJar, invokeJarOnce, getJarPath, startSidecar, stopSidecar, getJarMeta } from './jar.js'
+import { runUpdateNow, getNextCheckAt, getIntervalMs } from './auto-update.js'
 import { registerLimiter, loginLimiter, adminLoginLimiter, rpcLimiter, globalLimiter } from './rate-limit.js'
 
 const ADMIN_KEY = process.env.ADMIN_KEY || 'anymex-admin-2024'
@@ -34,6 +34,17 @@ function getClientIP(req: any): string {
   const realIP = req.headers['x-real-ip']
   if (realIP) return realIP
   return req.socket?.remoteAddress || ''
+}
+
+/** Format ms to human readable, e.g. "4h 23m" or "12m" or "45s" */
+function formatDuration(ms: number): string {
+  if (ms <= 0) return 'now'
+  const h = Math.floor(ms / 3600000)
+  const m = Math.floor((ms % 3600000) / 60000)
+  const s = Math.floor((ms % 60000) / 1000)
+  if (h > 0) return `${h}h ${m}m`
+  if (m > 0) return `${m}m ${s}s`
+  return `${s}s`
 }
 
 export function startHttpServer() {
@@ -268,11 +279,25 @@ export function startHttpServer() {
         if (url.pathname === '/admin/jarStatus' && req.method === 'GET') {
           let fileSize = 0
           try { fileSize = statSync(getJarPath()).size } catch {}
+          const meta = getJarMeta()
+          const nextCheckAt = getNextCheckAt()
+          const intervalMs = getIntervalMs()
+          const now = Date.now()
+          const nextCheckIn = nextCheckAt > now ? nextCheckAt - now : 0
           res.end(JSON.stringify({
             jarReady: isJarReady(),
             jarPath: getJarPath(),
             fileSize,
-            fileSizeMB: (fileSize / 1024 / 1024).toFixed(2)
+            fileSizeMB: (fileSize / 1024 / 1024).toFixed(2),
+            version: meta.version,
+            previousVersion: meta.previousVersion || null,
+            downloadUrl: meta.downloadUrl,
+            updatedAt: meta.updatedAt,
+            nextCheckAt: new Date(nextCheckAt).toISOString(),
+            nextCheckInMs: nextCheckIn,
+            nextCheckInHuman: formatDuration(nextCheckIn),
+            updateIntervalMs: intervalMs,
+            updateIntervalHuman: `${intervalMs / 3600000}h`,
           }))
           return
         }

@@ -1,11 +1,12 @@
 import { join } from 'node:path'
-import { existsSync, mkdirSync, writeFileSync, renameSync, unlinkSync, statSync } from 'node:fs'
+import { existsSync, mkdirSync, writeFileSync, renameSync, unlinkSync, statSync, readFileSync } from 'node:fs'
 import { spawn, ChildProcess } from 'node:child_process'
 
 const JAR_DIR = join(import.meta.dir, 'jar-cache')
 mkdirSync(JAR_DIR, { recursive: true })
 
 const JAR_PATH = join(JAR_DIR, 'anymex_desktop_runtime.jar')
+const META_PATH = join(JAR_DIR, 'jar-meta.json')
 const JAR_URL = 'https://github.com/RyanYuuki/AnymeXExtensionRuntimeBridge/releases/latest/download/anymex_desktop_runtime.jar'
 
 let jarReady = false
@@ -13,23 +14,69 @@ let _process: ChildProcess | null = null
 const _completers = new Map<string, { resolve: (v: any) => void; reject: (v: any) => void; timer: ReturnType<typeof setTimeout> }>()
 let _reqId = 0
 
+// ── JAR Metadata (version, timestamps) ─────────────────────
+
+interface JarMeta {
+  version: string
+  downloadUrl: string
+  fileSize: number
+  updatedAt: string
+  previousVersion?: string
+}
+
+function loadMeta(): JarMeta {
+  try {
+    if (existsSync(META_PATH)) return JSON.parse(readFileSync(META_PATH, 'utf-8'))
+  } catch {}
+  return { version: 'unknown', downloadUrl: '', fileSize: 0, updatedAt: '' }
+}
+
+function saveMeta(meta: JarMeta) {
+  writeFileSync(META_PATH, JSON.stringify(meta, null, 2))
+}
+
+/** Extract version tag from the redirect URL, e.g. "/download/v2.5.1/" → "v2.5.1" */
+function extractVersion(url: string): string {
+  const match = url.match(/\/releases\/download\/([^/]+)\//i)
+  return match ? match[1] : 'unknown'
+}
+
 export function isJarReady() { return jarReady && _process !== null && !_process.killed }
 export function getJarPath() { return JAR_PATH }
+export function getJarMeta() { return loadMeta() }
 
 // ─── Download ──────────────────────────────────────────────
 
-export async function checkOrDownloadJar(): Promise<{ ok: boolean; error?: string; path?: string }> {
+export async function checkOrDownloadJar(): Promise<{ ok: boolean; error?: string; path?: string; version?: string }> {
   if (existsSync(JAR_PATH) && statSync(JAR_PATH).size > 10000) {
     jarReady = true
-    return { ok: true, path: JAR_PATH }
+    // If we already have meta, just return it
+    const existing = loadMeta()
+    if (existing.version !== 'unknown') return { ok: true, path: JAR_PATH, version: existing.version }
   }
 
   console.log('[jar] Downloading:', JAR_URL)
   try {
-    const res = await fetch(JAR_URL, { redirect: 'follow' })
-    if (!res.ok) return { ok: false, error: `HTTP ${res.status}` }
+    // Use redirect: 'manual' to capture the final URL (contains version tag)
+    const res = await fetch(JAR_URL, { redirect: 'manual' })
+    let finalUrl = JAR_URL
+    if (res.status >= 300 && res.status < 400 && res.headers.get('location')) {
+      // Follow redirects manually to get the final URL
+      let current = res
+      const maxRedirects = 10
+      for (let i = 0; i < maxRedirects; i++) {
+        const loc = current.headers.get('location')!
+        finalUrl = new URL(loc, finalUrl).href
+        current = await fetch(finalUrl, { redirect: 'manual' })
+        if (current.status < 300 || current.status >= 400) break
+      }
+    }
 
-    const buf = await res.arrayBuffer()
+    // Now do the actual download from the final URL
+    const downloadRes = await fetch(finalUrl, { redirect: 'follow' })
+    if (!downloadRes.ok) return { ok: false, error: `HTTP ${downloadRes.status}` }
+
+    const buf = await downloadRes.arrayBuffer()
     if (buf.byteLength < 10000) return { ok: false, error: `Too small: ${buf.byteLength}B` }
 
     const tmpPath = JAR_PATH + '.tmp'
@@ -37,9 +84,21 @@ export async function checkOrDownloadJar(): Promise<{ ok: boolean; error?: strin
     if (existsSync(JAR_PATH)) unlinkSync(JAR_PATH)
     renameSync(tmpPath, JAR_PATH)
 
+    // Extract version and save metadata
+    const version = extractVersion(finalUrl)
+    const oldMeta = loadMeta()
+    const meta: JarMeta = {
+      version,
+      downloadUrl: finalUrl,
+      fileSize: buf.byteLength,
+      updatedAt: new Date().toISOString(),
+      previousVersion: oldMeta.version !== 'unknown' ? oldMeta.version : undefined,
+    }
+    saveMeta(meta)
+
     jarReady = true
-    console.log(`[jar] Downloaded: ${(buf.byteLength / 1024 / 1024).toFixed(1)}MB`)
-    return { ok: true, path: JAR_PATH }
+    console.log(`[jar] Downloaded: v${version} (${(buf.byteLength / 1024 / 1024).toFixed(1)}MB)`)
+    return { ok: true, path: JAR_PATH, version }
   } catch (e: any) {
     return { ok: false, error: e.message }
   }
