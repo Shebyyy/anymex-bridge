@@ -199,6 +199,7 @@ tr:hover td{background:#18181b}
       <div class="jar-info" id="jarInfo"></div>
       <div class="toolbar">
         <button class="btn-sm btn-primary" onclick="forceUpdate()">Force Update</button>
+        <button class="btn-sm btn-ghost" onclick="detectVersion()">Detect Version</button>
         <button class="btn-sm btn-ghost" onclick="loadJarStatus()">Refresh</button>
       </div>
     </div>
@@ -397,8 +398,12 @@ function renderExtensions(){
 }
 
 async function showExtUsers(pkgName,count,type){
-  const users=await api('/admin/extensionUsers/'+encodeURIComponent(pkgName));
-  openModal('extUsers',{pkgName,type,install_count:count,usersList:users});
+  toast('Loading...');
+  try{
+    const r=await api('/admin/extensionUsers/'+encodeURIComponent(pkgName));
+    const users=Array.isArray(r)?r:(r.users||[]);
+    openModal('extUsers',{pkgName,type,install_count:users.length,usersList:users});
+  }catch(e){toast('Failed to load users','error')}
 }
 
 async function purgeOrphans(){
@@ -431,6 +436,12 @@ async function forceUpdate(){
   toast('Updating JAR...','info');
   const r=await apiPost('/admin/forceUpdate',{});
   if(r.ok){toast(`Updated in ${r.elapsed}ms`,'success');loadJarStatus()}else toast('Failed','error');
+}
+
+async function detectVersion(){
+  toast('Detecting version from GitHub...','info');
+  const r=await apiPost('/admin/detectJarVersion',{});
+  if(r.ok){toast(`Version detected: ${r.version}`,'success');loadJarStatus()}else toast('Failed to detect','error');
 }
 
 // Server

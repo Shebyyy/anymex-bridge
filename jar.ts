@@ -35,15 +35,42 @@ function saveMeta(meta: JarMeta) {
   writeFileSync(META_PATH, JSON.stringify(meta, null, 2))
 }
 
-/** Extract version tag from the redirect URL, e.g. "/download/v2.5.1/" → "v2.5.1" */
+/** Extract version tag from URL, e.g. "/download/v2.5.1/" → "v2.5.1" */
 function extractVersion(url: string): string {
   const match = url.match(/\/releases\/download\/([^/]+)\//i)
   return match ? match[1] : 'unknown'
 }
 
+/** Follow GitHub redirects and capture the version from intermediate URL.
+ * Returns { version, downloadUrl (the github.com release URL) } */
+async function resolveReleaseInfo(): Promise<{ version: string; releaseUrl: string }> {
+  let version = 'unknown'
+  let releaseUrl = JAR_URL
+  try {
+    let current = await fetch(JAR_URL, { redirect: 'manual' })
+    let url = JAR_URL
+    for (let i = 0; i < 10; i++) {
+      if (current.status < 300 || current.status >= 400) break
+      const loc = current.headers.get('location')!
+      url = new URL(loc, url).href
+      // Check THIS redirect URL for the version tag (it's in the github.com redirect, not the CDN)
+      const v = extractVersion(url)
+      if (v !== 'unknown') {
+        version = v
+        releaseUrl = url // store the clean github.com URL, not the CDN blob
+      }
+      current = await fetch(url, { redirect: 'manual' })
+    }
+  } catch (e: any) {
+    console.log(`[jar] Redirect resolution failed: ${e.message}`)
+  }
+  return { version, releaseUrl }
+}
+
 export function isJarReady() { return jarReady && _process !== null && !_process.killed }
 export function getJarPath() { return JAR_PATH }
 export function getJarMeta() { return loadMeta() }
+export { resolveReleaseInfo }
 
 // ─── Download ──────────────────────────────────────────────
 
@@ -57,23 +84,11 @@ export async function checkOrDownloadJar(): Promise<{ ok: boolean; error?: strin
 
   console.log('[jar] Downloading:', JAR_URL)
   try {
-    // Use redirect: 'manual' to capture the final URL (contains version tag)
-    const res = await fetch(JAR_URL, { redirect: 'manual' })
-    let finalUrl = JAR_URL
-    if (res.status >= 300 && res.status < 400 && res.headers.get('location')) {
-      // Follow redirects manually to get the final URL
-      let current = res
-      const maxRedirects = 10
-      for (let i = 0; i < maxRedirects; i++) {
-        const loc = current.headers.get('location')!
-        finalUrl = new URL(loc, finalUrl).href
-        current = await fetch(finalUrl, { redirect: 'manual' })
-        if (current.status < 300 || current.status >= 400) break
-      }
-    }
+    // Resolve version from redirect chain FIRST (before actual download)
+    const release = await resolveReleaseInfo()
 
-    // Now do the actual download from the final URL
-    const downloadRes = await fetch(finalUrl, { redirect: 'follow' })
+    // Download with automatic redirects
+    const downloadRes = await fetch(JAR_URL, { redirect: 'follow' })
     if (!downloadRes.ok) return { ok: false, error: `HTTP ${downloadRes.status}` }
 
     const buf = await downloadRes.arrayBuffer()
@@ -84,12 +99,11 @@ export async function checkOrDownloadJar(): Promise<{ ok: boolean; error?: strin
     if (existsSync(JAR_PATH)) unlinkSync(JAR_PATH)
     renameSync(tmpPath, JAR_PATH)
 
-    // Extract version and save metadata
-    const version = extractVersion(finalUrl)
+    // Save metadata with clean release URL
     const oldMeta = loadMeta()
     const meta: JarMeta = {
-      version,
-      downloadUrl: finalUrl,
+      version: release.version,
+      downloadUrl: release.releaseUrl,
       fileSize: buf.byteLength,
       updatedAt: new Date().toISOString(),
       previousVersion: oldMeta.version !== 'unknown' ? oldMeta.version : undefined,
@@ -97,8 +111,8 @@ export async function checkOrDownloadJar(): Promise<{ ok: boolean; error?: strin
     saveMeta(meta)
 
     jarReady = true
-    console.log(`[jar] Downloaded: v${version} (${(buf.byteLength / 1024 / 1024).toFixed(1)}MB)`)
-    return { ok: true, path: JAR_PATH, version }
+    console.log(`[jar] Downloaded: ${release.version} (${(buf.byteLength / 1024 / 1024).toFixed(1)}MB)`)
+    return { ok: true, path: JAR_PATH, version: release.version }
   } catch (e: any) {
     return { ok: false, error: e.message }
   }

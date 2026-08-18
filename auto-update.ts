@@ -37,27 +37,24 @@ export function stopAutoUpdate() {
   if (_timer) { clearInterval(_timer); _timer = null }
 }
 
-/** Extract version tag from redirect URL */
-function extractVersion(url: string): string {
-  const match = url.match(/\/releases\/download\/([^/]+)\//i)
-  return match ? match[1] : 'unknown'
-}
-
-/** Check what version the latest release is (without downloading) */
+/** Follow GitHub redirects and capture the version from intermediate URL */
 async function getLatestVersion(): Promise<{ version: string; url: string } | null> {
   try {
-    const res = await fetch(JAR_URL, { redirect: 'manual' })
-    let finalUrl = JAR_URL
-    if (res.status >= 300 && res.status < 400 && res.headers.get('location')) {
-      let current = res
-      for (let i = 0; i < 10; i++) {
-        const loc = current.headers.get('location')!
-        finalUrl = new URL(loc, finalUrl).href
-        current = await fetch(finalUrl, { redirect: 'manual' })
-        if (current.status < 300 || current.status >= 400) break
+    const JAR_URL = 'https://github.com/RyanYuuki/AnymeXExtensionRuntimeBridge/releases/latest/download/anymex_desktop_runtime.jar'
+    let current = await fetch(JAR_URL, { redirect: 'manual' })
+    let url = JAR_URL
+    for (let i = 0; i < 10; i++) {
+      if (current.status < 300 || current.status >= 400) break
+      const loc = current.headers.get('location')!
+      url = new URL(loc, url).href
+      // Check for version tag in THIS redirect (not the final CDN URL)
+      const match = url.match(/\/releases\/download\/([^/]+)\//i)
+      if (match) {
+        return { version: match[1], url }
       }
+      current = await fetch(url, { redirect: 'manual' })
     }
-    return { version: extractVersion(finalUrl), url: finalUrl }
+    return null
   } catch {
     return null
   }

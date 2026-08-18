@@ -3,7 +3,7 @@ import { readFileSync, existsSync, mkdirSync, writeFileSync, unlinkSync, rmSync,
 import { join, dirname } from 'node:path'
 import { execSync } from 'node:child_process'
 import { authenticateUser, createUser, getAllUsers, getUserById, db, getUserInstalled, addUserInstalled, removeUserInstalled, getUserInstalledPkgs, countOtherUsersWithPkg, banUser, changePassword, editUsername, deleteAllUsers, deleteUserExtensions, deleteExtensionGlobally, getAllInstalledExtensions, getPkgUsers, clearDatabase, recordUserIP, isIPBanned, banAllUserIPs, unbanAllUserIPs, banIP, unbanIP, getAllBannedIPs, getBannedIPCount, getUserIPs, getUsersByIP } from './db.js'
-import { isJarReady, invokeJar, invokeJarOnce, getJarPath, startSidecar, stopSidecar, getJarMeta } from './jar.js'
+import { isJarReady, invokeJar, invokeJarOnce, getJarPath, startSidecar, stopSidecar, getJarMeta, resolveReleaseInfo } from './jar.js'
 import { runUpdateNow, getNextCheckAt, getIntervalMs } from './auto-update.js'
 import { registerLimiter, loginLimiter, adminLoginLimiter, rpcLimiter, globalLimiter } from './rate-limit.js'
 
@@ -299,6 +299,27 @@ export function startHttpServer() {
             updateIntervalMs: intervalMs,
             updateIntervalHuman: `${intervalMs / 3600000}h`,
           }))
+          return
+        }
+
+        // ── Re-detect JAR version (for existing installs with 'unknown') ──
+        if (url.pathname === '/admin/detectJarVersion' && req.method === 'POST') {
+          const release = await resolveReleaseInfo()
+          const meta = getJarMeta()
+          if (release.version !== 'unknown' && release.version !== meta.version) {
+            // Update the meta file with detected version
+            const { writeFileSync } = await import('node:fs')
+            const { join } = await import('node:path')
+            writeFileSync(join(import.meta.dir, 'jar-cache', 'jar-meta.json'), JSON.stringify({
+              ...meta,
+              version: release.version,
+              downloadUrl: release.releaseUrl,
+              updatedAt: meta.updatedAt || new Date().toISOString(),
+            }, null, 2))
+            res.end(JSON.stringify({ ok: true, version: release.version, downloadUrl: release.releaseUrl }))
+          } else {
+            res.end(JSON.stringify({ ok: true, version: release.version, downloadUrl: release.releaseUrl, note: 'same version' }))
+          }
           return
         }
 
